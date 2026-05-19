@@ -1,11 +1,13 @@
 # Screenshots
 
-Place dashboard photos in this folder before publishing.
+Dashboard screenshots used by the repository README.
 
-Recommended filenames:
+Included:
 
 - `dashboard-overview.png`
-- `agent-detail.png`
-- `readiness.png`
+- `agents.png`
+- `projects.png`
+- `task-board.png`
+- `reports.png`
 
-Keep screenshots free of secrets, private emails, tokens, API keys, local IPs you do not want public, and personal messages.
+Keep future screenshots free of secrets, private emails, tokens, API keys, local IPs you do not want public, and personal messages.

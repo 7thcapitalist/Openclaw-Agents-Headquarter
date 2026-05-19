@@ -8,6 +8,20 @@ I built this because I wanted my agents to feel less like random scripts and mor
 
 ![Dashboard overview](docs/screenshots/dashboard-overview.png)
 
+## My Use Case
+
+I use this as a private AI operations room on a mini PC. The mini PC runs my local OpenClaw setup, keeps the dashboard online, stores agent state, and lets me coordinate multiple projects without exposing my private runtime data.
+
+The goal is not just to chat with one assistant. The goal is to build a small startup-like operating system where each agent has a job:
+
+- a chief-of-staff agent to decide what needs attention
+- project CEO personas for different projects
+- worker agents for email, research, engineering, reports, and operations
+- approval-safe workflows so sensitive actions stay under my control
+- logs, reports, tasks, and outputs that make the whole system inspectable
+
+The dashboard is my headquarters. OpenClaw is the automation/runtime layer. Agent folders are the workers.
+
 ## What This Does
 
 - Creates a browser-based headquarters for multiple AI agents.
@@ -50,6 +64,21 @@ The main layers are:
 1. **OpenClaw runtime**: the local automation runtime and provider gateway.
 2. **Startup HQ dashboard**: the browser interface, SQLite run history, and JSON command-center state.
 3. **Worker agents**: folders with clear prompts, configs, logs, outputs, and a single safe entrypoint.
+
+## Stack
+
+This is the stack I am using around the HQ:
+
+- **Mini PC** as the always-on local machine.
+- **OpenClaw** as the local agent/runtime gateway.
+- **Node.js** for the dashboard backend and worker scripts.
+- **Express** for the local dashboard API.
+- **SQLite** for registered agents, run history, sessions, and events.
+- **JSON files** for HQ state: projects, agents, tasks, SOPs, logs, and reports.
+- **PM2** to keep the dashboard process running.
+- **systemd user services** for long-running local automation services.
+- **Tailscale/private networking** for private access to the dashboard when I am away from the machine.
+- **Shell entrypoints** through `run.sh` so every worker has one clear execution boundary.
 
 ## Agent Lifecycle
 
@@ -121,13 +150,27 @@ For example, a worker can wrap an OpenClaw command, a cron job, a Node script, o
 
 ## Screenshots
 
-Add dashboard images here:
+These are real screenshots from my current dashboard. Some private details are intentionally redacted.
 
-- `docs/screenshots/dashboard-overview.png`
-- `docs/screenshots/agent-detail.png`
-- `docs/screenshots/readiness.png`
+### Today / Command Center
 
-The README is already wired to show `dashboard-overview.png` at the top.
+![Today command center](docs/screenshots/dashboard-overview.png)
+
+### Agents
+
+![Agents view](docs/screenshots/agents.png)
+
+### Projects
+
+![Projects view](docs/screenshots/projects.png)
+
+### Task Board
+
+![Task board](docs/screenshots/task-board.png)
+
+### Reports
+
+![Reports view](docs/screenshots/reports.png)
 
 ## What Is Not Included
 
