@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OpenClaw Startup HQ</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark"></span>
+        <div>
+          <div class="brand-title">OpenClaw Startup HQ</div>
+          <div class="brand-sub">OpenClaw Command Center</div>
+        </div>
+      </div>
+      <nav class="main-nav" id="nav"></nav>
+      <button type="button" class="btn ghost" id="btn-logout">Sign out</button>
+    </header>
+    <div id="toast" class="toast" hidden></div>
+    <main class="page" id="app"></main>
+    <div id="modal" class="modal" hidden>
+      <div class="modal-backdrop" data-close="1"></div>
+      <div class="modal-card">
+        <div class="modal-head">
+          <h2 id="modal-title"></h2>
+          <button type="button" class="btn icon" id="modal-x" aria-label="Close">×</button>
+        </div>
+        <div class="modal-body" id="modal-body"></div>
+      </div>
+    </div>
+    <script src="/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,33 @@
+[
+  {
+    "id": "chief-of-staff",
+    "name": "Chief of Staff",
+    "projectId": "personal-automation",
+    "role": "Prioritize daily tasks, surface blockers, and coordinate worker agents.",
+    "description": "A command-center persona that decides what needs attention first.",
+    "lifecycleStatus": "designed",
+    "reportsTo": null,
+    "skills": ["prioritization", "summaries", "handoffs"]
+  },
+  {
+    "id": "research-analyst",
+    "name": "Research Analyst",
+    "projectId": "example-project",
+    "role": "Turn a prompt into a short research brief with sources and next actions.",
+    "description": "Example runnable worker included with this repo.",
+    "lifecycleStatus": "runnable",
+    "existingAgentKey": "example-project/research-analyst",
+    "reportsTo": "ops-lead",
+    "skills": ["research", "briefing", "decision support"]
+  },
+  {
+    "id": "ops-lead",
+    "name": "Ops Lead",
+    "projectId": "startup-ops",
+    "role": "Track projects, review worker outputs, and keep the operating system clean.",
+    "description": "A project lead persona for the HQ.",
+    "lifecycleStatus": "designed",
+    "reportsTo": null,
+    "skills": ["project management", "quality control", "planning"]
+  }
+]

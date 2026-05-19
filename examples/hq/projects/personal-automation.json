@@ -1,0 +1,8 @@
+{
+  "id": "personal-automation",
+  "name": "Personal Automation",
+  "mission": "Automate recurring personal workflows with clear review points.",
+  "status": "active",
+  "leadAgentId": "chief-of-staff",
+  "summary": "Daily briefings, email triage, reminders, and repeatable operator support."
+}

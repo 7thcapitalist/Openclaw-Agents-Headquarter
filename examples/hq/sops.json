@@ -1,0 +1,14 @@
+[
+  {
+    "id": "sop-agent-promotion",
+    "title": "Promote a Persona Into a Worker",
+    "steps": [
+      "Create an HQ agent entry with a clear role.",
+      "Scaffold an agent folder.",
+      "Fill in prompt.md and agent.config.json.",
+      "Test run.sh manually.",
+      "Register the worker in SQLite.",
+      "Review the dashboard lifecycle state."
+    ]
+  }
+]

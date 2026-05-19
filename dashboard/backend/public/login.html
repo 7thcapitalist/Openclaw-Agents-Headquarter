@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Agent Lab — Sign in</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body class="auth-body">
+    <main class="card">
+      <h1>Agent Lab</h1>
+      <p class="muted">Private dashboard — sign in to continue.</p>
+      <form id="form">
+        <label for="pw">Password</label>
+        <input id="pw" name="password" type="password" autocomplete="current-password" required />
+        <p id="err" class="error" hidden></p>
+        <button type="submit">Sign in</button>
+      </form>
+    </main>
+    <script src="/login.js"></script>
+  </body>
+</html>

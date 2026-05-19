@@ -1,0 +1,17 @@
+{
+  "id": "research-analyst",
+  "project": "example-project",
+  "name": "Research Analyst",
+  "description": "Example worker that writes a short research brief.",
+  "status": "active",
+  "type": "manual",
+  "schedule": null,
+  "entrypoint": "./run.sh",
+  "workingDirectory": "./agents/example-project/research-analyst",
+  "tools": ["shell"],
+  "requiresApproval": [],
+  "logsPath": "./logs/latest.log",
+  "outputsPath": "./outputs",
+  "createdAt": "2026-05-18",
+  "owner": "operator"
+}

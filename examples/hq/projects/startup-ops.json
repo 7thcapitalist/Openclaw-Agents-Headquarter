@@ -1,0 +1,8 @@
+{
+  "id": "startup-ops",
+  "name": "Startup Ops",
+  "mission": "Coordinate worker agents like a small startup team.",
+  "status": "active",
+  "leadAgentId": "ops-lead",
+  "summary": "Planning, research, building, reporting, and operating cadence."
+}

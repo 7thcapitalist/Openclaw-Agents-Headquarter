@@ -1,0 +1,13 @@
+{
+  "name": "openclaw-startup-hq",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "setup": "npm install --prefix dashboard/backend",
+    "seed:hq": "AGENT_LAB_ROOT=$PWD ./scripts/seed-hq.sh",
+    "dev": "AGENT_LAB_ROOT=$PWD npm --prefix dashboard/backend run dev",
+    "start": "AGENT_LAB_ROOT=$PWD npm --prefix dashboard/backend start",
+    "register:example": "AGENT_LAB_ROOT=$PWD ./scripts/register-agent.sh example-project research-analyst"
+  }
+}

@@ -1,0 +1,9 @@
+[
+  {
+    "id": "report-001",
+    "type": "daily-brief",
+    "title": "HQ Demo Brief",
+    "createdAt": "2026-05-18T12:00:00.000Z",
+    "summary": "The HQ can distinguish designed personas from runnable worker agents."
+  }
+]

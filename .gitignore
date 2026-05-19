@@ -1,0 +1,31 @@
+node_modules/
+.env
+.env.*
+!.env.example
+
+# Runtime data
+dashboard/backend/data/
+agents/**/logs/*
+agents/**/outputs/*
+!agents/**/logs/.gitkeep
+!agents/**/outputs/.gitkeep
+
+# Local OpenClaw state and secrets should never be committed.
+.openclaw/
+openclaw.json
+credentials/
+secrets/
+memory/
+tasks/
+flows/
+cron/
+devices/
+identity/
+/.openclaw/logs/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# OS/editor
+.DS_Store
+Thumbs.db

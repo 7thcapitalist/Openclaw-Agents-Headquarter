@@ -1,0 +1,20 @@
+[
+  {
+    "id": "task-001",
+    "projectId": "startup-ops",
+    "title": "Promote first worker from persona to runnable agent",
+    "status": "Review",
+    "priority": "High",
+    "ownerAgentId": "ops-lead",
+    "approvalRequired": true
+  },
+  {
+    "id": "task-002",
+    "projectId": "personal-automation",
+    "title": "Create daily briefing worker",
+    "status": "Todo",
+    "priority": "Medium",
+    "ownerAgentId": "chief-of-staff",
+    "approvalRequired": false
+  }
+]
