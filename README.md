@@ -84,8 +84,8 @@ The dashboard only runs `./run.sh` inside the resolved agent folder. That keeps 
 ## Quick Start
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/openclaw-startup-hq.git
-cd openclaw-startup-hq
+git clone https://github.com/7thcapitalist/Openclaw-Agents-Headquarter.git
+cd Openclaw-Agents-Headquarter
 cp .env.example .env
 npm run setup
 npm run seed:hq
