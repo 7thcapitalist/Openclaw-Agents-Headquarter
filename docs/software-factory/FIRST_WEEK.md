@@ -7,7 +7,7 @@ Do not try to automate everything at once. The fastest way to learn this system 
 From the HQ repo on the mini PC:
 
 ```bash
-./scripts/factory-doctor.sh
+bash scripts/factory-doctor.sh
 ```
 
 Then install/enable OpenClaw ACP if needed:
