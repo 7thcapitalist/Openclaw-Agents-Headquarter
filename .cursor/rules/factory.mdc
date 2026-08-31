@@ -1,0 +1,10 @@
+---
+description: Rules for autonomous software-factory work in OpenClaw Startup HQ
+alwaysApply: true
+---
+
+Read `AGENTS.md` before making changes. For factory work, also read `docs/software-factory/README.md`, `docs/software-factory/OPERATING_RULES.md`, and `factory/factory.config.json`.
+
+Cursor's default role in this factory is product/UI implementation and visual QA. Work on one isolated task/branch at a time. Never push directly to main. Do not ask the founder about reversible implementation details. UI work should include responsive/visual verification when tooling allows.
+
+If reviewing work authored by Cursor, route final independent review to a different harness/model. Use `factory/templates/decision-card.md` only for strategic, costly, privacy-sensitive, destructive, or hard-to-reverse decisions.

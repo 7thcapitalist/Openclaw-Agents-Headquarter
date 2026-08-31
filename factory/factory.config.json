@@ -1,0 +1,74 @@
+{
+  "version": 1,
+  "mode": "human-merge",
+  "controlPlane": "github",
+  "orchestrator": "openclaw",
+  "taskSource": "github-issues",
+  "roles": {
+    "chiefOfStaff": {
+      "runtime": "openclaw",
+      "responsibility": "specify, classify, route, summarize, escalate"
+    },
+    "architect": {
+      "preferredHarness": "claude",
+      "runtime": "acp",
+      "writeAccess": false,
+      "responsibility": "technical design and architecture challenge"
+    },
+    "builder": {
+      "preferredHarness": "codex",
+      "runtime": "native-codex-or-acp",
+      "writeAccess": true,
+      "responsibility": "implementation, tests, branch, PR"
+    },
+    "productBuilder": {
+      "preferredHarness": "cursor",
+      "runtime": "acp",
+      "writeAccess": true,
+      "responsibility": "UI implementation and visual iteration"
+    },
+    "reviewer": {
+      "selection": "different-model-from-builder",
+      "writeAccess": false,
+      "responsibility": "independent code/product/security review"
+    },
+    "qa": {
+      "selection": "best-fit",
+      "responsibility": "verify acceptance criteria and attempt failure cases"
+    },
+    "releaseManager": {
+      "runtime": "deterministic-gates-plus-openclaw",
+      "responsibility": "verify merge readiness and surface blockers"
+    }
+  },
+  "routing": {
+    "ui": "cursor",
+    "backend": "codex",
+    "architecture": "claude",
+    "bugfix": "codex",
+    "review": "different-model",
+    "qa-ui": "cursor",
+    "qa-backend": "codex-or-claude"
+  },
+  "risk": {
+    "low": { "founderApprovalBeforeBuild": false, "founderMergeRequired": true },
+    "medium": { "founderApprovalBeforeBuild": false, "founderMergeRequired": true },
+    "high": { "founderApprovalBeforeBuild": true, "founderMergeRequired": true }
+  },
+  "prohibitedAutonomousActions": [
+    "push-to-main",
+    "production-deploy",
+    "production-data-deletion",
+    "secret-rotation",
+    "paid-purchase",
+    "public-publishing",
+    "billing-change"
+  ],
+  "requiredGates": [
+    "acceptance-criteria",
+    "verification",
+    "independent-review",
+    "qa-evidence",
+    "no-unresolved-strategic-decision"
+  ]
+}
