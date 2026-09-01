@@ -132,6 +132,39 @@ ssh <ubuntu-user>@<tailscale-ip>
 
 The initial SSH host key was accepted and stored in the notebook's known-hosts file.
 
+### Wi-Fi stability hardening
+
+The mini PC experienced an intermittent Wi-Fi failure where the Realtek/rtw88 interface remained visible but disconnected and would not authenticate to either the normal Wi-Fi network or a phone hotspot.
+
+A driver/network stack reset restored connectivity:
+
+```bash
+sudo modprobe -r rtw88_8821ce rtw88_8821c rtw88_pci rtw88_core
+sudo modprobe rtw88_8821ce
+sudo systemctl restart NetworkManager
+```
+
+To reduce the chance of recurrence, Wi-Fi power saving was disabled in NetworkManager using:
+
+```ini
+[connection]
+wifi.powersave = 2
+```
+
+Sleep/hibernate targets were masked so the machine behaves as an always-on server:
+
+```bash
+sudo systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target
+```
+
+User lingering was enabled so user-level services can continue independently of a graphical login session:
+
+```bash
+sudo loginctl enable-linger joao-vitor
+```
+
+The machine was rebooted after applying these changes. Post-reboot remote-service validation is the next checkpoint.
+
 ## GitHub
 
 GitHub CLI authentication was completed on the mini PC using device/browser login from the notebook. Git operations are configured to use HTTPS.
@@ -293,13 +326,20 @@ Ubuntu mini PC
 - [x] HQ demo state seeded
 - [x] Example agent registered
 - [x] Factory doctor executed
+- [x] Wi-Fi driver/network reset procedure identified
+- [x] Wi-Fi power saving disabled
+- [x] Sleep/suspend/hibernate targets masked
+- [x] User lingering enabled
+- [x] Reboot performed after server-stability changes
 
 ## Next Steps
 
 ### Remote access hardening
 
+- [ ] Confirm Tailscale returns automatically after reboot
+- [ ] Confirm SSH works remotely after reboot
+- [ ] Confirm OpenClaw Gateway is running after reboot
 - [ ] Optionally configure SSH keys so password entry is no longer required
-- [ ] Confirm remote access still works after mini PC reboot
 
 ### GitHub
 
