@@ -192,6 +192,60 @@ Cursor CLI successfully recognized an active authenticated session and workspace
 
 Cursor Origin CLI is intentionally not required for the current factory design because GitHub remains the durable source of truth and repository control plane.
 
+## HQ Bootstrap
+
+The HQ repository dependencies were installed successfully:
+
+```bash
+npm run setup
+```
+
+Result:
+
+- 111 packages installed
+- backend dependency tree audited
+- 2 npm audit findings reported (1 low, 1 moderate)
+- `better-sqlite3` install-script approval warning reported by npm; HQ setup/seed/register still completed successfully
+
+HQ demo state was seeded:
+
+```bash
+npm run seed:hq
+```
+
+The example research agent was registered:
+
+```bash
+npm run register:example
+```
+
+Factory readiness was checked with:
+
+```bash
+chmod +x scripts/factory-doctor.sh
+./scripts/factory-doctor.sh
+```
+
+Doctor confirmed the following tools are present:
+
+- git
+- Node.js
+- npm
+- OpenClaw
+- GitHub CLI
+- Codex
+- Claude Code
+- Cursor CLI
+
+OpenClaw Gateway remained healthy during the check:
+
+```text
+Runtime: running
+Connectivity probe: ok
+```
+
+The only blocking factory-doctor item remaining is the ACP runtime plugin (`acpx`), which has not yet been installed/enabled.
+
 ## Intended Architecture
 
 ```text
@@ -235,6 +289,10 @@ Ubuntu mini PC
 - [x] Codex CLI installed and authenticated
 - [x] Claude Code installed and authenticated
 - [x] Cursor CLI installed and authenticated
+- [x] HQ dependencies installed
+- [x] HQ demo state seeded
+- [x] Example agent registered
+- [x] Factory doctor executed
 
 ## Next Steps
 
@@ -260,10 +318,10 @@ Ubuntu mini PC
 
 ### HQ
 
-- [ ] Install HQ dependencies
-- [ ] Seed HQ state
-- [ ] Register example agent
-- [ ] Run `factory-doctor.sh`
+- [x] Install HQ dependencies
+- [x] Seed HQ state
+- [x] Register example agent
+- [x] Run `factory-doctor.sh`
 - [ ] Keep HQ running as a persistent service
 - [ ] Make HQ reachable privately through Tailscale
 
