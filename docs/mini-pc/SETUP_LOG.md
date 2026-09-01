@@ -116,12 +116,6 @@ Verified with:
 systemctl status ssh --no-pager
 ```
 
-Expected state:
-
-```text
-Active: active (running)
-```
-
 Remote SSH access from the Windows notebook over Tailscale was successfully validated. The notebook can now act as the operator cockpit while the mini PC remains headless.
 
 Remote access uses the pattern:
@@ -134,9 +128,9 @@ The initial SSH host key was accepted and stored in the notebook's known-hosts f
 
 ### Wi-Fi stability hardening
 
-The mini PC experienced an intermittent Wi-Fi failure where the Realtek/rtw88 interface remained visible but disconnected and would not authenticate to either the normal Wi-Fi network or a phone hotspot.
+The mini PC experienced intermittent Wi-Fi failures on the Realtek/rtw88 interface, including periods where the interface remained visible but could not maintain connectivity.
 
-A driver/network stack reset restored connectivity:
+A driver/network stack reset was identified as a recovery procedure:
 
 ```bash
 sudo modprobe -r rtw88_8821ce rtw88_8821c rtw88_pci rtw88_core
@@ -144,12 +138,21 @@ sudo modprobe rtw88_8821ce
 sudo systemctl restart NetworkManager
 ```
 
-To reduce the chance of recurrence, Wi-Fi power saving was disabled in NetworkManager using:
+For long-term stability, Wi-Fi power saving was disabled in NetworkManager:
 
 ```ini
 [connection]
 wifi.powersave = 2
 ```
+
+Realtek/rtw88 PCIe and deep low-power behavior was also disabled:
+
+```text
+options rtw88_pci disable_aspm=Y
+options rtw88_core disable_lps_deep=Y
+```
+
+The initramfs was updated after the driver settings were added.
 
 Sleep/hibernate targets were masked so the machine behaves as an always-on server:
 
@@ -163,7 +166,23 @@ User lingering was enabled so user-level services can continue independently of 
 sudo loginctl enable-linger joao-vitor
 ```
 
-The machine was rebooted after applying these changes. Post-reboot remote-service validation is the next checkpoint.
+Tailscale and SSH were enabled to start automatically.
+
+A full reboot test was completed successfully. After reboot, the machine returned to the tailnet automatically, accepted a fresh remote SSH connection, and the OpenClaw Gateway was already running without physical intervention.
+
+Post-reboot verification:
+
+```text
+Tailscale: running
+SSH: active (running)
+OpenClaw Gateway: running
+OpenClaw connectivity probe: ok
+Wi-Fi power save: off
+rtw88_pci disable_aspm: Y
+rtw88_core disable_lps_deep: Y
+```
+
+This is the first successful headless-server reboot checkpoint.
 
 ## GitHub
 
@@ -197,8 +216,6 @@ Version observed during setup:
 OpenAI Codex v0.151.0
 ```
 
-Codex successfully launched on the mini PC using the authenticated OpenAI account.
-
 ### Claude Code
 
 Installed globally with npm and authenticated successfully.
@@ -208,8 +225,6 @@ Version observed during setup:
 ```text
 Claude Code 2.1.252
 ```
-
-Claude Code successfully launched and recognized the user's Claude Pro session.
 
 ### Cursor CLI
 
@@ -221,8 +236,6 @@ Version observed during setup:
 Cursor Agent v2026.08.25-3e8eec8
 ```
 
-Cursor CLI successfully recognized an active authenticated session and workspace trust was granted for the user's home directory during the initial test.
-
 Cursor Origin CLI is intentionally not required for the current factory design because GitHub remains the durable source of truth and repository control plane.
 
 ## HQ Bootstrap
@@ -232,13 +245,6 @@ The HQ repository dependencies were installed successfully:
 ```bash
 npm run setup
 ```
-
-Result:
-
-- 111 packages installed
-- backend dependency tree audited
-- 2 npm audit findings reported (1 low, 1 moderate)
-- `better-sqlite3` install-script approval warning reported by npm; HQ setup/seed/register still completed successfully
 
 HQ demo state was seeded:
 
@@ -259,25 +265,9 @@ chmod +x scripts/factory-doctor.sh
 ./scripts/factory-doctor.sh
 ```
 
-Doctor confirmed the following tools are present:
+Doctor confirmed git, Node.js, npm, OpenClaw, GitHub CLI, Codex, Claude Code, and Cursor CLI are all present. The OpenClaw Gateway also remained healthy during the check.
 
-- git
-- Node.js
-- npm
-- OpenClaw
-- GitHub CLI
-- Codex
-- Claude Code
-- Cursor CLI
-
-OpenClaw Gateway remained healthy during the check:
-
-```text
-Runtime: running
-Connectivity probe: ok
-```
-
-The only blocking factory-doctor item remaining is the ACP runtime plugin (`acpx`), which has not yet been installed/enabled.
+The next orchestration checkpoint is ACP runtime diagnostics.
 
 ## Intended Architecture
 
@@ -309,12 +299,8 @@ Ubuntu mini PC
 - [x] OpenClaw model authentication verified
 - [x] Codex OpenClaw plugin installed with capability consent
 - [x] OpenClaw Gateway healthy
-- [x] Tailscale installed
-- [x] Mini PC authenticated to Tailscale
-- [x] Windows notebook registered in the same tailnet
-- [x] OpenSSH server installed
-- [x] SSH service enabled at boot
-- [x] SSH server verified active
+- [x] Tailscale installed and authenticated
+- [x] OpenSSH server installed and enabled at boot
 - [x] SSH from Windows notebook into mini PC validated
 - [x] GitHub CLI authenticated on the mini PC
 - [x] HQ repository cloned locally
@@ -326,19 +312,24 @@ Ubuntu mini PC
 - [x] HQ demo state seeded
 - [x] Example agent registered
 - [x] Factory doctor executed
-- [x] Wi-Fi driver/network reset procedure identified
 - [x] Wi-Fi power saving disabled
+- [x] rtw88 PCIe ASPM disabled
+- [x] rtw88 deep LPS disabled
 - [x] Sleep/suspend/hibernate targets masked
 - [x] User lingering enabled
-- [x] Reboot performed after server-stability changes
+- [x] Tailscale and SSH set to start automatically
+- [x] Reboot validation passed: Tailscale returned automatically
+- [x] Reboot validation passed: SSH returned automatically
+- [x] Reboot validation passed: OpenClaw Gateway returned automatically
+- [x] Post-reboot Wi-Fi driver settings verified active
 
 ## Next Steps
 
 ### Remote access hardening
 
-- [ ] Confirm Tailscale returns automatically after reboot
-- [ ] Confirm SSH works remotely after reboot
-- [ ] Confirm OpenClaw Gateway is running after reboot
+- [x] Confirm Tailscale returns automatically after reboot
+- [x] Confirm SSH works remotely after reboot
+- [x] Confirm OpenClaw Gateway is running after reboot
 - [ ] Optionally configure SSH keys so password entry is no longer required
 
 ### GitHub
@@ -351,7 +342,6 @@ Ubuntu mini PC
 
 ### OpenClaw orchestration
 
-- [ ] Install/enable ACP runtime
 - [ ] Run ACP diagnostics
 - [ ] Connect Codex/Claude/Cursor harnesses to OpenClaw
 - [ ] Verify background agent session spawning
@@ -408,6 +398,11 @@ tailscale status
 
 # SSH
 systemctl status ssh --no-pager
+
+# Wi-Fi stability
+iw dev wlp2s0 get power_save
+cat /sys/module/rtw88_pci/parameters/disable_aspm
+cat /sys/module/rtw88_core/parameters/disable_lps_deep
 
 # GitHub
 gh auth status
