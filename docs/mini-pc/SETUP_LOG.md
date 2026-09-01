@@ -122,15 +122,75 @@ Expected state:
 Active: active (running)
 ```
 
-The Linux account used for administration is the normal non-root user.
+Remote SSH access from the Windows notebook over Tailscale was successfully validated. The notebook can now act as the operator cockpit while the mini PC remains headless.
 
-Once the notebook is online on the same Tailscale network, remote access should use the pattern:
+Remote access uses the pattern:
 
 ```bash
 ssh <ubuntu-user>@<tailscale-ip>
 ```
 
-This allows the physical keyboard/monitor on the mini PC to become unnecessary for routine operation.
+The initial SSH host key was accepted and stored in the notebook's known-hosts file.
+
+## GitHub
+
+GitHub CLI authentication was completed on the mini PC using device/browser login from the notebook. Git operations are configured to use HTTPS.
+
+The HQ repository was cloned locally and the factory branch checked out:
+
+```bash
+cd ~
+git clone https://github.com/7thcapitalist/Openclaw-Agents-Headquarter.git
+cd Openclaw-Agents-Headquarter
+git fetch origin
+git switch factory-v1
+```
+
+Verified branch:
+
+```text
+factory-v1
+```
+
+## Coding Harnesses
+
+### Codex CLI
+
+Installed and authenticated successfully.
+
+Version observed during setup:
+
+```text
+OpenAI Codex v0.151.0
+```
+
+Codex successfully launched on the mini PC using the authenticated OpenAI account.
+
+### Claude Code
+
+Installed globally with npm and authenticated successfully.
+
+Version observed during setup:
+
+```text
+Claude Code 2.1.252
+```
+
+Claude Code successfully launched and recognized the user's Claude Pro session.
+
+### Cursor CLI
+
+Installed and authenticated successfully.
+
+Version observed during setup:
+
+```text
+Cursor Agent v2026.08.25-3e8eec8
+```
+
+Cursor CLI successfully recognized an active authenticated session and workspace trust was granted for the user's home directory during the initial test.
+
+Cursor Origin CLI is intentionally not required for the current factory design because GitHub remains the durable source of truth and repository control plane.
 
 ## Intended Architecture
 
@@ -168,29 +228,28 @@ Ubuntu mini PC
 - [x] OpenSSH server installed
 - [x] SSH service enabled at boot
 - [x] SSH server verified active
+- [x] SSH from Windows notebook into mini PC validated
+- [x] GitHub CLI authenticated on the mini PC
+- [x] HQ repository cloned locally
+- [x] `factory-v1` checked out
+- [x] Codex CLI installed and authenticated
+- [x] Claude Code installed and authenticated
+- [x] Cursor CLI installed and authenticated
 
 ## Next Steps
 
-### Remote access validation
+### Remote access hardening
 
-- [ ] Bring Windows notebook online in Tailscale
-- [ ] SSH from notebook into mini PC
 - [ ] Optionally configure SSH keys so password entry is no longer required
 - [ ] Confirm remote access still works after mini PC reboot
 
 ### GitHub
 
-- [ ] Authenticate GitHub CLI on the mini PC
-- [ ] Configure Git identity
-- [ ] Clone `Openclaw-Agents-Headquarter` locally
-- [ ] Switch to the `factory-v1` branch
+- [ ] Configure Git identity if not already configured
 
 ### Coding harnesses
 
-- [ ] Install and authenticate Codex CLI
-- [ ] Install and authenticate Claude Code
-- [ ] Install and authenticate Cursor CLI
-- [ ] Verify all three can operate non-interactively
+- [ ] Verify all three can operate non-interactively in controlled test workspaces
 
 ### OpenClaw orchestration
 
@@ -203,6 +262,7 @@ Ubuntu mini PC
 
 - [ ] Install HQ dependencies
 - [ ] Seed HQ state
+- [ ] Register example agent
 - [ ] Run `factory-doctor.sh`
 - [ ] Keep HQ running as a persistent service
 - [ ] Make HQ reachable privately through Tailscale
@@ -253,6 +313,11 @@ systemctl status ssh --no-pager
 
 # GitHub
 gh auth status
+
+# coding harnesses
+codex --version
+claude --version
+agent --version
 
 # system health
 uptime
