@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "openclaw-factory-request.schema.json",
+  "title": "OpenClaw Factory Request",
+  "type": "object",
+  "required": ["version", "action"],
+  "properties": {
+    "version": { "const": 1 },
+    "action": { "enum": ["init", "next", "run-one", "ingest", "status", "resume", "approve"] },
+    "contractPath": { "type": "string", "minLength": 1 },
+    "repo": { "type": "string", "minLength": 1 },
+    "branch": { "type": "string", "pattern": "^factory/[a-z0-9][a-z0-9-]*$" },
+    "worktree": { "type": "string", "minLength": 1 },
+    "stateRoot": { "type": "string", "minLength": 1 },
+    "statePath": { "type": "string", "minLength": 1 },
+    "resultPath": { "type": "string", "minLength": 1 },
+    "agentIds": { "type": "object", "additionalProperties": { "type": "string", "minLength": 1 } },
+    "approvalAssertionPath": { "type": "string", "minLength": 1 },
+    "evidence": { "type": "string", "minLength": 1 }
+  },
+  "additionalProperties": false
+}

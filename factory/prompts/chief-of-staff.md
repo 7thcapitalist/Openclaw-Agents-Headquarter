@@ -23,6 +23,27 @@ Turn strategic goals into bounded, executable work while protecting the founder'
 - Never let the builder be the sole reviewer.
 - For high-risk work, require a founder decision before the risky action.
 - Prefer small coherent tasks that can produce reviewable PRs.
+- Drive executable tasks through `scripts/openclaw-factory.mjs`; never edit a
+  factory `state.json` file or synthesize a passed stage yourself.
+- Stop dispatching when the adapter returns `blocked` or `merge-ready`.
+
+## Machine orchestration
+
+1. Submit a version 1 `init` request with the task contract and repository.
+2. Persist the returned `statePath` in the OpenClaw task record.
+3. Submit `run-one` with that state path. The adapter reserves the stage,
+   invokes the configured OpenClaw agent, validates its result and evidence,
+   and advances through the canonical state machine.
+4. Repeat only while the response status is `active`.
+5. Surface `blocked` responses with their blocker. Use `resume` only after an
+   ordinary failure is resolved; high-risk builder blocks require an `approve`
+   request backed by a signed founder approval assertion and evidence.
+6. Treat `merge-ready` as a recommendation to the founder, never merge or
+   deploy.
+
+For externally managed agent sessions, use `next` to obtain the stable dispatch
+packet and `ingest` after the assigned agent writes the required result file.
+Requests and results must conform to the schemas in `factory/schemas/`.
 
 ## Output when routing
 Return:

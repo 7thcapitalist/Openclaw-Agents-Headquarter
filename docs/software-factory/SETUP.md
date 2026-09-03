@@ -96,6 +96,65 @@ From an OpenClaw conversation, try controlled one-shot tasks in a project repo:
 
 Ask for a read-only architecture review first.
 
+## 6a. Initialize a factory task
+
+Create a JSON task contract with these required fields: `id`, `issue`,
+`outcome`, `acceptanceCriteria`, `project`, `workType`, and `risk`. Then run:
+
+```bash
+node scripts/factory-task.mjs init --contract /path/to/task.json --repo /path/to/project
+```
+
+Runtime state is stored in the HQ's ignored
+`dashboard/backend/data/factory/<project>/` directory. The isolated worktree
+defaults to a sibling `.openclaw-worktrees/` directory beside the target
+project. Both locations can be overridden with `--state-root` and `--worktree`.
+
+OpenClaw automations should use the JSON adapter rather than parsing the
+human-oriented CLI output:
+
+```bash
+printf '%s' '{"version":1,"action":"run-one","statePath":"/path/from/init/state.json"}' \
+  | npm run --silent factory:openclaw
+```
+
+Ensure the agent IDs in `factory.config.json` exist on the host (`openclaw
+agents list`). Each invoked agent receives an absolute handoff path, assigned
+worktree, and a versioned result-file contract. Run `run-one` again only when
+the response remains `active`; stop on `blocked` or `merge-ready`.
+
+### Founder approval authority
+
+High-risk tasks use Ed25519 signatures so a task contract or agent cannot claim
+founder approval. Generate the key pair outside the repository and outside the
+OpenClaw workspace, restrict the private key to the founder account, and expose
+only the public-key path to the factory process:
+
+```bash
+openssl genpkey -algorithm Ed25519 -out /private/operator/factory-founder.key
+openssl pkey -in /private/operator/factory-founder.key -pubout -out /etc/openclaw/factory-founder.pub
+export FACTORY_FOUNDER_PUBLIC_KEY=/etc/openclaw/factory-founder.pub
+```
+
+When a high-risk task blocks before `builder`, place the human decision record
+inside the worktree, sign the task-specific random challenge, then ingest it:
+
+```bash
+node scripts/factory-sign-approval.mjs \
+  --state /path/to/state.json \
+  --evidence evidence/founder-approval.md \
+  --private-key /private/operator/factory-founder.key \
+  --output /private/operator/issue-42-approval.json
+
+node scripts/factory-task.mjs approve \
+  --task issue-42 --repo /path/to/project \
+  --assertion /private/operator/issue-42-approval.json \
+  --evidence evidence/founder-approval.md
+```
+
+Do not put either key or signed private decision artifacts in this repository.
+The OpenClaw service should not have permission to read the private key.
+
 Then test Cursor similarly for a small UI inspection. For Codex, prefer the native `/codex` path when enabled; use explicit ACP only if you intentionally want ACP session semantics.
 
 ## 7. Keep V1 permissions conservative

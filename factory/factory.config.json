@@ -4,6 +4,24 @@
   "controlPlane": "github",
   "orchestrator": "openclaw",
   "taskSource": "github-issues",
+  "openclawIntegration": {
+    "protocolVersion": 1,
+    "agentIds": {
+      "openclaw": "main",
+      "codex": "codex",
+      "claude": "claude",
+      "cursor": "cursor"
+    }
+  },
+  "pipeline": [
+    "product",
+    "architect",
+    "builder",
+    "reviewer",
+    "qa",
+    "security",
+    "release"
+  ],
   "roles": {
     "chiefOfStaff": {
       "runtime": "openclaw",
@@ -14,6 +32,11 @@
       "runtime": "acp",
       "writeAccess": false,
       "responsibility": "technical design and architecture challenge"
+    },
+    "product": {
+      "runtime": "openclaw",
+      "writeAccess": false,
+      "responsibility": "normalize outcome and acceptance criteria"
     },
     "builder": {
       "preferredHarness": "codex",
@@ -33,8 +56,13 @@
       "responsibility": "independent code/product/security review"
     },
     "qa": {
-      "selection": "best-fit",
+      "selection": "different-harness-from-builder",
       "responsibility": "verify acceptance criteria and attempt failure cases"
+    },
+    "security": {
+      "preferredHarness": "claude",
+      "writeAccess": false,
+      "responsibility": "independent security and privacy gate"
     },
     "releaseManager": {
       "runtime": "deterministic-gates-plus-openclaw",

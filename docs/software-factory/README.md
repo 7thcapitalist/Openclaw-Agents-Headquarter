@@ -57,14 +57,84 @@ When an agent really needs the founder, it should not send a vague question. It 
 
 ## What to build next
 
-V1 is the protocol and operational foundation. The next implementation milestones are:
+V1 now includes a local deterministic task lifecycle that creates an isolated
+worktree, writes persistent handoffs, and enforces evidence and independence
+through merge readiness. It deliberately leaves harness invocation to OpenClaw
+and final merge to the founder.
 
-1. GitHub issue -> OpenClaw dispatcher.
-2. Isolated worktree creation per task.
-3. Harness routing: Codex / Claude / Cursor.
-4. Automatic cross-model PR review.
-5. CI and QA gates.
-6. Founder dashboard view for active work + decisions.
-7. Daily/weekly founder digest.
+Start a task with a JSON contract (copy `factory/templates/task.json`; it is the
+machine-readable form of `factory/templates/task.md`):
+
+```bash
+node scripts/factory-task.mjs init \
+  --contract /path/to/task.json \
+  --repo /path/to/project
+```
+
+The command prints the state and worktree paths. OpenClaw reads the generated
+`handoff-<stage>.md`, invokes the assigned harness in that worktree, and records
+the result:
+
+```bash
+node scripts/factory-task.mjs complete \
+  --task issue-42 --repo /path/to/project \
+  --stage product --actor openclaw --outcome pass \
+  --summary "Acceptance criteria normalized" \
+  --evidence evidence/product.md
+```
+
+Evidence paths must exist inside the task worktree. `fail` and
+`decision-required` block the task and return a non-zero exit status. Use
+`resume` only after the blocker is resolved. The terminal state is
+`merge-ready`; this tool has no merge or deploy command.
+
+High-risk tasks require `FACTORY_FOUNDER_PUBLIC_KEY` during initialization and
+stop before the builder until a signed founder approval assertion is recorded.
+Task-contract approval fields are discarded and cannot satisfy this gate. The
+founder signs the task-specific challenge with `factory-sign-approval.mjs`
+using a private key that is not accessible to OpenClaw, then records it with
+`factory-task.mjs approve --assertion ...`. Only the public key and verified
+decision are persisted in factory state.
+
+## OpenClaw integration
+
+`scripts/openclaw-factory.mjs` is the machine interface. It accepts one JSON
+request on stdin (or `--request <file>`) and emits one JSON response. Request and
+agent-result contracts are versioned in `factory/schemas/`.
+
+Initialize through the adapter:
+
+```bash
+printf '%s' '{"version":1,"action":"init","contractPath":"/tmp/task.json","repo":"/srv/projects/app"}' \
+  | npm run --silent factory:openclaw
+```
+
+Use the returned `state` path for later requests. `next` reserves and returns a
+persistent dispatch packet without invoking an agent. `run-one` reserves the
+stage, calls `openclaw agent` with the generated handoff, and ingests the result
+file written by that agent:
+
+```json
+{"version":1,"action":"run-one","statePath":"/absolute/path/to/state.json"}
+```
+
+For an OpenClaw automation that owns invocation itself, call `next`, dispatch
+the returned `actor` with `promptPath` and `cwd`, then call `ingest`. Repeated
+`next` calls return the same outstanding dispatch, while a running dispatch
+cannot be claimed twice. Any invocation error, malformed/missing result, FAIL,
+or decision-required result persists a blocker and stops advancement.
+
+The default OpenClaw agent IDs are configured under
+`openclawIntegration.agentIds` in `factory/factory.config.json`; requests may
+override that mapping for a host. These are local agent IDs, not provider model
+names or credentials.
+
+Remaining implementation milestones are:
+
+1. GitHub label/webhook -> OpenClaw invocation of this dispatcher.
+2. Native harness session invocation and result ingestion.
+3. Automatic PR creation and cross-model review loop.
+4. Founder dashboard view for active work + decisions.
+5. Daily/weekly founder digest.
 
 See `docs/software-factory/FIRST_WEEK.md` for how to learn the system by using it.

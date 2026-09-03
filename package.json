@@ -8,6 +8,8 @@
     "seed:hq": "AGENT_LAB_ROOT=$PWD ./scripts/seed-hq.sh",
     "dev": "AGENT_LAB_ROOT=$PWD npm --prefix dashboard/backend run dev",
     "start": "AGENT_LAB_ROOT=$PWD npm --prefix dashboard/backend start",
+    "test:factory": "node --test factory/test/*.test.mjs",
+    "factory:openclaw": "node scripts/openclaw-factory.mjs",
     "register:example": "AGENT_LAB_ROOT=$PWD ./scripts/register-agent.sh example-project research-analyst"
   }
 }
