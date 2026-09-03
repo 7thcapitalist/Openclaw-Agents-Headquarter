@@ -1,0 +1,73 @@
+# Software Factory Decision Log
+
+This log records accepted decisions that future agents must preserve. It is not
+a backlog or a place for unresolved options. Proposed decisions belong in a
+GitHub issue or a `factory/templates/decision-card.md` response until the founder
+accepts them.
+
+For each new entry, use a stable ID (`SFD-YYYY-NNN`), date, status, decision,
+rationale, consequences, and links to relevant issues or PRs. Do not delete old
+entries. When a decision changes, add a new entry and mark the old one
+`Superseded by SFD-...`.
+
+## SFD-2026-001 — GitHub is the durable software-work record
+
+- Date: 2026-09-03
+- Status: Accepted
+- Decision: GitHub Issues are the task source, and branches, PRs, reviews, and
+  merge history are the durable software delivery record.
+- Rationale: A shared, inspectable history keeps agent work auditable and
+  recoverable across tools and sessions.
+- Consequences: Deliverable work follows `issue -> branch -> PR -> review ->
+  merge`. Dashboard or local runtime state may summarize that work but does not
+  replace GitHub as its source of truth.
+
+## SFD-2026-002 — OpenClaw orchestrates specialized harnesses
+
+- Date: 2026-09-03
+- Status: Accepted
+- Decision: OpenClaw is the orchestration/control plane. Claude defaults to
+  architecture, independent review, and security; Codex defaults to backend and
+  general implementation plus QA; Cursor defaults to frontend/UI implementation,
+  visual QA, and the founder's interactive development environment.
+- Rationale: Explicit responsibilities make routing predictable while retaining
+  cross-model checks.
+- Consequences: One primary builder owns each writable task workspace. A model
+  cannot be the sole reviewer of its own implementation. Task contracts may
+  override preferred routing without weakening independence or safety gates.
+
+## SFD-2026-003 — V1 uses human-merge mode
+
+- Date: 2026-09-03
+- Status: Accepted
+- Decision: Deterministic release gates and OpenClaw may declare a change
+  merge-ready, but the founder retains final merge authority for every risk level.
+- Rationale: V1 prioritizes operator control while the factory workflow and gates
+  are proven through real use.
+- Consequences: Agents do not push directly to `main`, merge PRs, or treat a green
+  gate as merge authorization. Future auto-merge requires a new founder-approved
+  decision and corresponding configuration change.
+
+## SFD-2026-004 — Shared context is separate from private OpenClaw memory
+
+- Date: 2026-09-03
+- Status: Accepted
+- Decision: Shared project context and accepted decisions live in versioned,
+  sanitized repository documents. Private OpenClaw workspace identity, user,
+  memory, session, credential, and runtime files remain local.
+- Rationale: Future agents need durable context without publishing personal data
+  or coupling the project to one runtime instance.
+- Consequences: Generic root `IDENTITY.md`, `SOUL.md`, `USER.md`, and `MEMORY.md`
+  are ignored and are not project context. Only non-sensitive facts required for
+  collaboration are rewritten into the appropriate repository document.
+
+## SFD-2026-005 — Agent execution remains behind `./run.sh`
+
+- Date: 2026-09-03
+- Status: Accepted
+- Decision: The dashboard runs registered worker agents only through the local
+  `./run.sh` entrypoint inside the resolved agent folder.
+- Rationale: A narrow, inspectable command surface limits accidental or malicious
+  expansion of dashboard execution authority.
+- Consequences: Factory changes must not weaken or bypass this boundary. Any
+  proposal to broaden it requires explicit security review and founder approval.

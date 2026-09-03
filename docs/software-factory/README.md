@@ -2,6 +2,10 @@
 
 The goal of this layer is to make OpenClaw Startup HQ behave like a small software company where the founder sets direction and agents execute, review, test, and report.
 
+Start with [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md) for the durable context
+shared by every harness. Accepted decisions and their rationale live in
+[`DECISIONS.md`](DECISIONS.md). This document remains the operational overview.
+
 ## Founder loop
 
 1. Founder discusses a goal with a strategy agent.

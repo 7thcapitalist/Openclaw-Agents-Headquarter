@@ -13,6 +13,10 @@ agents/**/outputs/*
 # Local OpenClaw state and secrets should never be committed.
 .openclaw/
 openclaw.json
+/IDENTITY.md
+/SOUL.md
+/USER.md
+/MEMORY.md
 credentials/
 secrets/
 memory/
