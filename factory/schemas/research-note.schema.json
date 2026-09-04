@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "research-note.schema.json",
+  "title": "Learning Agent Research Note",
+  "description": "Reference contract for an external-knowledge note produced by scripts/factory-learn.mjs action=research and stored under dashboard/backend/data/factory/_learning/research/. Parsed/redacted by factory/lib/learning/research.mjs.",
+  "type": "object",
+  "required": ["topic", "date", "sources", "summary"],
+  "properties": {
+    "topic": { "type": "string", "minLength": 1 },
+    "date": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+    "sources": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["title", "url"],
+        "properties": {
+          "title": { "type": "string", "minLength": 1 },
+          "url": { "type": "string", "pattern": "^https?://" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "summary": { "type": "string", "minLength": 1, "maxLength": 1600 },
+    "applicability": { "type": "array", "items": { "type": "string" } },
+    "proposedActions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["area", "action"],
+        "properties": {
+          "area": { "enum": ["prompt", "workflow", "tooling", "evaluation", "architecture", "product", "none"] },
+          "action": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": false
+      }
+    },
+    "gatheredAt": { "type": "string", "format": "date-time" }
+  },
+  "additionalProperties": false
+}

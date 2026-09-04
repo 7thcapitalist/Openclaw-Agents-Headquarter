@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "mission": "TODO: one sentence — the concrete objective right now.",
+  "successMetrics": [
+    { "id": "m1", "name": "TODO metric", "target": "TODO", "current": "TODO", "asOf": "TODO" }
+  ],
+  "currentPriorities": [
+    { "id": "p1", "title": "TODO priority", "rationale": "TODO why this is the priority" }
+  ],
+  "risks": [
+    { "id": "r1", "title": "TODO risk", "severity": "medium", "likelihood": "medium", "mitigation": "TODO", "owner": "TODO" }
+  ],
+  "openDecisions": [],
+  "responsibleAgents": {
+    "productOwner": "founder",
+    "architect": "claude",
+    "builder": "codex",
+    "reviewer": "claude",
+    "security": "claude"
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclaw.local/factory/projects.schema.json",
+  "title": "Project registry",
+  "description": "Reference contract for factory/projects.json. Runtime validation is factory/lib/intel/schema.mjs.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "projects"],
+  "properties": {
+    "version": { "const": 1 },
+    "projects": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["key", "repo"],
+        "properties": {
+          "key": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]*$",
+            "description": "Stable project key; matches the task contract's `project` field."
+          },
+          "name": { "type": "string" },
+          "repo": {
+            "type": "string",
+            "minLength": 1,
+            "description": "'.', '~/path', an absolute path, or a path relative to the HQ repo root."
+          },
+          "contextDir": {
+            "type": "string",
+            "description": "Repo-relative directory holding the canonical context files. No leading '/', no '..' segment. Default 'context'.",
+            "pattern": "^(?!/)(?!.*(^|/)\\.\\.(/|$)).*$"
+          },
+          "status": { "enum": ["active", "paused", "archived"] }
+        }
+      }
+    }
+  }
+}

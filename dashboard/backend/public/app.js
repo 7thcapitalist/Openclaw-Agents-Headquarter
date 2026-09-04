@@ -151,61 +151,109 @@
   }
 
   async function renderToday() {
-    const d = await loadHq();
-    const cc = d.commandCenter;
+    const [d, fc] = await Promise.all([loadHq(), apiJson("/api/founder/overview")]);
+    const projects = fc.projects || [];
+    const activeAgents = (fc.tasks || []).filter((t) => t.status === "active");
     app.innerHTML = `
       <section class="hq-layout">
         ${renderAgentRail(d.agents)}
         <main class="hq-main">
-          <div class="page-head">
-            <div>
-              <h1 class="page-title">Today / Command Center</h1>
-              <p class="muted">Global HQ view across all projects, agents, blockers, approvals, and CEO reports.</p>
+          <div class="founder-hero">
+            <div class="eyebrow">Founder control plane</div>
+            <h1>What should the company build next?</h1>
+            <p>Give your team an outcome. OpenClaw will turn it into bounded work and route the right agents.</p>
+            <form id="founder-command" class="founder-command">
+              <textarea id="founder-objective" rows="2" placeholder="Build Fitbit integration for LifeMaxing" required></textarea>
+              <div class="founder-command-row">
+                <select id="founder-project" required>
+                  <option value="">Choose project</option>
+                  ${projects.map((p) => `<option value="${esc(p.id)}" data-repo="${esc(p.repo || "")}">${esc(p.name)}</option>`).join("")}
+                </select>
+                <input id="founder-repo" placeholder="Repository path" value="${esc(d.root || "")}" required />
+                <button class="btn founder-launch" type="submit">Start work →</button>
+              </div>
+            </form>
+          </div>
+          <div class="control-stats">
+            <div><strong>${projects.length}</strong><span>Projects</span></div>
+            <div><strong>${activeAgents.length}</strong><span>Agents working</span></div>
+            <div class="${fc.decisions.length ? "attention" : ""}"><strong>${fc.decisions.length}</strong><span>Need your input</span></div>
+            <div><strong>${(fc.tasks || []).filter((t) => t.status === "merge-ready").length}</strong><span>Merge ready</span></div>
+          </div>
+          <div class="founder-grid">
+            <section class="portfolio-panel">
+              <div class="panel-heading"><div><span class="eyebrow">Portfolio</span><h2>Projects</h2></div><button class="btn secondary" id="new-project">+ New project</button></div>
+              <div class="project-control-list">
+                ${projects.map((p) => projectControlRow(p)).join("") || `<div class="empty-state">Create a project to begin.</div>`}
+              </div>
+            </section>
+            <section class="inbox-panel">
+              <div class="panel-heading"><div><span class="eyebrow">Founder inbox</span><h2>Decisions</h2></div>${fc.decisions.length ? pill(fc.decisions.length, "badge-warn") : pill("Clear", "health-healthy")}</div>
+              ${(fc.decisions || []).map((x) => decisionCard(x)).join("") || `<div class="empty-state"><strong>Nothing needs you.</strong><span>Your agents have what they need to keep moving.</span></div>`}
+              ${recommendedActions(fc.company)}
+            </section>
+          </div>
+          <section class="activity-panel">
+            <div class="panel-heading"><div><span class="eyebrow">Live company</span><h2>Agent activity</h2></div><button class="btn secondary" id="ask-agent">Ask an agent</button></div>
+            <div class="company-feed">
+              ${(fc.jobs || []).filter((job) => job.status === "starting" || job.status === "error").slice(0, 5).map((job) => `<div class="company-agent"><span class="activity-pulse ${job.status === "error" ? "pulse-error" : ""}"></span><div><strong>${esc(job.projectId)}</strong><span>${esc(job.objective)}</span></div><em class="${job.status === "error" ? "danger-text" : ""}">${esc(job.status)}</em></div>`).join("")}
+              ${activeAgents.map((t) => `<div class="company-agent"><span class="activity-pulse"></span><div><strong>${esc(titleCase(t.agent || "agent"))}</strong><span>${esc(stageVerb(t.stage))} ${esc(t.objective)}</span></div><em>${esc(t.agentStatus)}</em></div>`).join("")}
+              ${(fc.activity || []).slice(0, 8).map((e) => `<div class="company-event"><span>${esc(e.type.replaceAll("-", " "))}</span><strong>${esc(e.taskId)}</strong><time>${esc(fmtTime(e.at))}</time></div>`).join("") || `<div class="empty-state">No factory activity yet.</div>`}
             </div>
-            <button class="btn secondary" id="open-health">OpenClaw Health</button>
-          </div>
-          <div class="grid-cards stats">
-            <div class="stat-card"><div class="label">Projects</div><div class="value">${cc.stats.projects}</div></div>
-            <div class="stat-card"><div class="label">Agents</div><div class="value">${cc.stats.agents}</div></div>
-            <div class="stat-card"><div class="label">Needs Operator</div><div class="value">${cc.stats.needsJoao}</div></div>
-            <div class="stat-card"><div class="label">Blocked</div><div class="value">${cc.stats.blocked}</div></div>
-          </div>
-          <div class="command-grid">
-            <section>
-              <h2 class="section-title">Top Priorities</h2>
-              ${(cc.topPriorities || []).map((t) => taskCard(t, d.projects, d.agents)).join("") || `<p class="muted">No active priorities.</p>`}
-            </section>
-            <section>
-              <h2 class="section-title">Needs Operator</h2>
-              ${(cc.needsJoao || []).map((t) => taskCard(t, d.projects, d.agents)).join("") || `<p class="muted">Nothing waiting on Operator.</p>`}
-              <h2 class="section-title">Charles' Recommendation</h2>
-              <div class="card recommendation">${esc(cc.charlesRecommendation)}</div>
-            </section>
-            <aside class="live-feed">
-              <h2 class="section-title">Latest CEO Reports</h2>
-              ${(cc.latestReports || []).map((r) => `
-                <div class="feed-item">
-                  <strong>${esc(r.title)}</strong>
-                  <div class="muted small">${esc(agentName(d.agents, r.agentId))} · ${esc(fmtTime(r.createdAt))}</div>
-                  <p>${esc(r.summary)}</p>
-                </div>`).join("")}
-              <h2 class="section-title">Blocked Tasks</h2>
-              ${(cc.blockedTasks || []).map((t) => `
-                <div class="feed-item danger">
-                  <strong>${esc(t.title)}</strong>
-                  <p>${esc(t.blocker || "Blocked")}</p>
-                </div>`).join("") || `<p class="muted">No blocked tasks.</p>`}
-            </aside>
-          </div>
+          </section>
         </main>
       </section>`;
-    const health = document.getElementById("open-health");
-    if (health) {
-      health.onclick = async () => {
-        const r = await api("/api/command-center/health");
-        openModal("OpenClaw health", `<pre class="code">${esc(await r.text())}</pre>`);
-      };
-    }
+    bindFounderControls();
+  }
+
+  function titleCase(value) { return String(value).replaceAll("-", " ").replace(/\b\w/g, (c) => c.toUpperCase()); }
+  function stageVerb(stage) { return ({ product: "shaping", architect: "analyzing", builder: "implementing", reviewer: "reviewing", qa: "testing", security: "checking", release: "preparing" })[stage] || "working on"; }
+  function healthPill(health) {
+    if (!health) return "";
+    const cls = health.level === "healthy" ? "health-healthy" : health.level === "at-risk" ? "health-failed" : "badge-warn";
+    return `<span><small>Health</small>${pill(`${health.score}/100`, cls)}</span>`;
+  }
+  function projectControlRow(p) {
+    const latest = p.tasks?.[0];
+    const intel = p.intelligence || null;
+    const mission = intel?.mission || p.mission || "";
+    const topRisk = intel?.risks?.slice().sort((a, b) => ({ high: 0, medium: 1, low: 2 }[a.severity] ?? 3) - ({ high: 0, medium: 1, low: 2 }[b.severity] ?? 3))[0];
+    const openDecisions = (intel?.ownership?.openDecisions || []).length;
+    return `<article class="project-control ${p.status === "paused" ? "is-paused" : ""}">
+      <div class="project-control-main"><span class="project-dot ${p.blocker ? "blocked" : p.status}"></span><div><h3>${esc(p.name)}</h3>
+        ${mission ? `<p class="muted small">${esc(mission)}</p>` : ""}
+        <p>${esc(latest?.objective || (intel?.roadmap?.current) || "No active task")}</p></div></div>
+      <div class="project-facts"><span><small>Status</small>${pill(p.status, p.blocker ? "health-failed" : "health-healthy")}</span>${healthPill(p.health)}<span><small>Stage</small><strong>${esc(p.stage || "—")}</strong></span><span><small>Agent</small><strong>${esc(p.agent || "—")}</strong></span><span><small>Last activity</small><strong>${esc(p.lastActivity ? fmtTime(p.lastActivity) : "—")}</strong></span></div>
+      ${(topRisk || openDecisions) ? `<div class="project-intel-line muted small">${topRisk ? `Top risk: ${esc(topRisk.title)}${topRisk.unmitigated ? " (unmitigated)" : ""}` : ""}${topRisk && openDecisions ? " · " : ""}${openDecisions ? `${openDecisions} open decision${openDecisions === 1 ? "" : "s"}` : ""}</div>` : ""}
+      ${p.blocker ? `<div class="project-blocker">${esc(p.blocker.summary)}</div>` : ""}
+      <button class="btn secondary" data-project-action="${p.status === "paused" ? "resume" : "pause"}" data-project-id="${esc(p.id)}">${p.status === "paused" ? "Resume" : "Pause"}</button>
+    </article>`;
+  }
+  function recommendedActions(company) {
+    if (!company) return "";
+    // The task-blocker decisions already render as cards above; don't repeat them.
+    const items = (company.recommendedActions || []).filter((a) => !a.ref?.statePath).slice(0, 6);
+    const risks = company.summary?.unmitigatedRisks || 0;
+    const opps = company.summary?.opportunities || 0;
+    if (!items.length && !risks && !opps) return "";
+    return `<div class="rec-actions">
+      <div class="panel-subhead"><span class="eyebrow">Recommended</span>${risks ? pill(`${risks} unmitigated risk${risks === 1 ? "" : "s"}`, "badge-warn") : ""}${opps ? pill(`${opps} opportunit${opps === 1 ? "y" : "ies"}`, "badge-type") : ""}</div>
+      ${items.map((a) => `<div class="rec-action"><strong>${esc(a.action)}</strong><span class="muted small">${esc(a.project || "company")} · ${esc(a.rationale || "")}</span></div>`).join("") || `<div class="muted small">No open risks or opportunities.</div>`}
+    </div>`;
+  }
+  function decisionCard(x) {
+    return `<article class="decision-card"><div class="decision-top"><span class="decision-icon">!</span><div><strong>${esc(x.question)}</strong><span>${esc(x.project)} · ${esc(x.taskId)}</span></div></div><p>${esc(x.why)}</p><div class="decision-options">${(x.options || []).map((option) => `<span>${esc(option)}</span>`).join("")}</div><div class="decision-rec"><small>Recommendation</small>${esc(x.recommendation)}</div>${x.risk === "high" ? `<p class="muted small">The private signing key stays outside OpenClaw and this dashboard.</p><button class="btn" data-approve-decision="${esc(x.statePath)}">Submit signed approval</button>` : `<button class="btn" data-resolve-decision="${esc(x.statePath)}">Respond & resume</button>`}</article>`;
+  }
+
+  function bindFounderControls() {
+    const project = document.getElementById("founder-project");
+    project.onchange = () => { const repo = project.selectedOptions[0]?.dataset.repo; if (repo) document.getElementById("founder-repo").value = repo; };
+    document.getElementById("founder-command").onsubmit = async (e) => { e.preventDefault(); try { const j = await apiJson("/api/founder/tasks", { method: "POST", body: JSON.stringify({ objective: document.getElementById("founder-objective").value, projectId: project.value, repo: document.getElementById("founder-repo").value }) }); showToast(`Work started: ${j.job.id}`); setTimeout(route, 1200); } catch (err) { showToast(err.message, true); } };
+    app.querySelectorAll("[data-project-action]").forEach((btn) => btn.onclick = async () => { try { await apiJson(`/api/founder/projects/${encodeURIComponent(btn.dataset.projectId)}/${btn.dataset.projectAction}`, { method: "POST", body: "{}" }); showToast(`Project ${btn.dataset.projectAction}d.`); route(); } catch (e) { showToast(e.message, true); } });
+    app.querySelectorAll("[data-resolve-decision]").forEach((btn) => btn.onclick = () => { openModal("Founder decision", `<label class="field-label">Direction for the team</label><textarea class="editor" id="decision-direction" placeholder="Approve the recommended option because…"></textarea><button class="btn" id="submit-decision">Send decision & resume</button>`); document.getElementById("submit-decision").onclick = async () => { try { await apiJson("/api/founder/decisions/resolve", { method: "POST", body: JSON.stringify({ statePath: btn.dataset.resolveDecision, direction: document.getElementById("decision-direction").value }) }); closeModal(); showToast("Decision recorded. Work resumed."); route(); } catch (e) { showToast(e.message, true); } }; });
+    app.querySelectorAll("[data-approve-decision]").forEach((btn) => btn.onclick = () => { openModal("Signed founder approval", `<p class="muted small">Create the assertion with <code>factory-sign-approval.mjs</code>, then submit its path and the matching evidence path inside the task worktree.</p><label class="field-label">Approval assertion path</label><input class="modal-input" id="approval-assertion" placeholder="/private/operator/approval.json"/><label class="field-label">Evidence path (relative to worktree)</label><input class="modal-input" id="approval-evidence" placeholder="evidence/founder-approval.md"/><button class="btn" id="submit-approval">Verify & approve</button>`); document.getElementById("submit-approval").onclick = async () => { try { await apiJson("/api/founder/decisions/approve", { method: "POST", body: JSON.stringify({ statePath: btn.dataset.approveDecision, approvalAssertionPath: document.getElementById("approval-assertion").value, evidence: document.getElementById("approval-evidence").value }) }); closeModal(); showToast("Signature verified. Work resumed."); route(); } catch (e) { showToast(e.message, true); } }; });
+    document.getElementById("ask-agent").onclick = () => { openModal("Ask an agent", `<label class="field-label">Agent</label><input class="modal-input" id="question-agent" value="main"/><label class="field-label">Question</label><textarea class="editor" id="question-text" placeholder="What is blocking this project?"></textarea><button class="btn" id="send-question">Ask</button><div id="question-answer"></div>`); document.getElementById("send-question").onclick = async () => { const out = document.getElementById("question-answer"); out.innerHTML = `<p class="muted">Agent is thinking…</p>`; try { const j = await apiJson("/api/founder/questions", { method: "POST", body: JSON.stringify({ agentId: document.getElementById("question-agent").value, question: document.getElementById("question-text").value }) }); out.innerHTML = `<div class="card">${esc(j.question.answer)}</div>`; } catch (e) { out.innerHTML = `<p class="danger-text">${esc(e.message)}</p>`; } }; };
+    document.getElementById("new-project").onclick = () => { openModal("Create project", `<label class="field-label">Name</label><input class="modal-input" id="project-name"/><label class="field-label">ID</label><input class="modal-input" id="project-id" placeholder="project-name"/><label class="field-label">Mission</label><textarea class="editor" id="project-mission"></textarea><label class="field-label">Repository path (optional)</label><input class="modal-input" id="project-repo"/><button class="btn" id="create-project">Create project</button>`); document.getElementById("create-project").onclick = async () => { try { await apiJson("/api/founder/projects", { method: "POST", body: JSON.stringify({ name: document.getElementById("project-name").value, id: document.getElementById("project-id").value, mission: document.getElementById("project-mission").value, repoPath: document.getElementById("project-repo").value }) }); closeModal(); showToast("Project created."); route(); } catch (e) { showToast(e.message, true); } }; };
   }
 
   function renderAgentRail(agents) {
@@ -973,6 +1021,9 @@
     buildNav();
     window.addEventListener("hashchange", route);
     await route();
+    setInterval(() => {
+      if (parseRoute().name === "today" && modal.hidden && !["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName)) route();
+    }, 15000);
   }
 
   boot();

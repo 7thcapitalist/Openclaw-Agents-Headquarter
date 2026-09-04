@@ -1,0 +1,16 @@
+{
+  "id": "issue-42",
+  "issue": "https://github.com/OWNER/REPOSITORY/issues/42",
+  "outcome": "Describe the observable result.",
+  "acceptanceCriteria": [
+    "Observable criterion 1",
+    "Relevant tests and checks pass"
+  ],
+  "project": "project-key",
+  "workType": "backend",
+  "risk": "low",
+  "preferredBuilder": "auto",
+  "constraints": [
+    "Preserve existing public interfaces"
+  ]
+}

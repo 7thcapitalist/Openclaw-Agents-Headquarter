@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "founder-approval.schema.json",
+  "title": "Signed Founder Approval",
+  "type": "object",
+  "required": ["version", "taskId", "challenge", "decision", "approvedAt", "evidenceSha256", "signature"],
+  "properties": {
+    "version": { "const": 1 },
+    "taskId": { "type": "string", "minLength": 1 },
+    "challenge": { "type": "string", "format": "uuid" },
+    "decision": { "const": "approve-high-risk-build" },
+    "approvedAt": { "type": "string", "format": "date-time" },
+    "evidenceSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "signature": { "type": "string", "minLength": 1 }
+  },
+  "additionalProperties": false
+}

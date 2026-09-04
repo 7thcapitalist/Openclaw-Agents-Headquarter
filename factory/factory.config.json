@@ -4,6 +4,38 @@
   "controlPlane": "github",
   "orchestrator": "openclaw",
   "taskSource": "github-issues",
+  "openclawIntegration": {
+    "protocolVersion": 1,
+    "maxAttemptsPerStage": 3,
+    "agentIds": {
+      "product": "product",
+      "architect": "architect",
+      "builder:codex": "backend-builder",
+      "builder:cursor": "frontend-builder",
+      "builder:claude": "architect",
+      "reviewer": "reviewer",
+      "qa:claude": "reviewer",
+      "qa:codex": "qa",
+      "security": "security",
+      "release": "release",
+      "openclaw": "main",
+      "learning": "learning"
+    }
+  },
+  "learning": {
+    "injectIntoHandoff": false,
+    "evidenceRetentionDays": 90,
+    "patternThreshold": 2
+  },
+  "pipeline": [
+    "product",
+    "architect",
+    "builder",
+    "reviewer",
+    "qa",
+    "security",
+    "release"
+  ],
   "roles": {
     "chiefOfStaff": {
       "runtime": "openclaw",
@@ -14,6 +46,11 @@
       "runtime": "acp",
       "writeAccess": false,
       "responsibility": "technical design and architecture challenge"
+    },
+    "product": {
+      "runtime": "openclaw",
+      "writeAccess": false,
+      "responsibility": "normalize outcome and acceptance criteria"
     },
     "builder": {
       "preferredHarness": "codex",
@@ -33,8 +70,13 @@
       "responsibility": "independent code/product/security review"
     },
     "qa": {
-      "selection": "best-fit",
+      "selection": "different-harness-from-builder",
       "responsibility": "verify acceptance criteria and attempt failure cases"
+    },
+    "security": {
+      "preferredHarness": "claude",
+      "writeAccess": false,
+      "responsibility": "independent security and privacy gate"
     },
     "releaseManager": {
       "runtime": "deterministic-gates-plus-openclaw",

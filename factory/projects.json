@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "projects": [
+    {
+      "key": "openclaw-factory",
+      "name": "OpenClaw Agents Headquarter",
+      "repo": ".",
+      "contextDir": "context",
+      "status": "active"
+    }
+  ]
+}

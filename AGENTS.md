@@ -4,9 +4,14 @@ This repository is an operations system for coordinating coding and non-coding a
 
 ## Read first
 1. `README.md`
-2. `docs/software-factory/README.md`
-3. `docs/software-factory/OPERATING_RULES.md`
-4. `factory/factory.config.json`
+2. `docs/software-factory/PROJECT_CONTEXT.md`
+3. `docs/software-factory/README.md`
+4. `docs/software-factory/OPERATING_RULES.md`
+5. `factory/factory.config.json`
+
+`PROJECT_CONTEXT.md` is the canonical narrative context. The JSON config is the
+machine-readable authority for factory mode, routing, roles, and gates. If they
+disagree, stop and resolve the discrepancy rather than silently choosing one.
 
 ## Engineering rules
 - GitHub is the durable source of truth for software work: issues -> branches -> PRs -> reviews -> merge.
@@ -30,3 +35,9 @@ Before finishing a task, record:
 - recommended next action
 
 Do not mark work complete merely because code was written.
+
+## Memory and decisions
+- Keep durable project facts and accepted architectural/product decisions in the repository.
+- Record durable decisions in `docs/software-factory/DECISIONS.md`; use a Decision Card before making any choice that requires founder approval.
+- Company-wide lessons and improvements distilled from completed work live in `factory/knowledge/` (`LESSONS_LEARNED.md`, `ENGINEERING_IMPROVEMENTS.md`, `PROCESS_IMPROVEMENTS.md`), maintained by the Learning / R&D Agent and promoted by the founder. Per-role notes are in `factory/knowledge/agents/`.
+- Keep personal preferences, agent personality, credentials, sessions, and runtime memory in the private OpenClaw workspace, not this repository.

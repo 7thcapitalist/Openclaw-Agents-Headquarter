@@ -22,6 +22,12 @@ The goal is not just to chat with one assistant. The goal is to build a small st
 
 The dashboard is my headquarters. OpenClaw is the automation/runtime layer. Agent folders are the workers.
 
+For the durable operating context used by coding agents, see
+[`docs/software-factory/PROJECT_CONTEXT.md`](docs/software-factory/PROJECT_CONTEXT.md).
+It defines the human-merge workflow, role assignments, approval boundaries,
+Cursor's place in the system, and the boundary between repository knowledge and
+private OpenClaw state.
+
 ## What This Does
 
 - Creates a browser-based headquarters for multiple AI agents.

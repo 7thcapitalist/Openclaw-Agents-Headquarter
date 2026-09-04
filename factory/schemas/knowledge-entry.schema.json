@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "knowledge-entry.schema.json",
+  "title": "Company Knowledge Entry",
+  "description": "Reference contract for one entry rendered into factory/knowledge/{LESSONS_LEARNED,ENGINEERING_IMPROVEMENTS,PROCESS_IMPROVEMENTS}.md. Rendered/parsed by factory/lib/learning/knowledge.mjs; this file is the durable contract, not a runtime dependency.",
+  "type": "object",
+  "required": ["fileKey", "title", "date", "scope", "observation", "recommendation", "status"],
+  "properties": {
+    "fileKey": { "enum": ["lessons", "engineering", "process"] },
+    "year": { "type": "string", "pattern": "^[0-9]{4}$" },
+    "title": { "type": "string", "minLength": 1, "maxLength": 120 },
+    "date": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+    "scope": {
+      "type": "string",
+      "pattern": "^(global|project:[a-z0-9][a-z0-9-]*|agent:(product|architect|builder|reviewer|qa|security|release))$"
+    },
+    "sourceFindings": { "type": "array", "items": { "type": "string", "pattern": "^L-[0-9]{4,}$" } },
+    "confidence": { "enum": ["low", "medium", "high"] },
+    "evidenceTasks": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "observation": { "type": "string", "minLength": 1 },
+    "recommendation": { "type": "string", "minLength": 1 },
+    "status": { "enum": ["proposed", "accepted", "superseded"] }
+  },
+  "additionalProperties": false
+}
