@@ -39,4 +39,5 @@ Do not mark work complete merely because code was written.
 ## Memory and decisions
 - Keep durable project facts and accepted architectural/product decisions in the repository.
 - Record durable decisions in `docs/software-factory/DECISIONS.md`; use a Decision Card before making any choice that requires founder approval.
+- Company-wide lessons and improvements distilled from completed work live in `factory/knowledge/` (`LESSONS_LEARNED.md`, `ENGINEERING_IMPROVEMENTS.md`, `PROCESS_IMPROVEMENTS.md`), maintained by the Learning / R&D Agent and promoted by the founder. Per-role notes are in `factory/knowledge/agents/`.
 - Keep personal preferences, agent personality, credentials, sessions, and runtime memory in the private OpenClaw workspace, not this repository.

@@ -3,7 +3,8 @@ import { readFileSync } from "fs";
 import { dirname, resolve } from "path";
 import { fileURLToPath } from "url";
 import { ingestResult, prepareDispatch, readResultFile } from "../factory/lib/openclaw-protocol.mjs";
-import { runOneStage } from "../factory/lib/openclaw-runner.mjs";
+import { runOneStage, runToTerminal } from "../factory/lib/openclaw-runner.mjs";
+import { createContractFromObjective, defaultStateRoot } from "../factory/lib/natural-language-intake.mjs";
 import { readState, recordFounderApproval, resumeState, verifyEvidence, writeState } from "../factory/lib/task-workflow.mjs";
 import { writeHandoff } from "../factory/lib/handoff.mjs";
 import { initializeTask } from "../factory/lib/task-initializer.mjs";
@@ -23,6 +24,7 @@ if (resolve(process.argv[1] || "") === fileURLToPath(import.meta.url)) {
 
 export async function handleRequest(request, dependencies = {}) {
   validateRequest(request);
+  if (request.action === "start") return startFromObjective(request, dependencies);
   if (request.action === "init") return initialize(request, dependencies.initializeTask || initializeTask);
   if (request.action === "next") return prepareDispatch({ hqRoot, statePath: requiredPath(request) });
   if (request.action === "ingest") {
@@ -35,13 +37,15 @@ export async function handleRequest(request, dependencies = {}) {
     }
     return ingestResult({ statePath, result: readResultFile(resolve(resultPath)) });
   }
-  if (request.action === "run-one") {
+  if (request.action === "run-one" || request.action === "run") {
     const config = JSON.parse(readFileSync(resolve(hqRoot, "factory", "factory.config.json"), "utf8"));
-    return runOneStage({
+    const options = {
       hqRoot,
       statePath: requiredPath(request),
       agentIds: { ...(config.openclawIntegration?.agentIds || {}), ...(request.agentIds || {}) },
-    });
+      maxAttemptsPerStage: config.openclawIntegration?.maxAttemptsPerStage || 3,
+    };
+    return request.action === "run" ? runToTerminal(options) : runOneStage(options);
   }
   if (request.action === "resume") {
     const statePath = requiredPath(request);
@@ -63,6 +67,29 @@ export async function handleRequest(request, dependencies = {}) {
   }
   if (request.action === "status") return stateResponse(readState(requiredPath(request)));
   throw new Error(`Unsupported action: ${request.action}`);
+}
+
+async function startFromObjective(request, dependencies) {
+  if (!request.repo) throw new Error("start requires repo.");
+  const stateRoot = resolve(request.stateRoot || defaultStateRoot(hqRoot, request.repo));
+  const intake = await createContractFromObjective({
+    objective: request.objective,
+    repo: request.repo,
+    issue: request.issue,
+    project: request.project,
+    stateRoot,
+    execute: dependencies.executeChiefOfStaff,
+  });
+  const created = initialize({ ...request, action: "init", contractPath: intake.contractPath, stateRoot }, dependencies.initializeTask || initializeTask);
+  const config = JSON.parse(readFileSync(resolve(hqRoot, "factory", "factory.config.json"), "utf8"));
+  const result = await runToTerminal({
+    hqRoot,
+    statePath: created.statePath,
+    agentIds: config.openclawIntegration?.agentIds || {},
+    maxAttemptsPerStage: config.openclawIntegration?.maxAttemptsPerStage || 3,
+    execute: dependencies.execute,
+  });
+  return { ...result, statePath: created.statePath, worktree: created.worktree, branch: created.branch, contract: intake.contract };
 }
 
 function initialize(request, initializer) {

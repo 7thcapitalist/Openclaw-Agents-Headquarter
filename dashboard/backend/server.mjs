@@ -58,6 +58,16 @@ import {
 } from "./lib/hqSchemas.mjs";
 import { enrichHqAgentsWithLifecycle } from "./lib/agentLifecycle.mjs";
 import { buildReadinessReport } from "./lib/readiness.mjs";
+import {
+  buildFounderOverview,
+  isProjectPaused,
+  listFounderJobs,
+  recordQuestion,
+  resolveFounderDecision,
+  saveFounderJob,
+  setProjectPaused,
+} from "./lib/founderControlPlane.mjs";
+import { handleRequest as handleFactoryRequest } from "../../scripts/openclaw-factory.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const execFileAsync = promisify(execFile);
@@ -179,6 +189,100 @@ marked.setOptions({ gfm: true, breaks: true });
 
 app.get("/api/auth/me", (req, res) => {
   res.json({ authenticated: !!(req.session && req.session.authenticated) });
+});
+
+app.get("/api/founder/overview", (_req, res) => {
+  try {
+    const overview = buildFounderOverview(ROOT, readProjects(ROOT));
+    res.json({ ...overview, jobs: listFounderJobs(ROOT) });
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+app.post("/api/founder/projects", (req, res) => {
+  try {
+    const id = String(req.body?.id || "").trim();
+    const name = String(req.body?.name || "").trim();
+    const mission = String(req.body?.mission || "").trim();
+    if (!id || !name || !mission) return res.status(400).json({ error: "id, name, and mission are required." });
+    if (readProject(ROOT, id)) return res.status(409).json({ error: "Project already exists." });
+    const project = parseProjectForWrite(id, {
+      id, name, description: mission, mission, currentStatus: "Active", currentPhase: "Discovery",
+      currentGoals: [], keyMetrics: [], mainWorkflows: [], existingAssets: [], currentBlockers: [],
+      relatedAgents: [], approvalRules: [], nextRecommendedActions: [], projectCEO: "chief-of-staff",
+      mainMetric: "Founder-defined outcome", bottleneck: "None recorded", latestReport: "No report yet",
+      repoPath: req.body?.repoPath ? resolve(String(req.body.repoPath)) : null,
+    });
+    res.status(201).json({ project: writeProject(ROOT, id, project) });
+  } catch (e) {
+    res.status(400).json({ error: formatZodError(e) });
+  }
+});
+
+app.post("/api/founder/projects/:id/:action", (req, res) => {
+  try {
+    const action = req.params.action;
+    if (!new Set(["pause", "resume"]).has(action)) return res.status(400).json({ error: "Action must be pause or resume." });
+    if (!readProject(ROOT, req.params.id) && !buildFounderOverview(ROOT, readProjects(ROOT)).projects.some((p) => p.id === req.params.id)) {
+      return res.status(404).json({ error: "Project not found." });
+    }
+    res.json({ projectId: req.params.id, ...setProjectPaused(ROOT, req.params.id, action === "pause") });
+  } catch (e) {
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+app.post("/api/founder/tasks", (req, res) => {
+  const objective = String(req.body?.objective || "").trim();
+  const repo = req.body?.repo ? resolve(String(req.body.repo)) : "";
+  const projectId = String(req.body?.projectId || "").trim();
+  if (!objective || !repo || !projectId) return res.status(400).json({ error: "objective, repo, and projectId are required." });
+  if (isProjectPaused(ROOT, projectId)) return res.status(409).json({ error: "Resume this project before starting a task." });
+  if (!existsSync(join(repo, ".git"))) return res.status(400).json({ error: "Repository path must point to a Git working tree." });
+  const jobId = `founder-${Date.now().toString(36)}`;
+  const job = { id: jobId, projectId, objective, repo, status: "starting", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+  saveFounderJob(ROOT, job);
+  handleFactoryRequest({ version: 1, action: "start", repo, objective, project: projectId, issue: req.body?.issue || undefined })
+    .then((result) => saveFounderJob(ROOT, Object.assign(job, { status: result.status, result, updatedAt: new Date().toISOString() })))
+    .catch((error) => saveFounderJob(ROOT, Object.assign(job, { status: "error", error: error.message || String(error), updatedAt: new Date().toISOString() })));
+  res.status(202).json({ job });
+});
+
+app.post("/api/founder/questions", async (req, res) => {
+  try {
+    const agentId = String(req.body?.agentId || "main").trim();
+    const question = String(req.body?.question || "").trim();
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(agentId) || !question) return res.status(400).json({ error: "A valid agentId and question are required." });
+    const askedAt = new Date().toISOString();
+    const { stdout } = await execFileAsync("openclaw", ["agent", "--agent", agentId, "--session-key", `agent:${agentId}:founder-control-plane`, "--message", question, "--json", "--timeout", "600"], { timeout: 10 * 60 * 1000, maxBuffer: 8 * 1024 * 1024 });
+    const envelope = JSON.parse(stdout);
+    const answer = envelope.result?.payloads?.map((item) => item.text).filter(Boolean).join("\n") || envelope.summary || "No answer returned.";
+    const item = recordQuestion(ROOT, { id: `question-${Date.now().toString(36)}`, agentId, question, answer, askedAt, answeredAt: new Date().toISOString() });
+    res.json({ question: item });
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+app.post("/api/founder/decisions/resolve", (req, res) => {
+  try {
+    const direction = String(req.body?.direction || "").trim();
+    if (!req.body?.statePath || !direction) return res.status(400).json({ error: "statePath and direction are required." });
+    res.json({ task: resolveFounderDecision({ root: ROOT, hqRoot: ROOT, statePath: req.body.statePath, direction }) });
+  } catch (e) {
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+app.post("/api/founder/decisions/approve", async (req, res) => {
+  try {
+    const { statePath, approvalAssertionPath, evidence } = req.body || {};
+    if (!statePath || !approvalAssertionPath || !evidence) return res.status(400).json({ error: "statePath, approvalAssertionPath, and evidence are required." });
+    res.json(await handleFactoryRequest({ version: 1, action: "approve", statePath, approvalAssertionPath, evidence }));
+  } catch (e) {
+    res.status(400).json({ error: String(e.message || e) });
+  }
 });
 
 app.get("/api/command-center/home", async (_req, res) => {

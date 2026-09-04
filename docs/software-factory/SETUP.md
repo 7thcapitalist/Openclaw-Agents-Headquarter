@@ -123,6 +123,12 @@ agents list`). Each invoked agent receives an absolute handoff path, assigned
 worktree, and a versioned result-file contract. Run `run-one` again only when
 the response remains `active`; stop on `blocked` or `merge-ready`.
 
+For normal use, submit `action: "start"` with `repo` and a natural-language
+`objective`; the Chief of Staff creates the contract and the adapter drives all
+seven stages. Use `action: "run"` to finish an initialized task. Runtime errors
+retry the same role, while substantive review/QA/security findings route back
+to the original builder with downstream evidence invalidated.
+
 ### Founder approval authority
 
 High-risk tasks use Ed25519 signatures so a task contract or agent cannot claim

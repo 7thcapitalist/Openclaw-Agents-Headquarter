@@ -6,12 +6,26 @@
   "taskSource": "github-issues",
   "openclawIntegration": {
     "protocolVersion": 1,
+    "maxAttemptsPerStage": 3,
     "agentIds": {
+      "product": "product",
+      "architect": "architect",
+      "builder:codex": "backend-builder",
+      "builder:cursor": "frontend-builder",
+      "builder:claude": "architect",
+      "reviewer": "reviewer",
+      "qa:claude": "reviewer",
+      "qa:codex": "qa",
+      "security": "security",
+      "release": "release",
       "openclaw": "main",
-      "codex": "codex",
-      "claude": "claude",
-      "cursor": "cursor"
+      "learning": "learning"
     }
+  },
+  "learning": {
+    "injectIntoHandoff": false,
+    "evidenceRetentionDays": 90,
+    "patternThreshold": 2
   },
   "pipeline": [
     "product",

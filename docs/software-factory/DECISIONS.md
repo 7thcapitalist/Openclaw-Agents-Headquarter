@@ -71,3 +71,27 @@ entries. When a decision changes, add a new entry and mark the old one
   expansion of dashboard execution authority.
 - Consequences: Factory changes must not weaken or bypass this boundary. Any
   proposal to broaden it requires explicit security review and founder approval.
+
+## SFD-2026-006 — Company Learning System is read-only and proposal-driven
+
+- Date: 2026-09-03
+- Status: Accepted
+- Decision: A company-level Learning / R&D Agent analyzes completed-task evidence
+  and external knowledge and feeds improvements back through
+  `factory/knowledge/` (global), each project's own `context/` (project), and
+  `factory/knowledge/agents/<role>.md` (agent). It is implemented as the
+  `scripts/factory-learn.mjs` adapter and `factory/lib/learning/*` — no pipeline
+  stage, no state-machine change. See
+  `docs/software-factory/COMPANY_LEARNING_SYSTEM_PROPOSAL.md`.
+- Rationale: The factory produced evidence it never learned from. Closing that
+  loop is what makes agents more capable month over month.
+- Consequences: The Learning Agent is read-only over project repos and never
+  starts, resumes, or routes a task. Its only repo writes are `learning/*`
+  proposal branches opened as PRs (opt-in, `--publish`); prompt, routing, and
+  gate changes are scaffolded as normal low-risk factory tasks with independent
+  review. Secrets, bulk private data, model chain-of-thought, and raw
+  transcripts never enter its outputs (`factory/lib/common/redact.mjs`). Runtime
+  learning state lives under the gitignored `dashboard/backend/data/factory/_learning/`.
+  Handoff injection of accepted knowledge is opt-in
+  (`FACTORY_LEARNING_IN_HANDOFF=1` or `factory.config.json` →
+  `learning.injectIntoHandoff`).

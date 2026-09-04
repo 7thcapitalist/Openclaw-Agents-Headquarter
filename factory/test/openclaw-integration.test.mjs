@@ -77,27 +77,46 @@ test("mocked OpenClaw execution drives a complete task to merge-ready", async ()
   assert.equal(state.events.some((event) => event.type === "merged"), false);
 });
 
-test("agent FAIL blocks and prevents further dispatch", async () => {
+test("agent FAIL is retried safely and blocks at the attempt limit", async () => {
   const fixture = makeFixture();
-  const response = await runOneStage({
-    hqRoot,
-    statePath: fixture.statePath,
-    execute: async ({ dispatch, cwd }) => {
-      const evidence = writeEvidence(cwd, dispatch.stage);
-      writeFileSync(dispatch.resultPath, JSON.stringify(resultFor(dispatch, [evidence], "fail")));
-    },
-  });
+  const execute = async ({ dispatch, cwd }) => {
+    const evidence = writeEvidence(cwd, dispatch.stage);
+    writeFileSync(dispatch.resultPath, JSON.stringify(resultFor(dispatch, [evidence], "fail")));
+  };
+  assert.equal((await runOneStage({ hqRoot, statePath: fixture.statePath, execute })).status, "active");
+  assert.equal((await runOneStage({ hqRoot, statePath: fixture.statePath, execute })).status, "active");
+  const response = await runOneStage({ hqRoot, statePath: fixture.statePath, execute });
   assert.equal(response.status, "blocked");
   assert.equal(prepareDispatch({ hqRoot, statePath: fixture.statePath }).status, "blocked");
 });
 
-test("missing result after invocation is persisted as a blocker", async () => {
+test("missing result is persisted and safely retried", async () => {
   const fixture = makeFixture();
   const response = await runOneStage({ hqRoot, statePath: fixture.statePath, execute: async () => {} });
-  assert.equal(response.status, "blocked");
+  assert.equal(response.status, "active");
   const state = readState(fixture.statePath);
-  assert.match(state.blocker.summary, /did not write its result file/);
   assert.equal(state.dispatches[0].status, "failed");
+  assert.equal(state.events.at(-1).type, "failure-routed");
+  assert.equal(state.currentStage, "product");
+});
+
+test("review failure routes back to builder and invalidates downstream evidence", async () => {
+  const fixture = makeFixture();
+  const execute = async ({ dispatch, cwd }) => {
+    const evidence = writeEvidence(cwd, dispatch.stage);
+    writeFileSync(dispatch.resultPath, JSON.stringify(resultFor(dispatch, [evidence], dispatch.stage === "reviewer" ? "fail" : "pass")));
+  };
+  for (;;) {
+    await runOneStage({ hqRoot, statePath: fixture.statePath, execute });
+    const state = readState(fixture.statePath);
+    if (state.events.at(-1)?.type === "failure-routed") {
+      assert.equal(state.currentStage, "builder");
+      assert.equal(state.stages.builder.status, "pending");
+      assert.equal(state.stages.reviewer.status, "pending");
+      assert.equal(state.events.at(-1).fromStage, "reviewer");
+      break;
+    }
+  }
 });
 
 function makeFixture() {

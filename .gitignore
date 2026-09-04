@@ -5,6 +5,8 @@ node_modules/
 
 # Runtime data
 dashboard/backend/data/
+.openclaw-factory/
+.openclaw-worktrees/
 agents/**/logs/*
 agents/**/outputs/*
 !agents/**/logs/.gitkeep

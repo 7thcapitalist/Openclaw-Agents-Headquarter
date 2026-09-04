@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "mission": "Give every project in the factory a durable, isolated intelligence layer and feed it into every agent handoff, without changing the workflow engine.",
+  "successMetrics": [
+    { "id": "m1", "name": "Stages receiving full context pack", "target": "100% of registered projects", "current": "Phase 1 shipped (assembler + wire-in)", "asOf": "2026-09-03" },
+    { "id": "m2", "name": "Decision classifier wired into intake", "target": "yes", "current": "no (classifier exists, not yet wired)", "asOf": "2026-09-03" },
+    { "id": "m3", "name": "Deterministic sensors live on a schedule", "target": "5", "current": "0", "asOf": "2026-09-03" }
+  ],
+  "currentPriorities": [
+    { "id": "p1", "title": "Land Phase 1: project context layer + decision classifier", "rationale": "Everything else builds on the context pack and the machine protocol." },
+    { "id": "p2", "title": "Keep the workflow engine untouched", "rationale": "Regressions in the proven state machine are expensive and hard to spot." }
+  ],
+  "risks": [
+    { "id": "r1", "title": "Context pack bloats handoffs or leaks between projects", "severity": "medium", "likelihood": "low", "mitigation": "Per-section char budgets, single-key registry resolution, redaction guard, determinism tests.", "owner": "architect" },
+    { "id": "r2", "title": "State-dir key (repo basename) vs registry key mismatch bites the sensors", "severity": "medium", "likelihood": "medium", "mitigation": "Reconcile before Phase 3; documented in context/MEMORY.md.", "owner": "architect" },
+    { "id": "r3", "title": "A secret lands in a context file", "severity": "high", "likelihood": "low", "mitigation": "redact.mjs refuses secret filenames and scrubs value patterns; emits a warning finding on any hit.", "owner": "security" }
+  ],
+  "openDecisions": [],
+  "responsibleAgents": {
+    "productOwner": "founder",
+    "architect": "claude",
+    "builder": "codex",
+    "reviewer": "claude",
+    "security": "claude"
+  }
+}

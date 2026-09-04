@@ -62,8 +62,18 @@ worktree, writes persistent handoffs, and enforces evidence and independence
 through merge readiness. It deliberately leaves harness invocation to OpenClaw
 and final merge to the founder.
 
-Start a task with a JSON contract (copy `factory/templates/task.json`; it is the
-machine-readable form of `factory/templates/task.md`):
+The normal founder-facing entrypoint accepts a natural-language objective and
+drives the complete pipeline:
+
+```bash
+printf '%s' '{"version":1,"action":"start","repo":"/srv/projects/app","objective":"Add a dependency-free health endpoint with tests."}' \
+  | npm run --silent factory:openclaw
+```
+
+The Chief of Staff creates and validates the task contract, initializes an
+isolated worktree, and runs until `merge-ready` or a bounded blocker. You can
+still initialize from an explicit JSON contract (copy
+`factory/templates/task.json`):
 
 ```bash
 node scripts/factory-task.mjs init \
@@ -110,9 +120,9 @@ printf '%s' '{"version":1,"action":"init","contractPath":"/tmp/task.json","repo"
 ```
 
 Use the returned `state` path for later requests. `next` reserves and returns a
-persistent dispatch packet without invoking an agent. `run-one` reserves the
-stage, calls `openclaw agent` with the generated handoff, and ingests the result
-file written by that agent:
+persistent dispatch packet without invoking an agent. `run-one` reserves one
+stage, calls the installed stage-specific OpenClaw role agent, and ingests its
+result. `run` drives all remaining stages:
 
 ```json
 {"version":1,"action":"run-one","statePath":"/absolute/path/to/state.json"}
@@ -121,20 +131,28 @@ file written by that agent:
 For an OpenClaw automation that owns invocation itself, call `next`, dispatch
 the returned `actor` with `promptPath` and `cwd`, then call `ingest`. Repeated
 `next` calls return the same outstanding dispatch, while a running dispatch
-cannot be claimed twice. Any invocation error, malformed/missing result, FAIL,
-or decision-required result persists a blocker and stops advancement.
+cannot be claimed twice. Invocation failures retry the same stage up to the
+configured limit. Substantive review, QA, and security failures invalidate
+downstream evidence and route their findings back to the builder. A
+decision-required result or exhausted retry budget blocks advancement.
 
 The default OpenClaw agent IDs are configured under
 `openclawIntegration.agentIds` in `factory/factory.config.json`; requests may
 override that mapping for a host. These are local agent IDs, not provider model
 names or credentials.
 
+Run `npm run factory:smoke` for a real live-harness test against a disposable
+local project with no remote.
+
+The founder dashboard is documented in
+[`FOUNDER_CONTROL_PLANE.md`](FOUNDER_CONTROL_PLANE.md). It projects existing
+factory state, accepts natural-language outcomes, surfaces agent activity and
+Decision Cards, and preserves the signed high-risk approval boundary.
+
 Remaining implementation milestones are:
 
 1. GitHub label/webhook -> OpenClaw invocation of this dispatcher.
-2. Native harness session invocation and result ingestion.
-3. Automatic PR creation and cross-model review loop.
-4. Founder dashboard view for active work + decisions.
-5. Daily/weekly founder digest.
+2. GitHub PR creation/update and durable review-comment synchronization.
+3. Daily/weekly founder digest.
 
 See `docs/software-factory/FIRST_WEEK.md` for how to learn the system by using it.

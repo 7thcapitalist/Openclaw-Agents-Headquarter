@@ -1,6 +1,6 @@
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync } from "fs";
 import { dirname, join } from "path";
-import { completeStage, readState, verifyEvidence, writeState } from "./task-workflow.mjs";
+import { completeStage, readState, routeStageFailure, verifyEvidence, writeState } from "./task-workflow.mjs";
 import { writeHandoff } from "./handoff.mjs";
 
 export const PROTOCOL_VERSION = 1;
@@ -50,7 +50,7 @@ export function markDispatchRunning({ statePath, dispatchId, now = new Date().to
   });
 }
 
-export function ingestResult({ statePath, result, now = new Date().toISOString() }) {
+export function ingestResult({ statePath, result, maxAttemptsPerStage = 3, now = new Date().toISOString() }) {
   validateAgentResult(result);
   const state = readState(statePath);
   assertCurrentDispatch(state, result.dispatchId);
@@ -59,7 +59,7 @@ export function ingestResult({ statePath, result, now = new Date().toISOString()
     throw new Error("Agent result stage/actor does not match the active dispatch.");
   }
   const evidence = verifyEvidence(result.evidence, state.worktree);
-  const next = completeStage(state, {
+  let next = completeStage(state, {
     stage: result.stage,
     actor: result.actor,
     outcome: result.outcome,
@@ -67,14 +67,15 @@ export function ingestResult({ statePath, result, now = new Date().toISOString()
     evidence,
     now,
   });
-  const finished = { ...dispatch, status: "completed", outcome: result.outcome, completedAt: now };
+  const finished = { ...dispatch, status: "completed", outcome: result.outcome, summary: result.summary, completedAt: now };
   next.dispatches = [...(state.dispatches || []), finished];
   delete next.currentDispatch;
+  if (result.outcome === "fail") next = routeStageFailure(next, { failedStage: result.stage, maxAttemptsPerStage, now });
   writeState(statePath, next);
   return terminalResponse(next);
 }
 
-export function failDispatch({ statePath, dispatchId, error, now = new Date().toISOString() }) {
+export function failDispatch({ statePath, dispatchId, error, maxAttemptsPerStage = 3, now = new Date().toISOString() }) {
   const state = readState(statePath);
   assertCurrentDispatch(state, dispatchId);
   const dispatch = state.currentDispatch;
@@ -84,8 +85,9 @@ export function failDispatch({ statePath, dispatchId, error, now = new Date().to
   delete state.currentDispatch;
   state.updatedAt = now;
   state.events.push({ at: now, type: "dispatch-failed", stage: dispatch.stage, actor: dispatch.actor, dispatchId });
-  writeState(statePath, state);
-  return terminalResponse(state);
+  const next = routeStageFailure(state, { failedStage: dispatch.stage, targetStage: dispatch.stage, maxAttemptsPerStage, now });
+  writeState(statePath, next);
+  return terminalResponse(next);
 }
 
 export function readResultFile(path) {

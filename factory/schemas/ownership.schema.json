@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclaw.local/factory/ownership.schema.json",
+  "title": "Project ownership",
+  "description": "Reference contract for <contextDir>/ownership.json — the machine-authoritative mirror of the prose context files. Runtime validation is factory/lib/intel/schema.mjs.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["version", "mission"],
+  "properties": {
+    "version": { "const": 1 },
+    "mission": { "type": "string", "minLength": 1 },
+    "successMetrics": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "name", "target", "current"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "name": { "type": "string", "minLength": 1 },
+          "target": { "type": "string", "minLength": 1 },
+          "current": { "type": "string", "minLength": 1 },
+          "asOf": { "type": "string", "description": "ISO date the `current` value was measured." }
+        }
+      }
+    },
+    "currentPriorities": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "title"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "title": { "type": "string", "minLength": 1 },
+          "rationale": { "type": "string" }
+        }
+      }
+    },
+    "risks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "title"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "title": { "type": "string", "minLength": 1 },
+          "severity": { "enum": ["low", "medium", "high"] },
+          "likelihood": { "enum": ["low", "medium", "high"] },
+          "mitigation": { "type": "string" },
+          "owner": { "type": "string" }
+        }
+      }
+    },
+    "openDecisions": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Decision IDs into the project decision queue (Phase 2). Opaque strings in Phase 1."
+    },
+    "responsibleAgents": {
+      "type": "object",
+      "additionalProperties": { "type": "string" },
+      "description": "role -> agent key, e.g. { \"architect\": \"claude\", \"builder\": \"codex\", \"productOwner\": \"founder\" }."
+    }
+  }
+}

@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "learning-finding.schema.json",
+  "title": "Company Learning System Finding",
+  "description": "Reference contract for an entry in the learning findings queue (dashboard/backend/data/factory/_learning/findings.json). Runtime validation is hand-rolled in factory/lib/learning/. This file is the durable contract, not a runtime dependency.",
+  "type": "object",
+  "required": ["id", "status", "kind", "scope", "fingerprint", "title", "observation", "taskIds"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^L-[0-9]{4,}$" },
+    "status": { "enum": ["open", "promoted", "dismissed", "resolved"] },
+    "kind": { "enum": ["failure", "success", "pattern", "agent-improvement", "research"] },
+    "scope": { "enum": ["global", "project", "agent"] },
+    "project": { "type": ["string", "null"] },
+    "targetRole": {
+      "type": ["string", "null"],
+      "enum": ["product", "architect", "builder", "reviewer", "qa", "security", "release", null]
+    },
+    "fingerprint": { "type": "string", "minLength": 1 },
+    "title": { "type": "string", "minLength": 1 },
+    "observation": { "type": "string", "minLength": 1 },
+    "recommendation": { "type": "string" },
+    "confidence": { "enum": ["low", "medium", "high"] },
+    "occurrences": { "type": "integer", "minimum": 1 },
+    "taskIds": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "excerpt"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "excerpt": { "type": "string" },
+          "verdicts": { "type": "array", "items": { "type": "string" } }
+        },
+        "additionalProperties": false
+      }
+    },
+    "firstSeenAt": { "type": "string", "format": "date-time" },
+    "lastSeenAt": { "type": "string", "format": "date-time" },
+    "promotedAt": { "type": "string", "format": "date-time" },
+    "dismissedAt": { "type": "string", "format": "date-time" },
+    "dismissReason": { "type": "string" },
+    "recurredAfter": { "enum": ["promoted", "dismissed", "resolved"] },
+    "recurredAt": { "type": "string", "format": "date-time" },
+    "history": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["at", "event"],
+        "properties": {
+          "at": { "type": "string", "format": "date-time" },
+          "event": { "type": "string" },
+          "actor": { "type": "string" },
+          "reason": { "type": "string" },
+          "taskIds": { "type": "array", "items": { "type": "string" } }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
