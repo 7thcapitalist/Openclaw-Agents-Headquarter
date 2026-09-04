@@ -60,6 +60,7 @@ import { enrichHqAgentsWithLifecycle } from "./lib/agentLifecycle.mjs";
 import { buildReadinessReport } from "./lib/readiness.mjs";
 import {
   buildFounderOverview,
+  discoverFactoryTasks,
   isProjectPaused,
   listFounderJobs,
   recordQuestion,
@@ -67,6 +68,7 @@ import {
   saveFounderJob,
   setProjectPaused,
 } from "./lib/founderControlPlane.mjs";
+import { buildCompanyState } from "../../factory/lib/hq/company-state.mjs";
 import { handleRequest as handleFactoryRequest } from "../../scripts/openclaw-factory.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -195,6 +197,25 @@ app.get("/api/founder/overview", (_req, res) => {
   try {
     const overview = buildFounderOverview(ROOT, readProjects(ROOT));
     res.json({ ...overview, jobs: listFounderJobs(ROOT) });
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+// Headquarters Integration Layer — one read-only "state of the company" object.
+// Additive: composes the unified project registry, the agent registry + live
+// activity, founder decisions, risks, and (with ?github=1) read-only GitHub
+// awareness. Writes nothing.
+app.get("/api/hq/company", async (req, res) => {
+  try {
+    const withGithub = req.query.github === "1" || req.query.github === "true";
+    const state = await buildCompanyState({
+      hqRoot: ROOT,
+      tasks: discoverFactoryTasks(ROOT),
+      hqProjects: readProjects(ROOT),
+      withGithub,
+    });
+    res.json(state);
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
   }

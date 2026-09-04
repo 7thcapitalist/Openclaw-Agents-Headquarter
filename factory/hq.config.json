@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "discovery": {
+    "workspaceRoots": ["~/projects"],
+    "ignore": ["node_modules", "worktrees", ".openclaw-worktrees", "archive", "tmp"],
+    "maxDepth": 2
+  },
+  "github": {
+    "enabled": true,
+    "commitLimit": 10,
+    "prLimit": 20,
+    "issueLimit": 20
+  }
+}

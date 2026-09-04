@@ -40,6 +40,26 @@ export function validateRegistry(value) {
     if (entry.name !== undefined && typeof entry.name !== "string") {
       throw new Error(`registry: projects[${i}].name must be a string.`);
     }
+    // Integration-layer optional fields. Absent is fine; present must be well shaped.
+    if (entry.mission !== undefined && typeof entry.mission !== "string") {
+      throw new Error(`registry: projects[${i}].mission must be a string.`);
+    }
+    if (entry.owner !== undefined && typeof entry.owner !== "string") {
+      throw new Error(`registry: projects[${i}].owner must be a string.`);
+    }
+    if (entry.github !== undefined && entry.github !== null) {
+      const gh = entry.github;
+      if (typeof gh !== "object" || Array.isArray(gh) ||
+        !isNonEmptyString(gh.owner) || !isNonEmptyString(gh.repo)) {
+        throw new Error(`registry: projects[${i}].github must be { owner, repo } with non-empty strings.`);
+      }
+    }
+    if (entry.responsibleAgents !== undefined) {
+      if (!Array.isArray(entry.responsibleAgents) ||
+        !entry.responsibleAgents.every((x) => typeof x === "string")) {
+        throw new Error(`registry: projects[${i}].responsibleAgents must be an array of strings.`);
+      }
+    }
   }
   return value;
 }

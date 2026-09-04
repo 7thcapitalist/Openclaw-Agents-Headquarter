@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "agents": [
+    {
+      "id": "claude-main",
+      "name": "Claude",
+      "kind": "claude",
+      "role": "Architecture & Independent Review",
+      "capabilities": ["architecture", "code-review", "security-review", "research"],
+      "currentProject": null,
+      "status": "idle",
+      "harnessAgentIds": ["architect", "reviewer", "security"],
+      "reportsTo": "founder",
+      "notes": "Default responsibilities: technical design and independent review. Writes only when explicitly assigned as builder."
+    },
+    {
+      "id": "codex-builder",
+      "name": "Codex",
+      "kind": "codex",
+      "role": "Primary Builder (backend & general)",
+      "capabilities": ["coding", "tests", "bugfix", "qa"],
+      "currentProject": null,
+      "status": "idle",
+      "harnessAgentIds": ["backend-builder", "qa"],
+      "reportsTo": "openclaw-chief-of-staff",
+      "notes": "Primary autonomous implementation for backend/general/bugfix work; may QA work it did not author."
+    },
+    {
+      "id": "cursor-builder",
+      "name": "Cursor",
+      "kind": "cursor",
+      "role": "Product / UI Builder",
+      "capabilities": ["ui", "frontend", "visual-qa"],
+      "currentProject": null,
+      "status": "idle",
+      "harnessAgentIds": ["frontend-builder"],
+      "reportsTo": "openclaw-chief-of-staff",
+      "notes": "Frontend/UI implementation and visual iteration; also the founder's interactive IDE."
+    },
+    {
+      "id": "openclaw-chief-of-staff",
+      "name": "Chief of Staff",
+      "kind": "openclaw",
+      "role": "Orchestration — specify, classify, route, summarize, escalate",
+      "capabilities": ["task-specification", "risk-classification", "routing", "summarization", "escalation"],
+      "currentProject": null,
+      "status": "idle",
+      "harnessAgentIds": ["main", "product"],
+      "reportsTo": "founder",
+      "notes": "Turns founder goals into bounded work and protects founder attention. Architecture prepared in factory/lib/hq/chief-of-staff.mjs; agent not yet built."
+    },
+    {
+      "id": "release-manager",
+      "name": "Release Manager",
+      "kind": "openclaw",
+      "role": "Merge-readiness gates",
+      "capabilities": ["gate-evaluation", "merge-readiness"],
+      "currentProject": null,
+      "status": "idle",
+      "harnessAgentIds": ["release"],
+      "reportsTo": "openclaw-chief-of-staff",
+      "notes": "Deterministic gates plus OpenClaw. No production autonomy in V1."
+    },
+    {
+      "id": "learning-agent",
+      "name": "Learning Agent",
+      "kind": "learning",
+      "role": "Learning / R&D — distil lessons and improvements from completed work",
+      "capabilities": ["analysis", "research", "process-improvement", "engineering-improvement"],
+      "currentProject": "openclaw-factory",
+      "status": "idle",
+      "harnessAgentIds": ["learning"],
+      "reportsTo": "founder",
+      "notes": "Maintains factory/knowledge/. Findings promoted by the founder."
+    }
+  ]
+}
