@@ -1,0 +1,133 @@
+{
+  "version": 1,
+  "_doc": "The AI workforce: one entry per AGENT (a role/employee), not per model. `harness` names the model/tool that powers the agent for its default work; `runtimeAgentId` is the OpenClaw runtime agent that executes it. Models (Claude, Codex, Cursor, OpenClaw) are tools, never employees.",
+  "agents": [
+    {
+      "id": "chief-of-staff",
+      "name": "Chief of Staff Agent",
+      "role": "Orchestration",
+      "responsibility": "Turns founder goals into bounded work, classifies risk, routes tasks to the right agent, summarizes progress, and escalates only real founder decisions.",
+      "stages": [],
+      "harness": "openclaw",
+      "runtimeAgentId": "main",
+      "reportsTo": "founder",
+      "status": "idle"
+    },
+    {
+      "id": "product",
+      "name": "Product Agent",
+      "role": "Outcome definition",
+      "responsibility": "Normalizes the objective into an observable outcome and testable acceptance criteria before design starts.",
+      "stages": ["product"],
+      "harness": "openclaw",
+      "runtimeAgentId": "product",
+      "reportsTo": "chief-of-staff",
+      "status": "idle"
+    },
+    {
+      "id": "architect",
+      "name": "Architect Agent",
+      "role": "Technical design",
+      "responsibility": "Proposes the smallest safe design, names data/security/privacy implications, defines interfaces and rollback, and challenges non-trivial architecture.",
+      "stages": ["architect"],
+      "harness": "claude",
+      "runtimeAgentId": "architect",
+      "reportsTo": "chief-of-staff",
+      "status": "idle"
+    },
+    {
+      "id": "backend-builder",
+      "name": "Backend Builder Agent",
+      "role": "Implementation — backend & general",
+      "responsibility": "Implements the smallest coherent change on an isolated branch, adds tests, runs checks, and opens a reviewable PR.",
+      "stages": ["builder"],
+      "harness": "codex",
+      "runtimeAgentId": "backend-builder",
+      "reportsTo": "chief-of-staff",
+      "status": "idle"
+    },
+    {
+      "id": "frontend-builder",
+      "name": "Frontend Builder Agent",
+      "role": "Implementation — UI & product",
+      "responsibility": "Implements UI/product changes with visual iteration and responsive checks; also the founder's interactive development surface.",
+      "stages": ["builder"],
+      "harness": "cursor",
+      "harnessAvailable": false,
+      "harnessFallback": "openclaw",
+      "runtimeAgentId": "frontend-builder",
+      "reportsTo": "chief-of-staff",
+      "status": "idle",
+      "notes": "Cursor is the intended harness (factory.config.json roles.productBuilder), but its OpenClaw ACP integration does not reliably invoke real Cursor sessions — see ~/.openclaw/workspace/skills/cursor-acp-fallback and the .before-cursor-* config backups, which record several prior fix attempts. Verified live on 2026-09-05: `openclaw agent --agent cursor ...` returns a normal-looking success response but executionTrace shows runner:\"embedded\", provider/model:\"openai/gpt-5.6-sol\", fallbackUsed:false — it silently answers via the embedded model instead of dispatching to cursor-agent's ACP backend, with no visible error. factory.config.json's builder:cursor routing therefore intentionally points at the dedicated \"frontend-builder\" OpenClaw agent (a real, isolated, working agent — just not Cursor-backed) rather than the broken \"cursor\" runtime agent, so UI tasks keep working. Revisit only as its own focused task against OpenClaw's ACP/acpx plugin config, not by guessing at further changes here."
+    },
+    {
+      "id": "reviewer",
+      "name": "Reviewer Agent",
+      "role": "Independent review",
+      "responsibility": "Reviews the change it did not author for correctness, regressions, security, and acceptance-criteria gaps. Always a different model from the builder.",
+      "stages": ["reviewer"],
+      "harness": "multiple",
+      "runtimeAgentId": "reviewer",
+      "reportsTo": "chief-of-staff",
+      "status": "idle"
+    },
+    {
+      "id": "qa",
+      "name": "QA Agent",
+      "role": "Verification",
+      "responsibility": "Attempts to falsify the acceptance criteria, exercises failure and edge cases, and records evidence. Different harness from the builder.",
+      "stages": ["qa"],
+      "harness": "multiple",
+      "runtimeAgentId": "qa",
+      "reportsTo": "chief-of-staff",
+      "status": "idle",
+      "notes": "The OpenClaw `qa` runtime agent runs on Claude via the acpx ACP backend (`runtime.acp.agent: \"claude\"` in ~/.openclaw/openclaw.json), same pattern as architect/reviewer/security. Was codex-backed until 2026-09-05. `harness` stays \"multiple\" because the pipeline still selects QA to differ from the builder (task-workflow.mjs defaultAssignments); factory.config.json now maps both `qa:claude` and `qa:codex` to this one agent."
+    },
+    {
+      "id": "security",
+      "name": "Security Agent",
+      "role": "Security & privacy gate",
+      "responsibility": "Independent check for secret exposure, unsafe permissions, injection, data loss, and privacy regressions before release readiness.",
+      "stages": ["security"],
+      "harness": "claude",
+      "runtimeAgentId": "security",
+      "reportsTo": "chief-of-staff",
+      "status": "idle"
+    },
+    {
+      "id": "release-manager",
+      "name": "Release Manager Agent",
+      "role": "Merge readiness",
+      "responsibility": "Verifies every gate passed with evidence and independence, confirms no unresolved founder decision, and surfaces blockers. Never merges.",
+      "stages": ["release"],
+      "harness": "openclaw",
+      "runtimeAgentId": "release",
+      "reportsTo": "chief-of-staff",
+      "status": "idle"
+    },
+    {
+      "id": "research",
+      "name": "Research Agent",
+      "role": "Discovery & research",
+      "responsibility": "Turns an open question into a short brief with sources, findings, risks, and a recommended next action.",
+      "stages": [],
+      "harness": "claude",
+      "runtimeAgentId": "research",
+      "reportsTo": "founder",
+      "status": "idle",
+      "notes": "Real OpenClaw agent `research` created 2026-09-05, Claude-backed via the acpx ACP backend. Founder-invoked (not a pipeline stage); callable with `openclaw agent --agent research`."
+    },
+    {
+      "id": "learning-agent",
+      "name": "Learning / R&D Agent",
+      "role": "Continuous improvement",
+      "responsibility": "Analyzes failed tasks and reviews, finds repeated mistakes, researches improvements, updates company knowledge, and proposes prompt/routing/gate changes for the founder to approve.",
+      "stages": [],
+      "harness": "claude",
+      "runtimeAgentId": "learning",
+      "reportsTo": "founder",
+      "status": "idle",
+      "notes": "Real OpenClaw agent `learning` created 2026-09-05, Claude-backed via the acpx ACP backend. The scheduled analysis pipeline (scripts/factory-learn.mjs, factory/lib/learning/*) is deterministic and needs no model call; the model-backed agent is used for the research/synthesis dispatch (factory-learn.mjs research, which resolves `openclawIntegration.agentIds.learning`). `harness` reads \"claude\" to reflect the runtime agent; SFD-2026-006 (read-only, proposal-driven) is unchanged."
+    }
+  ]
+}

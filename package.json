@@ -11,6 +11,7 @@
     "test:factory": "node --test factory/test/*.test.mjs",
     "factory:openclaw": "node scripts/openclaw-factory.mjs",
     "factory:intel": "node scripts/project-intel.mjs",
+    "factory:hq": "node scripts/hq.mjs",
     "factory:learn": "node scripts/factory-learn.mjs",
     "factory:smoke": "node scripts/factory-smoke.mjs",
     "register:example": "AGENT_LAB_ROOT=$PWD ./scripts/register-agent.sh example-project research-analyst"

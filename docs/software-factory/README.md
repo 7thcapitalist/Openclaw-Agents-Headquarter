@@ -149,6 +149,12 @@ The founder dashboard is documented in
 factory state, accepts natural-language outcomes, surfaces agent activity and
 Decision Cards, and preserves the signed high-risk approval boundary.
 
+The [`HQ_INTEGRATION_LAYER.md`](HQ_INTEGRATION_LAYER.md) connects the project
+registry, an agent registry, live agent activity, and read-only GitHub awareness
+into one "state of the company" object — `node scripts/hq.mjs state` or
+`GET /api/hq/company`. It is composition over the systems above; it adds no
+workflow engine and writes no factory state.
+
 Remaining implementation milestones are:
 
 1. GitHub label/webhook -> OpenClaw invocation of this dispatcher.

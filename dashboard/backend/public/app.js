@@ -7,6 +7,7 @@
   const modalBody = document.getElementById("modal-body");
 
   const BOARD_COLUMNS = ["Inbox", "Assigned", "In Progress", "Review", "Done", "Blocked"];
+  const SEVERITY_RANK = { high: 0, medium: 1, low: 2, unspecified: 3 };
 
   function showToast(msg, err) {
     toastEl.textContent = msg;
@@ -92,6 +93,10 @@
     return byId(agents)[id]?.name || id || "-";
   }
 
+  function riskSeverityOrder(a, b) {
+    return (SEVERITY_RANK[a.severity] ?? 3) - (SEVERITY_RANK[b.severity] ?? 3);
+  }
+
   function parseRoute() {
     const raw = (location.hash || "#/today").replace(/^#\/?/, "");
     const segs = raw.split("/").filter(Boolean);
@@ -128,12 +133,35 @@
     nav.querySelectorAll("a").forEach((a) => a.classList.toggle("active", a.dataset.nav === map));
   }
 
+  // ── Real data sources ──────────────────────────────────────────
+  // The Headquarters Integration Layer's single "state of the company"
+  // object. This — not the seed HQ store below — is the source of truth for
+  // real projects, real organizational roles, real GitHub awareness, and real
+  // OpenClaw runtime liveness.
+  function loadCompany() {
+    return apiJson("/api/hq/company?github=1&runtime=1");
+  }
+
+  function loadLearning() {
+    return apiJson("/api/hq/learning");
+  }
+
+  // The older seed HQ store (dashboard/backend/data/hq/*.json). Still used by
+  // the Task Board / SOPs / Reports pages below, which have no real backing
+  // system yet — those pages are clearly labelled as example data, never
+  // presented as the founder's real company.
   async function loadHq() {
     return apiJson("/api/hq");
   }
 
   function pill(text, kind) {
     return `<span class="badge ${kind || "badge-type"}">${esc(text)}</span>`;
+  }
+
+  function demoBanner(label) {
+    return `<div class="demo-banner">${esc(
+      label || "Example data — not the real company. See Today / Projects / Agents for the real Headquarters Integration Layer data."
+    )}</div>`;
   }
 
   function taskCard(t, projects, agents) {
@@ -150,16 +178,25 @@
       </article>`;
   }
 
+  // ── Today: the founder observability surface ───────────────────
+
   async function renderToday() {
-    const [d, fc] = await Promise.all([loadHq(), apiJson("/api/founder/overview")]);
-    const projects = fc.projects || [];
-    const activeAgents = (fc.tasks || []).filter((t) => t.status === "active");
+    const [state, fc, learning] = await Promise.all([
+      loadCompany(),
+      apiJson("/api/founder/overview").catch(() => ({ jobs: [] })),
+      loadLearning().catch(() => null),
+    ]);
+    const projects = state.projects || [];
+    const agents = state.agents?.agents || [];
+    const decisions = state.decisions || [];
+    const jobs = fc.jobs || [];
+
     app.innerHTML = `
       <section class="hq-layout">
-        ${renderAgentRail(d.agents)}
+        ${renderAgentRail(agents, state.runtime)}
         <main class="hq-main">
           <div class="founder-hero">
-            <div class="eyebrow">Founder control plane</div>
+            <div class="eyebrow">${esc(state.founder?.headquarters || "Headquarters")}</div>
             <h1>What should the company build next?</h1>
             <p>Give your team an outcome. OpenClaw will turn it into bounded work and route the right agents.</p>
             <form id="founder-command" class="founder-command">
@@ -167,68 +204,133 @@
               <div class="founder-command-row">
                 <select id="founder-project" required>
                   <option value="">Choose project</option>
-                  ${projects.map((p) => `<option value="${esc(p.id)}" data-repo="${esc(p.repo || "")}">${esc(p.name)}</option>`).join("")}
+                  ${projects.map((p) => `<option value="${esc(p.key)}" data-repo="${esc(p.repo || "")}">${esc(p.name)}</option>`).join("")}
+                  ${state.headquarters ? `<option value="${esc(state.headquarters.key)}" data-repo="${esc(state.headquarters.repo || "")}">${esc(state.headquarters.name)} (infrastructure)</option>` : ""}
                 </select>
-                <input id="founder-repo" placeholder="Repository path" value="${esc(d.root || "")}" required />
+                <input id="founder-repo" placeholder="Repository path" required />
                 <button class="btn founder-launch" type="submit">Start work →</button>
               </div>
             </form>
           </div>
+
+          ${runtimeBanner(state.runtime)}
+
           <div class="control-stats">
             <div><strong>${projects.length}</strong><span>Projects</span></div>
-            <div><strong>${activeAgents.length}</strong><span>Agents working</span></div>
-            <div class="${fc.decisions.length ? "attention" : ""}"><strong>${fc.decisions.length}</strong><span>Need your input</span></div>
-            <div><strong>${(fc.tasks || []).filter((t) => t.status === "merge-ready").length}</strong><span>Merge ready</span></div>
+            <div><strong>${state.summary.workingAgents}</strong><span>Agents working</span></div>
+            <div class="${decisions.length ? "attention" : ""}"><strong>${decisions.length}</strong><span>Need your input</span></div>
+            <div><strong>${state.summary.openPullRequests}</strong><span>Open pull requests</span></div>
           </div>
+
+          <section class="hq-infra-card">
+            <div class="panel-heading">
+              <div><span class="eyebrow">Infrastructure</span><h2>${esc(state.headquarters?.name || "OpenClaw Agents Headquarters")}</h2></div>
+              ${pill("Headquarters — not a project", "badge-type")}
+            </div>
+            <p class="muted small">${esc(state.headquarters?.mission || "")}</p>
+            <div class="project-facts">
+              <span><small>Status</small><strong>${esc(state.headquarters?.status || "—")}</strong></span>
+              <span><small>Active tasks</small><strong>${state.headquarters?.activeTasks?.length || 0}</strong></span>
+              <span><small>GitHub</small><strong>${esc(state.headquarters?.externalSummary || (state.headquarters?.github ? "Configured" : "Not configured"))}</strong></span>
+              <span><small>Context</small><strong>${state.headquarters?.hasContext ? "Present" : "Incomplete"}</strong></span>
+            </div>
+          </section>
+
           <div class="founder-grid">
             <section class="portfolio-panel">
-              <div class="panel-heading"><div><span class="eyebrow">Portfolio</span><h2>Projects</h2></div><button class="btn secondary" id="new-project">+ New project</button></div>
+              <div class="panel-heading"><div><span class="eyebrow">Portfolio</span><h2>Projects</h2></div></div>
               <div class="project-control-list">
-                ${projects.map((p) => projectControlRow(p)).join("") || `<div class="empty-state">Create a project to begin.</div>`}
+                ${projects.map((p) => projectControlRow(p)).join("") || `<div class="empty-state">No projects registered in factory/projects.json yet.</div>`}
               </div>
             </section>
             <section class="inbox-panel">
-              <div class="panel-heading"><div><span class="eyebrow">Founder inbox</span><h2>Decisions</h2></div>${fc.decisions.length ? pill(fc.decisions.length, "badge-warn") : pill("Clear", "health-healthy")}</div>
-              ${(fc.decisions || []).map((x) => decisionCard(x)).join("") || `<div class="empty-state"><strong>Nothing needs you.</strong><span>Your agents have what they need to keep moving.</span></div>`}
-              ${recommendedActions(fc.company)}
+              <div class="panel-heading"><div><span class="eyebrow">Founder inbox</span><h2>Decisions</h2></div>${decisions.length ? pill(decisions.length, "badge-warn") : pill("Clear", "health-healthy")}</div>
+              ${decisions.map((x) => decisionCard(x)).join("") || `<div class="empty-state"><strong>Nothing needs you.</strong><span>Your agents have what they need to keep moving.</span></div>`}
+              ${recommendedActions(state.company)}
             </section>
           </div>
+
           <section class="activity-panel">
             <div class="panel-heading"><div><span class="eyebrow">Live company</span><h2>Agent activity</h2></div><button class="btn secondary" id="ask-agent">Ask an agent</button></div>
             <div class="company-feed">
-              ${(fc.jobs || []).filter((job) => job.status === "starting" || job.status === "error").slice(0, 5).map((job) => `<div class="company-agent"><span class="activity-pulse ${job.status === "error" ? "pulse-error" : ""}"></span><div><strong>${esc(job.projectId)}</strong><span>${esc(job.objective)}</span></div><em class="${job.status === "error" ? "danger-text" : ""}">${esc(job.status)}</em></div>`).join("")}
-              ${activeAgents.map((t) => `<div class="company-agent"><span class="activity-pulse"></span><div><strong>${esc(titleCase(t.agent || "agent"))}</strong><span>${esc(stageVerb(t.stage))} ${esc(t.objective)}</span></div><em>${esc(t.agentStatus)}</em></div>`).join("")}
-              ${(fc.activity || []).slice(0, 8).map((e) => `<div class="company-event"><span>${esc(e.type.replaceAll("-", " "))}</span><strong>${esc(e.taskId)}</strong><time>${esc(fmtTime(e.at))}</time></div>`).join("") || `<div class="empty-state">No factory activity yet.</div>`}
+              ${jobs.filter((job) => job.status === "starting" || job.status === "error").slice(0, 5).map((job) => `<div class="company-agent"><span class="activity-pulse ${job.status === "error" ? "pulse-error" : ""}"></span><div><strong>${esc(job.projectId)}</strong><span>${esc(job.objective)}</span></div><em class="${job.status === "error" ? "danger-text" : ""}">${esc(job.status)}</em></div>`).join("")}
+              ${agents.filter((a) => a.status === "working").map((a) => `<div class="company-agent"><span class="activity-pulse"></span><div><strong>${esc(a.name)}</strong><span>${esc(stageVerb(a.currentTask?.stage))} ${esc(a.currentTask?.objective || "")}</span></div><em>${esc(a.status)}</em></div>`).join("")}
+              ${(state.activityFeed || []).slice(0, 8).map((e) => `<div class="company-event"><span>${esc(String(e.type || "event").replaceAll("-", " "))}</span><strong>${esc(e.taskId)}</strong><time>${esc(fmtTime(e.at))}</time></div>`).join("") || `<div class="empty-state">No active factory tasks. No factory task has run in this environment yet.</div>`}
             </div>
           </section>
+
+          ${learningPanel(learning)}
+          ${blindSpotsPanel(state)}
         </main>
       </section>`;
     bindFounderControls();
   }
 
-  function titleCase(value) { return String(value).replaceAll("-", " ").replace(/\b\w/g, (c) => c.toUpperCase()); }
+  function runtimeBanner(runtime) {
+    if (!runtime) {
+      return `<div class="gap-banner">OpenClaw runtime status unavailable — runtime awareness is disabled in factory/hq.config.json.</div>`;
+    }
+    if (!runtime.available) {
+      return `<div class="gap-banner">OpenClaw runtime status unavailable${runtime.error ? ` — ${esc(runtime.error)}` : ""}. Agent status below is derived from task state only, not confirmed liveness.</div>`;
+    }
+    return "";
+  }
+
+  function learningPanel(learning) {
+    if (!learning) {
+      return `<section class="activity-panel"><div class="panel-heading"><div><span class="eyebrow">Company</span><h2>What has the company learned</h2></div></div><div class="empty-state">Learning findings unavailable.</div></section>`;
+    }
+    const items = learning.findings || [];
+    return `<section class="activity-panel">
+      <div class="panel-heading"><div><span class="eyebrow">Company</span><h2>What has the company learned</h2></div>${learning.count ? pill(learning.count, "badge-warn") : pill("None yet", "badge-type")}</div>
+      ${items.length
+        ? items.slice(0, 8).map((f) => `<div class="feed-item"><strong>${esc(f.title || f.summary || "Untitled finding")}</strong>${f.status ? ` ${pill(f.status, f.status === "accepted" ? "health-healthy" : "badge-type")}` : ""}${f.detail ? `<p>${esc(f.detail)}</p>` : ""}</div>`).join("")
+        : `<div class="empty-state">No company-level learning findings yet.</div>`}
+    </section>`;
+  }
+
+  function blindSpotsPanel(state) {
+    const warnings = state.warnings || [];
+    const discovered = state.discovery?.proposals || [];
+    if (!warnings.length && !discovered.length) {
+      return `<section class="activity-panel"><div class="panel-heading"><div><span class="eyebrow">Honesty check</span><h2>Where the system is blind</h2></div></div><div class="empty-state">No blind spots reported right now.</div></section>`;
+    }
+    return `<section class="activity-panel">
+      <div class="panel-heading"><div><span class="eyebrow">Honesty check</span><h2>Where the system is blind</h2></div>${pill(warnings.length + discovered.length, "badge-warn")}</div>
+      ${warnings.map((w) => `<div class="feed-item danger"><p>${esc(w.message)}</p></div>`).join("")}
+      ${discovered.map((d) => `<div class="feed-item"><p>Unregistered repository found: ${esc(d.name)} (${esc(d.repo)}) — not yet in factory/projects.json.</p></div>`).join("")}
+    </section>`;
+  }
+
   function stageVerb(stage) { return ({ product: "shaping", architect: "analyzing", builder: "implementing", reviewer: "reviewing", qa: "testing", security: "checking", release: "preparing" })[stage] || "working on"; }
   function healthPill(health) {
     if (!health) return "";
     const cls = health.level === "healthy" ? "health-healthy" : health.level === "at-risk" ? "health-failed" : "badge-warn";
     return `<span><small>Health</small>${pill(`${health.score}/100`, cls)}</span>`;
   }
+
   function projectControlRow(p) {
-    const latest = p.tasks?.[0];
-    const intel = p.intelligence || null;
-    const mission = intel?.mission || p.mission || "";
-    const topRisk = intel?.risks?.slice().sort((a, b) => ({ high: 0, medium: 1, low: 2 }[a.severity] ?? 3) - ({ high: 0, medium: 1, low: 2 }[b.severity] ?? 3))[0];
-    const openDecisions = (intel?.ownership?.openDecisions || []).length;
-    return `<article class="project-control ${p.status === "paused" ? "is-paused" : ""}">
-      <div class="project-control-main"><span class="project-dot ${p.blocker ? "blocked" : p.status}"></span><div><h3>${esc(p.name)}</h3>
-        ${mission ? `<p class="muted small">${esc(mission)}</p>` : ""}
-        <p>${esc(latest?.objective || (intel?.roadmap?.current) || "No active task")}</p></div></div>
-      <div class="project-facts"><span><small>Status</small>${pill(p.status, p.blocker ? "health-failed" : "health-healthy")}</span>${healthPill(p.health)}<span><small>Stage</small><strong>${esc(p.stage || "—")}</strong></span><span><small>Agent</small><strong>${esc(p.agent || "—")}</strong></span><span><small>Last activity</small><strong>${esc(p.lastActivity ? fmtTime(p.lastActivity) : "—")}</strong></span></div>
+    const active = (p.activeTasks || [])[0] || null;
+    const blocked = (p.blockedTasks || [])[0] || null;
+    const topRisk = (p.risks || []).slice().sort(riskSeverityOrder)[0];
+    const openDecisions = (p.openDecisions || []).length;
+    return `<article class="project-control">
+      <div class="project-control-main"><span class="project-dot ${blocked ? "blocked" : p.status}"></span><div><h3>${esc(p.name)}</h3>
+        ${p.mission ? `<p class="muted small">${esc(p.mission)}</p>` : ""}
+        <p>${esc(active?.objective || "No active task")}</p></div></div>
+      <div class="project-facts">
+        <span><small>Status</small>${pill(p.status, blocked ? "health-failed" : "health-healthy")}</span>
+        ${healthPill(p.health)}
+        <span><small>Stage</small><strong>${esc(active?.stage || "—")}</strong></span>
+        <span><small>GitHub</small><strong>${esc(p.github ? (p.externalSummary || "Configured") : "Not configured")}</strong></span>
+      </div>
+      ${!p.hasContext ? `<div class="project-intel-line muted small">Project context incomplete${(p.contextFindings || []).some((f) => f.code === "context-dir-missing") ? " — no context/ directory" : ""}.</div>` : ""}
       ${(topRisk || openDecisions) ? `<div class="project-intel-line muted small">${topRisk ? `Top risk: ${esc(topRisk.title)}${topRisk.unmitigated ? " (unmitigated)" : ""}` : ""}${topRisk && openDecisions ? " · " : ""}${openDecisions ? `${openDecisions} open decision${openDecisions === 1 ? "" : "s"}` : ""}</div>` : ""}
-      ${p.blocker ? `<div class="project-blocker">${esc(p.blocker.summary)}</div>` : ""}
-      <button class="btn secondary" data-project-action="${p.status === "paused" ? "resume" : "pause"}" data-project-id="${esc(p.id)}">${p.status === "paused" ? "Resume" : "Pause"}</button>
+      ${blocked ? `<div class="project-blocker">${esc(blocked.objective || "Blocked")}</div>` : ""}
+      <a class="btn secondary" href="#/project/${encodeURIComponent(p.key)}">Open →</a>
     </article>`;
   }
+
   function recommendedActions(company) {
     if (!company) return "";
     // The task-blocker decisions already render as cards above; don't repeat them.
@@ -241,50 +343,83 @@
       ${items.map((a) => `<div class="rec-action"><strong>${esc(a.action)}</strong><span class="muted small">${esc(a.project || "company")} · ${esc(a.rationale || "")}</span></div>`).join("") || `<div class="muted small">No open risks or opportunities.</div>`}
     </div>`;
   }
+
   function decisionCard(x) {
-    return `<article class="decision-card"><div class="decision-top"><span class="decision-icon">!</span><div><strong>${esc(x.question)}</strong><span>${esc(x.project)} · ${esc(x.taskId)}</span></div></div><p>${esc(x.why)}</p><div class="decision-options">${(x.options || []).map((option) => `<span>${esc(option)}</span>`).join("")}</div><div class="decision-rec"><small>Recommendation</small>${esc(x.recommendation)}</div>${x.risk === "high" ? `<p class="muted small">The private signing key stays outside OpenClaw and this dashboard.</p><button class="btn" data-approve-decision="${esc(x.statePath)}">Submit signed approval</button>` : `<button class="btn" data-resolve-decision="${esc(x.statePath)}">Respond & resume</button>`}</article>`;
+    const actionable = Boolean(x.statePath);
+    return `<article class="decision-card">
+      <div class="decision-top"><span class="decision-icon">!</span><div><strong>${esc(x.question)}</strong><span>${esc(x.project || "company")}${x.taskId ? ` · ${esc(x.taskId)}` : ""}</span></div></div>
+      <p>${esc(x.why || "")}</p>
+      ${(x.options || []).length ? `<div class="decision-options">${x.options.map((option) => `<span>${esc(option)}</span>`).join("")}</div>` : ""}
+      ${x.recommendation ? `<div class="decision-rec"><small>Recommendation</small>${esc(x.recommendation)}</div>` : ""}
+      ${actionable
+        ? (x.risk === "high"
+            ? `<p class="muted small">The private signing key stays outside OpenClaw and this dashboard.</p><button class="btn" data-approve-decision="${esc(x.statePath)}">Submit signed approval</button>`
+            : `<button class="btn" data-resolve-decision="${esc(x.statePath)}">Respond & resume</button>`)
+        : `<p class="muted small">Strategic decision tracked in ${esc(x.project || "the project")}'s ownership.json — not resolvable from here yet; update the file directly.</p>`}
+    </article>`;
   }
 
   function bindFounderControls() {
     const project = document.getElementById("founder-project");
     project.onchange = () => { const repo = project.selectedOptions[0]?.dataset.repo; if (repo) document.getElementById("founder-repo").value = repo; };
     document.getElementById("founder-command").onsubmit = async (e) => { e.preventDefault(); try { const j = await apiJson("/api/founder/tasks", { method: "POST", body: JSON.stringify({ objective: document.getElementById("founder-objective").value, projectId: project.value, repo: document.getElementById("founder-repo").value }) }); showToast(`Work started: ${j.job.id}`); setTimeout(route, 1200); } catch (err) { showToast(err.message, true); } };
-    app.querySelectorAll("[data-project-action]").forEach((btn) => btn.onclick = async () => { try { await apiJson(`/api/founder/projects/${encodeURIComponent(btn.dataset.projectId)}/${btn.dataset.projectAction}`, { method: "POST", body: "{}" }); showToast(`Project ${btn.dataset.projectAction}d.`); route(); } catch (e) { showToast(e.message, true); } });
     app.querySelectorAll("[data-resolve-decision]").forEach((btn) => btn.onclick = () => { openModal("Founder decision", `<label class="field-label">Direction for the team</label><textarea class="editor" id="decision-direction" placeholder="Approve the recommended option because…"></textarea><button class="btn" id="submit-decision">Send decision & resume</button>`); document.getElementById("submit-decision").onclick = async () => { try { await apiJson("/api/founder/decisions/resolve", { method: "POST", body: JSON.stringify({ statePath: btn.dataset.resolveDecision, direction: document.getElementById("decision-direction").value }) }); closeModal(); showToast("Decision recorded. Work resumed."); route(); } catch (e) { showToast(e.message, true); } }; });
     app.querySelectorAll("[data-approve-decision]").forEach((btn) => btn.onclick = () => { openModal("Signed founder approval", `<p class="muted small">Create the assertion with <code>factory-sign-approval.mjs</code>, then submit its path and the matching evidence path inside the task worktree.</p><label class="field-label">Approval assertion path</label><input class="modal-input" id="approval-assertion" placeholder="/private/operator/approval.json"/><label class="field-label">Evidence path (relative to worktree)</label><input class="modal-input" id="approval-evidence" placeholder="evidence/founder-approval.md"/><button class="btn" id="submit-approval">Verify & approve</button>`); document.getElementById("submit-approval").onclick = async () => { try { await apiJson("/api/founder/decisions/approve", { method: "POST", body: JSON.stringify({ statePath: btn.dataset.approveDecision, approvalAssertionPath: document.getElementById("approval-assertion").value, evidence: document.getElementById("approval-evidence").value }) }); closeModal(); showToast("Signature verified. Work resumed."); route(); } catch (e) { showToast(e.message, true); } }; });
     document.getElementById("ask-agent").onclick = () => { openModal("Ask an agent", `<label class="field-label">Agent</label><input class="modal-input" id="question-agent" value="main"/><label class="field-label">Question</label><textarea class="editor" id="question-text" placeholder="What is blocking this project?"></textarea><button class="btn" id="send-question">Ask</button><div id="question-answer"></div>`); document.getElementById("send-question").onclick = async () => { const out = document.getElementById("question-answer"); out.innerHTML = `<p class="muted">Agent is thinking…</p>`; try { const j = await apiJson("/api/founder/questions", { method: "POST", body: JSON.stringify({ agentId: document.getElementById("question-agent").value, question: document.getElementById("question-text").value }) }); out.innerHTML = `<div class="card">${esc(j.question.answer)}</div>`; } catch (e) { out.innerHTML = `<p class="danger-text">${esc(e.message)}</p>`; } }; };
-    document.getElementById("new-project").onclick = () => { openModal("Create project", `<label class="field-label">Name</label><input class="modal-input" id="project-name"/><label class="field-label">ID</label><input class="modal-input" id="project-id" placeholder="project-name"/><label class="field-label">Mission</label><textarea class="editor" id="project-mission"></textarea><label class="field-label">Repository path (optional)</label><input class="modal-input" id="project-repo"/><button class="btn" id="create-project">Create project</button>`); document.getElementById("create-project").onclick = async () => { try { await apiJson("/api/founder/projects", { method: "POST", body: JSON.stringify({ name: document.getElementById("project-name").value, id: document.getElementById("project-id").value, mission: document.getElementById("project-mission").value, repoPath: document.getElementById("project-repo").value }) }); closeModal(); showToast("Project created."); route(); } catch (e) { showToast(e.message, true); } }; };
   }
 
-  function renderAgentRail(agents) {
-    const active = agents.filter((a) => a.layer !== "existing-agent").slice(0, 12);
+  function renderAgentRail(agents, runtime) {
+    const list = (agents || []).slice(0, 14);
     return `
       <aside class="agent-rail">
         <div class="rail-title">HQ Team</div>
         <input class="rail-filter" placeholder="Filter agents..." disabled />
-        ${active.map((a) => `
+        ${list.map((a) => `
           <div class="rail-agent">
             <div class="avatar">${esc((a.name || "?").slice(0, 2))}</div>
             <div>
               <strong>${esc(a.name)}</strong>
-              <span>${esc(a.role)}</span>
-              <em>${esc(a.lifecycleStatus || a.status)}</em>
+              <span>${esc(a.role)} · ${esc(a.harness || "—")}</span>
+              <em>${esc(railStatus(a, runtime))}</em>
             </div>
           </div>`).join("")}
       </aside>`;
   }
 
+  function railStatus(a, runtime) {
+    if (a.harnessAvailable === false) return `${a.status} (${a.harness} unavailable → ${a.harnessFallback || "fallback"})`;
+    if (!runtime || !runtime.available) return a.status;
+    if (a.runtimeAgentId && !a.runtimeResolved) return `${a.status} (no live OpenClaw agent)`;
+    return a.status;
+  }
+
+  // ── Agents: organizational roles vs. the real OpenClaw runtime ─
+
   async function renderAgents() {
-    const d = await loadHq();
-    const global = d.agents.filter((a) => a.layer === "global-hq");
-    const ceos = d.agents.filter((a) => a.layer === "project-ceo");
-    const existing = d.agents.filter((a) => a.layer === "existing-agent");
+    const [state, labAgents] = await Promise.all([
+      loadCompany(),
+      apiJson("/api/agents").catch(() => ({ agents: [] })),
+    ]);
+    const agents = state.agents?.agents || [];
+    const runtime = state.runtime;
+    const reconciliation = state.rosterReconciliation;
+
     app.innerHTML = `
       <h1 class="page-title">Agents</h1>
-      <p class="muted">Two-layer command structure plus existing integrated agents.</p>
-      ${agentGroup("Global HQ", global, d)}
-      ${agentGroup("Project CEOs", ceos, d)}
-      ${agentGroup("Existing Integrated Agents", existing, d)}`;
+      <p class="muted">Organizational roles are Headquarters' committed workforce roster (factory/agents.json). The runtime roster below is what OpenClaw itself reports right now — they are not always the same thing.</p>
+      ${runtimeBanner(runtime)}
+      <h2 class="section-title">Organizational roles</h2>
+      <div class="agent-grid">
+        ${agents.map((a) => orgRoleCard(a, runtime)).join("") || `<div class="empty-state">No agents in factory/agents.json.</div>`}
+      </div>
+
+      <h2 class="section-title">Real OpenClaw runtime roster</h2>
+      ${runtimeRosterTable(runtime, reconciliation)}
+
+      <h2 class="section-title">Agent Lab (runnable agent folders)</h2>
+      <p class="muted small">The only mechanism in this repo that actually executes an agent as a standalone process — distinct from the organizational roster above.</p>
+      ${agentLabGrid(labAgents.agents || [])}
+    `;
     app.querySelectorAll("[data-run-existing]").forEach((btn) => {
       btn.onclick = () => {
         const [project, id] = btn.dataset.runExisting.split("/");
@@ -293,103 +428,111 @@
     });
   }
 
-  function agentGroup(title, list, d) {
-    return `
-      <h2 class="section-title">${esc(title)}</h2>
-      <div class="agent-grid">
-        ${list.map((a) => `
-          <article class="agent-card">
-            <div class="agent-card-head">
-              <div class="avatar large">${esc((a.name || "?").slice(0, 2))}</div>
-              <div>
-                <h3>${esc(a.name)}</h3>
-                <p>${esc(a.role)}</p>
-              </div>
-              ${pill(a.lifecycleStatus || a.status, a.executable ? "health-healthy" : "badge-type")}
-            </div>
-            <dl class="meta-grid">
-              <dt>Division</dt><dd>${esc(a.division || "-")}</dd>
-              <dt>Kind</dt><dd>${esc(a.agentKind === "executable-agent" ? "Executable agent" : "Conceptual persona")}</dd>
-              <dt>Promotion</dt><dd>${esc(promotionText(a))}</dd>
-              <dt>Reports to</dt><dd>${esc(agentName(d.agents, a.reportsTo))}</dd>
-              <dt>Manages</dt><dd>${esc((a.manages || []).map((id) => agentName(d.agents, id)).join(", ") || "-")}</dd>
-              <dt>Current task</dt><dd>${esc(a.currentTask || "-")}</dd>
-              <dt>Last output</dt><dd>${esc(a.lastOutput || "-")}</dd>
-            </dl>
-            <div class="permission-row">${(a.approvalPermissions || []).map((p) => pill(p, "badge-type")).join("")}</div>
-            ${a.executable && a.realAgentKey ? `<div class="row-actions">
-              <button class="btn" data-run-existing="${esc(a.realAgentKey)}">Run now</button>
-              <a class="btn secondary" href="#/agent/${encodeURIComponent(a.realAgentKey.split("/")[0])}/${encodeURIComponent(a.realAgentKey.split("/")[1])}">Open lab agent</a>
-            </div>` : ""}
-          </article>`).join("")}
-      </div>`;
+  function statusBadgeClass(status) {
+    if (status === "working") return "health-healthy";
+    if (status === "blocked" || status === "failed") return "health-failed";
+    if (status === "stale" || status === "waiting" || status === "needs-founder") return "badge-warn";
+    return "badge-type";
   }
 
-  function promotionText(agent) {
-    if (agent.executable) return `runnable: ${agent.realAgentKey}`;
-    const p = agent.promotion || {};
-    if (!p.candidateKey) return "persona only";
-    if (!p.folderExists) return `missing folder: ${p.candidateKey}`;
-    if (!p.runnableFolder) return `missing ${Array.isArray(p.missing) ? p.missing.join(", ") : "required files"}`;
-    if (!p.registered) return "folder ready, not registered";
-    return "not runnable";
+  function runtimeNoteFor(a, runtime) {
+    if (!runtime) return "Runtime status unavailable";
+    if (!runtime.available) return `Runtime status unavailable${runtime.error ? ` (${runtime.error})` : ""}`;
+    if (!a.runtimeAgentId) return "No runtimeAgentId assigned";
+    if (!a.runtimeResolved) return `Live: no OpenClaw agent named "${a.runtimeAgentId}"`;
+    return a.running ? "Live: running now" : "Live: not currently running";
   }
+
+  function harnessLine(a) {
+    if (a.harnessAvailable === false) {
+      return `${esc(a.harness || "—")} ${pill("unavailable", "badge-warn")}${a.harnessFallback ? ` → falling back to ${esc(a.harnessFallback)}` : ""}`;
+    }
+    return esc(a.harness || "—");
+  }
+
+  function orgRoleCard(a, runtime) {
+    return `
+      <article class="agent-card">
+        <div class="agent-card-head">
+          <div class="avatar large">${esc((a.name || "?").slice(0, 2))}</div>
+          <div><h3>${esc(a.name)}</h3><p>${esc(a.role)}</p></div>
+          ${pill(a.status, statusBadgeClass(a.status))}
+        </div>
+        ${a.harnessAvailable === false ? `<div class="gap-banner">Intended harness "${esc(a.harness)}" is currently unavailable — running on "${esc(a.harnessFallback || "an unspecified fallback")}" instead.</div>` : ""}
+        <dl class="meta-grid">
+          <dt>Harness</dt><dd>${harnessLine(a)}</dd>
+          <dt>Runtime agent id</dt><dd>${esc(a.runtimeAgentId || "—")}</dd>
+          <dt>Runtime</dt><dd>${esc(runtimeNoteFor(a, runtime))}</dd>
+          <dt>Current project</dt><dd>${esc(a.currentProject || "—")}</dd>
+          <dt>Current task</dt><dd>${esc(a.currentTask?.objective || "—")}</dd>
+          <dt>Stage</dt><dd>${esc(a.currentTask?.stage || "—")}</dd>
+          <dt>Blocker</dt><dd>${esc(a.blocker || "—")}</dd>
+          <dt>Last activity</dt><dd>${esc(a.lastActivityAt ? fmtTime(a.lastActivityAt) : "—")}</dd>
+        </dl>
+      </article>`;
+  }
+
+  function runtimeRosterTable(runtime, reconciliation) {
+    if (!runtime) return `<div class="empty-state">Runtime awareness is disabled in factory/hq.config.json.</div>`;
+    if (!runtime.available) return `<div class="empty-state">OpenClaw runtime status unavailable: ${esc(runtime.error || "openclaw CLI unreachable")}.</div>`;
+    if (!runtime.agents.length) return `<div class="empty-state">OpenClaw reports no agent workspaces right now.</div>`;
+    return `<div class="table-wrap"><table class="runtime-table">
+      <thead><tr><th>OpenClaw agent id</th><th>Identity</th><th>Model</th><th>Organizational role</th></tr></thead>
+      <tbody>
+        ${runtime.agents.map((r) => {
+          const role = (reconciliation?.roles || []).find((x) => x.runtimeAgentId === r.id && x.resolved);
+          return `<tr><td>${esc(r.id)}</td><td>${esc(r.identity)}</td><td>${esc(r.model || "—")}</td><td>${role ? esc(role.role) : `<span class="muted">Unassigned — no org role names this agent</span>`}</td></tr>`;
+        }).join("")}
+      </tbody>
+    </table></div>
+    ${(reconciliation?.roles || []).some((r) => r.runtimeAgentId && !r.resolved) ? `<p class="muted small">Some organizational roles name an OpenClaw agent id that does not currently exist in this machine's install — see the honesty-check panel on Today.</p>` : ""}`;
+  }
+
+  function agentLabGrid(list) {
+    if (!list.length) return `<div class="empty-state">No agents registered in the Agent Lab (agents/&lt;project&gt;/&lt;id&gt;/).</div>`;
+    return `<div class="agent-grid">${list.map((a) => `
+      <article class="agent-card">
+        <div class="agent-card-head"><div class="avatar large">${esc((a.config?.name || a.id || "?").slice(0, 2))}</div><div><h3>${esc(a.config?.name || a.id)}</h3><p>${esc(a.project)}/${esc(a.id)}</p></div></div>
+        <div class="row-actions"><button class="btn" data-run-existing="${esc(a.project)}/${esc(a.id)}">Run now</button></div>
+      </article>`).join("")}</div>`;
+  }
+
+  // ── Projects: real registry + intelligence ─────────────────────
 
   async function renderProjects() {
-    const d = await loadHq();
-
-    // Pre-compute per-project stats from the already-loaded HQ data
-    function projectStats(projectId) {
-      const agents = (d.agents || []).filter((a) => a.projectId === projectId);
-      const real = agents.filter((a) => a.executable).length;
-      const conceptual = agents.filter((a) => !a.executable).length;
-      const tasks = (d.tasks || []).filter((t) => t.projectId === projectId);
-      const active = tasks.filter((t) => !["Done", "Blocked"].includes(t.status)).length;
-      const blocked = tasks.filter((t) => t.status === "Blocked").length;
-      const needsJ = tasks.filter((t) => t.approvalRequired && t.status !== "Done").length;
-      return { real, conceptual, active, blocked, needsJ };
-    }
-
+    const state = await loadCompany();
+    const projects = state.projects || [];
     app.innerHTML = `
       <div class="page-head">
         <div>
           <h1 class="page-title">Projects</h1>
-          <p class="muted">Click any project to open its full profile, org structure, agent cards, workflows, and tasks.</p>
+          <p class="muted">Real projects from factory/projects.json. Click a card to open its full intelligence profile.</p>
         </div>
       </div>
+      ${state.headquarters ? `<div class="hq-infra-note muted small">${esc(state.headquarters.name)} is Headquarters infrastructure, not a project — it is not listed below. See Today for its status.</div>` : ""}
       <div class="project-grid">
-        ${d.projects.map((p) => {
-          const href = `#/project/${encodeURIComponent(p.id)}`;
-          const s = projectStats(p.id);
-          const ceoAgent = (d.agents || []).find((a) => a.id === p.projectCEO);
-          const ceoName = ceoAgent ? ceoAgent.name : (p.projectCEO || "-");
+        ${projects.map((p) => {
+          const href = `#/project/${encodeURIComponent(p.key)}`;
           return `
           <article class="project-card project-card-link" data-href="${esc(href)}">
             <div class="card-head">
               <div style="min-width:0">
                 <h3 class="card-title">${esc(p.name)}</h3>
-                <div class="card-meta">${esc(p.currentPhase || "active")} · CEO: <strong>${esc(ceoName)}</strong></div>
+                <div class="card-meta">${esc(p.status)}${p.health ? ` · Health ${p.health.score}/100` : ""}</div>
               </div>
               <a class="btn" href="${esc(href)}">Open →</a>
             </div>
-            <p style="margin:0.6rem 0 0.75rem">${esc(p.mission || p.description || "")}</p>
+            <p style="margin:0.6rem 0 0.75rem">${esc(p.mission || "")}</p>
             <div class="proj-stats-row">
-              <span class="proj-stat ${s.real > 0 ? "proj-stat-green" : ""}">
-                ${s.real} real agent${s.real !== 1 ? "s" : ""}
-              </span>
-              <span class="proj-stat proj-stat-muted">
-                ${s.conceptual} conceptual
-              </span>
-              ${s.active > 0 ? `<span class="proj-stat">${s.active} active task${s.active !== 1 ? "s" : ""}</span>` : ""}
-              ${s.blocked > 0 ? `<span class="proj-stat proj-stat-red">${s.blocked} blocked</span>` : ""}
-              ${s.needsJ > 0 ? `<span class="proj-stat proj-stat-amber">${s.needsJ} needs Operator</span>` : ""}
+              <span class="proj-stat">${(p.activeTasks || []).length} active task${(p.activeTasks || []).length === 1 ? "" : "s"}</span>
+              ${(p.blockedTasks || []).length ? `<span class="proj-stat proj-stat-red">${p.blockedTasks.length} blocked</span>` : ""}
+              ${!p.hasContext ? `<span class="proj-stat proj-stat-amber">context incomplete</span>` : ""}
+              <span class="proj-stat proj-stat-muted">${p.github ? "GitHub configured" : "GitHub not configured"}</span>
             </div>
-            ${p.bottleneck ? `<div class="proj-bottleneck muted small">Bottleneck: ${esc(p.bottleneck)}</div>` : ""}
           </article>`;
-        }).join("")}
+        }).join("") || `<div class="empty-state">No projects registered.</div>`}
       </div>`;
 
-    // Make entire card clickable
     app.querySelectorAll(".project-card-link").forEach((card) => {
       card.onclick = (e) => {
         if (e.target.closest("a, button")) return;
@@ -398,237 +541,64 @@
     });
   }
 
-  // ── Project profile helpers ────────────────────────────────────
-
-  function agentKindBadge(agent) {
-    if (agent.executable) return pill("real executable", "badge-executable");
-    return pill("conceptual", "badge-conceptual");
+  function renderIntelSection(title, items) {
+    if (!items || !items.length) return "";
+    return `<section class="profile-section"><h2 class="section-title">${esc(title)}</h2><ul class="intel-list">${items.map((i) => `<li>${esc(i)}</li>`).join("")}</ul></section>`;
   }
 
-  function lifecycleBadge(agent) {
-    const s = String(agent.lifecycleStatus || agent.status || "unknown");
-    const cls =
-      s === "active" || s === "scheduled"
-        ? "health-healthy"
-        : s === "failed"
-          ? "health-failed"
-          : "badge-lifecycle";
-    return pill(s, cls);
-  }
-
-  function renderAgentRoleCard(agent) {
-    const key = agent.realAgentKey || "";
-    const parts = key.split("/");
-    const proj = parts[0] || "";
-    const aid = parts[1] || "";
-    const lr = agent.labAgent ? agent.labAgent.lastRun : null;
-    const lrStatus = lr ? lr.status : null;
-    const lrTime = lr ? fmtTime(lr.ended_at || lr.started_at) : null;
-    const lrArtifact = lr ? lr.artifactsPreview : null;
-    const execClass = agent.executable ? "is-executable" : "is-conceptual";
-
-    return `
-      <div class="agent-role-card ${execClass}">
-        <div class="arc-name">${esc(agent.name)}</div>
-        <div class="arc-role">${esc(agent.role)}</div>
-        <div class="arc-badges">
-          ${agentKindBadge(agent)}
-          ${lifecycleBadge(agent)}
-        </div>
-        ${agent.description ? `<div class="arc-detail">${esc(agent.description)}</div>` : ""}
-        ${agent.currentTask ? `<div class="arc-detail muted">${esc(agent.currentTask)}</div>` : ""}
-        ${agent.executable
-          ? `<div class="arc-run-info">
-              Last run: ${lrStatus
-                ? pill(lrStatus, lrStatus === "success" ? "health-healthy" : "health-failed") + " " + esc(lrTime || "")
-                : "<span class='muted'>No runs yet</span>"}
-              ${lrArtifact ? `<br>${esc(lrArtifact)}` : ""}
-            </div>
-            <div class="arc-actions">
-              <button class="btn arc-run-btn" data-agent-key="${esc(key)}">Run now</button>
-              <a class="btn secondary" href="#/agent/${encodeURIComponent(proj)}/${encodeURIComponent(aid)}">Runs / logs</a>
-              <button class="btn ghost arc-logs-btn" data-agent-key="${esc(key)}">Logs</button>
-              <button class="btn ghost arc-cfg-btn" data-agent-key="${esc(key)}">Config</button>
-            </div>`
-          : `<div class="arc-run-info muted">Not executable — persona only, no folder</div>`}
-      </div>`;
-  }
-
-  function buildOrgTree(ceo, agents) {
-    if (!ceo) return `<p class="muted small">No CEO defined for this project.</p>`;
-    const workers = [...(agents.realWorkers || []), ...(agents.conceptualWorkers || [])];
-    const lines = [];
-
-    lines.push(`<div class="ot-root">Operator</div>`);
-
-    const ceoExec = ceo.executable;
-    lines.push(
-      `<div class="ot-line"><span class="ot-prefix">└── </span><span class="${ceoExec ? "ot-exec" : "ot-concept"}">${esc(ceo.name)}</span>` +
-      ` <span class="ot-meta">${esc(ceo.role)} · ${ceoExec ? "● real executable" : "○ conceptual"}</span></div>`
-    );
-
-    workers.forEach((w, i) => {
-      const last = i === workers.length - 1;
-      const pfx = last ? "    └── " : "    ├── ";
-      const pipe = last ? "        " : "    │   ";
-      const wExec = w.executable;
-      lines.push(
-        `<div class="ot-line"><span class="ot-prefix">${pfx}</span><span class="${wExec ? "ot-exec" : "ot-concept"}">${esc(w.name)}</span>` +
-        ` <span class="ot-meta">${esc(w.role)} · ${wExec ? "● real executable" : "○ conceptual"}</span></div>`
-      );
-      if (wExec && w.labAgent) {
-        const tools = (w.labAgent.config && w.labAgent.config.tools
-          ? w.labAgent.config.tools
-          : []
-        ).slice(0, 4);
-        tools.forEach((t, ti) => {
-          const tlast = ti === tools.length - 1;
-          lines.push(
-            `<div class="ot-line ot-leaf"><span class="ot-prefix">${pipe}${tlast ? "└── " : "├── "}</span><span class="ot-tool">${esc(t)}</span></div>`
-          );
-        });
-      }
-    });
-
-    return `<div class="org-tree">${lines.join("")}</div>`;
-  }
-
-  function renderWorkflowSection(project) {
-    const steps = Array.isArray(project.mainWorkflows) ? project.mainWorkflows : [];
-    if (!steps.length) return "";
-    return `
-      <section class="profile-section">
-        <h2 class="section-title">How Work Flows</h2>
-        <div class="workflow-steps">
-          ${steps.map((step, i) => `
-            <div class="workflow-step">
-              <div class="step-num">${i + 1}</div>
-              <div class="step-text">${esc(step)}</div>
-            </div>`).join("")}
-        </div>
-      </section>`;
-  }
-
-  function renderApprovalSection(project) {
-    const rules = Array.isArray(project.approvalRules) ? project.approvalRules : [];
-    if (!rules.length) return "";
-    return `
-      <section class="profile-section">
-        <h2 class="section-title">Decision Rights</h2>
-        <div class="approval-list">
-          ${rules.map((rule) => {
-            const text = String(rule);
-            const isNo = /cannot|must not|without approval|never|blocked|do not/i.test(text);
-            return `
-              <div class="approval-item">
-                <span class="ai-prefix ${isNo ? "ai-cannot" : "ai-can"}">${isNo ? "cannot" : "can"}</span>
-                <span>${esc(text)}</span>
-              </div>`;
-          }).join("")}
-        </div>
-      </section>`;
-  }
-
-  function renderProjectTaskMinis(tasks) {
-    const seen = new Set();
-    const all = [
-      ...(tasks.needsJoao || []),
-      ...(tasks.blocked || []),
-      ...(tasks.active || []),
-    ].filter((t) => {
-      if (seen.has(t.id)) return false;
-      seen.add(t.id);
-      return true;
-    });
-    if (!all.length) return `<p class="muted small">No active tasks.</p>`;
-    return all.slice(0, 6).map((t) => {
-      const isBlocked = t.status === "Blocked";
-      const needsJ = t.approvalRequired && t.status !== "Done";
-      const pCls = String(t.priority || "low").toLowerCase();
-      return `
-        <div class="task-mini priority-${esc(pCls)} ${isBlocked ? "task-mini-blocked" : ""}">
-          <div class="tm-title">${esc(t.title)}</div>
-          <div class="tm-meta">
-            ${pill(t.status || "?", isBlocked ? "health-failed" : needsJ ? "badge-warn" : "badge-type")}
-            ${needsJ ? pill("Needs Operator", "badge-warn") : ""}
-          </div>
-          ${isBlocked && t.blocker ? `<div class="tm-blocker">${esc(String(t.blocker).slice(0, 120))}</div>` : ""}
-        </div>`;
-    }).join("");
-  }
-
-  function renderProjectActivity(runs, reports) {
-    const items = [];
-    for (const r of (runs || []).slice(0, 5)) {
-      items.push({
-        dot: r.status,
-        label: r.agentId || r.agent_key,
-        badge: r.status,
-        badgeCls: r.status === "success" ? "health-healthy" : r.status === "failed" ? "health-failed" : "badge-type",
-        detail: r.artifactsPreview || r.summary || r.error_message || "",
-        time: r.ended_at || r.started_at,
-        link: `#/run/${r.id}`,
-        linkLabel: "View run →",
-      });
-    }
-    for (const r of (reports || []).slice(0, 3)) {
-      items.push({
-        dot: "info",
-        label: r.title,
-        badge: "report",
-        badgeCls: "badge-type",
-        detail: r.summary || "",
-        time: r.createdAt,
-        link: "#/reports",
-        linkLabel: "Reports →",
-      });
-    }
-    if (!items.length) return `<p class="muted small">No recent activity.</p>`;
-    return items.map((item) => `
-      <div class="activity-item">
-        <div class="activity-dot ${item.dot === "success" ? "success" : item.dot === "failed" ? "failed" : ""}"></div>
-        <div class="activity-content">
-          <strong>${esc(item.label)}</strong> ${pill(item.badge, item.badgeCls)}
-          ${item.detail ? `<br>${esc(String(item.detail).slice(0, 80))}` : ""}
-          <br><span class="activity-time">${esc(fmtTime(item.time))}</span>
-          ${item.link ? ` · <a href="${esc(item.link)}">${esc(item.linkLabel)}</a>` : ""}
-        </div>
+  function renderCompanyTaskMinis(p) {
+    const all = [...(p.blockedTasks || []), ...(p.activeTasks || [])];
+    if (!all.length) return `<p class="muted small">No active factory tasks.</p>`;
+    return all.slice(0, 8).map((t) => `
+      <div class="task-mini ${t.status === "blocked" ? "task-mini-blocked" : ""}">
+        <div class="tm-title">${esc(t.objective || t.id)}</div>
+        <div class="tm-meta">${pill(t.stage || "?", "badge-type")}${pill(t.status, t.status === "blocked" ? "health-failed" : "badge-type")}</div>
       </div>`).join("");
   }
 
-  function openProjectJsonModal(id, currentProject) {
-    openModal(`Edit project JSON: ${id}`, `
-      <p class="muted" style="font-size:0.82rem">Editing <code>dashboard/backend/data/hq/projects/${esc(id)}.json</code>. This updates the data file only.</p>
-      <textarea class="editor tall" id="project-modal-editor">${esc(JSON.stringify(currentProject, null, 2))}</textarea>
-      <div class="row-actions">
-        <button class="btn" id="save-project-modal">Save profile</button>
-      </div>`);
-    document.getElementById("save-project-modal").onclick = async () => {
-      try {
-        const project = JSON.parse(document.getElementById("project-modal-editor").value);
-        await apiJson(`/api/hq/projects/${encodeURIComponent(id)}`, {
-          method: "PUT",
-          body: JSON.stringify({ project }),
-        });
-        closeModal();
-        showToast("Project profile saved.");
-        renderProject({ name: "project", id });
-      } catch (e) {
-        showToast(String(e.message || e), true);
-      }
-    };
+  function renderGithubPanel(p) {
+    if (!p.github) return `<p class="muted small">GitHub repository not configured.</p>`;
+    const ext = p.external;
+    if (!ext) {
+      // The Headquarters row carries only a summary line, not the full
+      // per-project external object (see hq/company-state.mjs).
+      if (p.externalSummary) return `<p class="muted small">${esc(p.externalSummary)}</p>`;
+      return `<p class="muted small">GitHub configured (${esc(p.github.owner)}/${esc(p.github.repo)}) — awareness not requested.</p>`;
+    }
+    if (!ext.available) return `<p class="muted small">GitHub unavailable: ${esc(ext.warnings?.[0]?.message || "unknown error")}</p>`;
+    return `
+      <p class="muted small">${esc(ext.summary || "")}</p>
+      ${ext.repoInfo ? `<p class="muted small"><a href="${esc(ext.repoInfo.url)}" target="_blank" rel="noopener">${esc(ext.repoInfo.name)}</a> · default branch ${esc(ext.repoInfo.defaultBranch || "—")}</p>` : ""}
+      ${(ext.commits || []).slice(0, 3).map((c) => `<div class="feed-item"><strong>${esc(c.message)}</strong><div class="muted small">${esc(c.author)} · ${esc(fmtTime(c.date))}</div></div>`).join("")}
+      ${(ext.pullRequests || []).length ? `<p class="muted small">${ext.pullRequests.length} open PR(s)</p>` : ""}
+      ${(ext.issues || []).length ? `<p class="muted small">${ext.issues.length} open issue(s)</p>` : ""}
+    `;
   }
 
   async function renderProject(route) {
-    let d;
+    let state;
     try {
-      d = await apiJson(`/api/hq/projects/${encodeURIComponent(route.id)}/profile`);
+      state = await loadCompany();
     } catch (e) {
-      app.innerHTML = `<p class="muted">Error loading profile: ${esc(String(e.message || e))}</p>`;
+      app.innerHTML = `<p class="muted">Error loading company state: ${esc(String(e.message || e))}</p>`;
       return;
     }
 
-    const { project: p, ceo, agents, tasks, recentRuns, recentReports, stats } = d;
+    let p = (state.projects || []).find((x) => x.key === route.id);
+    let isHq = false;
+    if (!p && state.headquarters?.key === route.id) {
+      p = state.headquarters;
+      isHq = true;
+    }
+    if (!p) {
+      app.innerHTML = `<p class="profile-back"><a href="#/projects">← Projects</a></p><p class="muted">Project not found in factory/projects.json: ${esc(route.id)}</p>`;
+      return;
+    }
+
+    const intel = p.intelligence || null;
+    const responsibleAgents = (p.responsibleAgents || [])
+      .map((id) => (state.agents.agents || []).find((a) => a.id === id))
+      .filter(Boolean);
 
     app.innerHTML = `
       <div class="profile-back"><a href="#/projects">← Projects</a></div>
@@ -637,20 +607,19 @@
         <div>
           <h1 class="page-title">${esc(p.name)}</h1>
           <div class="profile-meta">
-            ${pill(p.id, "badge-type")}
-            ${pill(p.currentPhase || "active", "badge-type")}
-            ${ceo ? `CEO: <strong>${esc(ceo.name)}</strong>` : ""}
+            ${pill(p.key, "badge-type")}
+            ${isHq ? pill("Headquarters infrastructure", "badge-type") : pill(p.status, "badge-type")}
+            ${!isHq && p.health ? pill(`Health ${p.health.score}/100`, p.health.level === "healthy" ? "health-healthy" : p.health.level === "at-risk" ? "health-failed" : "badge-warn") : ""}
           </div>
         </div>
-        <button class="btn secondary" id="profile-edit-json">Edit raw JSON</button>
       </div>
 
       <div class="profile-stats">
-        <div class="pstat"><div class="pstat-val">${stats.activeTasks}</div><div class="pstat-label">Active Tasks</div></div>
-        <div class="pstat ${stats.blockedTasks > 0 ? "pstat-warn" : ""}"><div class="pstat-val">${stats.blockedTasks}</div><div class="pstat-label">Blocked</div></div>
-        <div class="pstat ${stats.needsJoao > 0 ? "pstat-action" : ""}"><div class="pstat-val">${stats.needsJoao}</div><div class="pstat-label">Needs Operator</div></div>
-        <div class="pstat"><div class="pstat-val">${stats.realAgents}</div><div class="pstat-label">Real Agents</div></div>
-        <div class="pstat pstat-muted"><div class="pstat-val">${stats.conceptualAgents}</div><div class="pstat-label">Conceptual</div></div>
+        <div class="pstat"><div class="pstat-val">${(p.activeTasks || []).length}</div><div class="pstat-label">Active Tasks</div></div>
+        <div class="pstat ${(p.blockedTasks || []).length ? "pstat-warn" : ""}"><div class="pstat-val">${(p.blockedTasks || []).length}</div><div class="pstat-label">Blocked</div></div>
+        <div class="pstat ${(p.openDecisions || []).length ? "pstat-action" : ""}"><div class="pstat-val">${(p.openDecisions || []).length}</div><div class="pstat-label">Open Decisions</div></div>
+        <div class="pstat"><div class="pstat-val">${responsibleAgents.length}</div><div class="pstat-label">Responsible agents</div></div>
+        <div class="pstat pstat-muted"><div class="pstat-val">${p.hasContext ? "Yes" : "No"}</div><div class="pstat-label">Has context</div></div>
       </div>
 
       <div class="profile-grid">
@@ -658,150 +627,69 @@
 
           <section class="profile-section">
             <h2 class="section-title">Overview</h2>
-            <p>${esc(p.mission || p.description || "")}</p>
-            <dl class="meta-grid compact">
-              <dt>Phase</dt><dd>${esc(p.currentPhase || "-")}</dd>
-              <dt>Status</dt><dd>${esc(p.currentStatus || "-")}</dd>
-              <dt>Metric</dt><dd>${esc(p.mainMetric || "-")}</dd>
-              <dt>Bottleneck</dt><dd>${esc(p.bottleneck || "-")}</dd>
-              ${p.latestReport ? `<dt>Latest report</dt><dd>${esc(p.latestReport)}</dd>` : ""}
-            </dl>
-            ${(p.nextRecommendedActions || []).length
-              ? `<div class="profile-next-action"><strong>Next:</strong> ${esc(p.nextRecommendedActions[0])}</div>`
-              : ""}
+            <p>${esc(p.mission || "No mission recorded.")}</p>
+            ${intel?.vision?.statement ? `<p class="muted small"><strong>Vision:</strong> ${esc(intel.vision.statement)}</p>` : ""}
+            ${intel?.roadmap?.current ? `<p class="muted small"><strong>Current:</strong> ${esc(intel.roadmap.current)}</p>` : ""}
+          </section>
+
+          ${!p.hasContext ? `<section class="profile-section"><h2 class="section-title">Context gap</h2><div class="feed-item danger"><p>This project has no readable context/ directory, or it is missing critical files. The intelligence layer cannot give agents mission, roadmap, or decision context for it. Nothing here has been invented to fill the gap.</p></div></section>` : ""}
+
+          ${(p.contextFindings || []).length ? `<section class="profile-section"><h2 class="section-title">Context findings</h2>${p.contextFindings.map((f) => `<div class="feed-item ${f.severity === "error" ? "danger" : ""}"><p>${esc(f.file || "context/")}: ${esc(f.message)}</p></div>`).join("")}</section>` : ""}
+
+          ${renderIntelSection("Roadmap", intel?.roadmap ? [
+            intel.roadmap.next?.length ? `Next: ${intel.roadmap.next.join("; ")}` : null,
+            intel.roadmap.later?.length ? `Later: ${intel.roadmap.later.join("; ")}` : null,
+            intel.roadmap.deferred?.length ? `Deferred: ${intel.roadmap.deferred.join("; ")}` : null,
+          ].filter(Boolean) : null)}
+
+          ${renderIntelSection("Recent decisions", (intel?.decisions || []).slice(0, 5).map((d) => `${d.id ? `${d.id} — ` : ""}${d.title}${d.summary ? `: ${d.summary}` : ""}`))}
+
+          ${renderIntelSection("Memory", intel?.memory)}
+
+          ${intel?.techContext ? `<section class="profile-section"><h2 class="section-title">Technical context</h2><p class="muted small">${esc(intel.techContext)}</p></section>` : ""}
+          ${intel?.users ? `<section class="profile-section"><h2 class="section-title">Users</h2><p class="muted small">${esc(intel.users)}</p></section>` : ""}
+          ${intel?.competitiveContext ? `<section class="profile-section"><h2 class="section-title">Competitive context</h2><p class="muted small">${esc(intel.competitiveContext)}</p></section>` : ""}
+
+          <section class="profile-section">
+            <h2 class="section-title">Risks</h2>
+            ${(p.risks || []).length
+              ? p.risks.map((r) => `<div class="feed-item ${r.unmitigated ? "danger" : ""}"><strong>${esc(r.title)}</strong> ${pill(r.severity, r.severity === "high" ? "health-failed" : "badge-warn")}${r.unmitigated ? ` ${pill("unmitigated", "badge-warn")}` : ""}${r.mitigation ? `<p>${esc(r.mitigation)}</p>` : ""}</div>`).join("")
+              : `<p class="muted small">No risks recorded in ownership.json.</p>`}
           </section>
 
           <section class="profile-section">
-            <h2 class="section-title">Operating Structure</h2>
-
-            ${ceo ? `
-            <div class="work-structure">
-              <div class="structure-group">
-                <div class="structure-label">CEO / Owner</div>
-                <div class="role-cards-row">${renderAgentRoleCard(ceo)}</div>
-              </div>
-              <div class="structure-group">
-                <div class="structure-label">Reports to</div>
-                <div class="structure-chain">${esc(ceo.reportsTo || "jarvis")} → Operator</div>
-              </div>
-            </div>` : ""}
-
-            ${agents.sharedSupport.length ? `
-            <div class="structure-group">
-              <div class="structure-label">Shared Support (Global HQ)</div>
-              <div class="role-cards-row">${agents.sharedSupport.map((a) => renderAgentRoleCard(a)).join("")}</div>
-            </div>` : ""}
-
-            ${agents.realWorkers.length ? `
-            <div class="structure-group">
-              <div class="structure-label">Real Executable Agents</div>
-              <div class="role-cards-row">${agents.realWorkers.map((a) => renderAgentRoleCard(a)).join("")}</div>
-            </div>` : `<p class="muted small">No real executable agents yet.</p>`}
-
-            ${agents.conceptualWorkers.length ? `
-            <div class="structure-group">
-              <div class="structure-label">Conceptual / Planned</div>
-              <div class="role-cards-row">${agents.conceptualWorkers.map((a) => renderAgentRoleCard(a)).join("")}</div>
-            </div>` : ""}
+            <h2 class="section-title">Responsible agents</h2>
+            ${responsibleAgents.length ? `<div class="agent-grid">${responsibleAgents.map((a) => orgRoleCard(a, state.runtime)).join("")}</div>` : `<p class="muted small">No responsible agents recorded.</p>`}
           </section>
-
-          <section class="profile-section">
-            <h2 class="section-title">Org Tree</h2>
-            ${buildOrgTree(ceo, agents)}
-          </section>
-
-          ${renderWorkflowSection(p)}
-          ${renderApprovalSection(p)}
 
         </div>
 
         <div class="profile-sidebar">
-
           <div class="sidebar-card">
-            <h2 class="section-title">Tasks &amp; Blockers</h2>
-            ${renderProjectTaskMinis(tasks)}
-            <a class="btn secondary" style="display:block;text-align:center;margin-top:0.65rem" href="#/tasks">All Tasks →</a>
+            <h2 class="section-title">Tasks</h2>
+            ${renderCompanyTaskMinis(p)}
           </div>
 
           <div class="sidebar-card">
-            <h2 class="section-title">Recent Activity</h2>
-            ${renderProjectActivity(recentRuns, recentReports)}
-            ${recentRuns.length
-              ? `<a class="btn secondary" style="display:block;text-align:center;margin-top:0.65rem" href="#/runs">All Runs →</a>`
-              : ""}
+            <h2 class="section-title">GitHub</h2>
+            ${renderGithubPanel(p)}
           </div>
 
-          ${(p.currentBlockers || []).length ? `
-          <div class="sidebar-card">
-            <h2 class="section-title">Current Blockers</h2>
-            ${p.currentBlockers.map((b) => `<div class="feed-item danger"><p>${esc(b)}</p></div>`).join("")}
-          </div>` : ""}
-
-          ${recentReports.length ? `
-          <div class="sidebar-card">
-            <h2 class="section-title">Latest Reports</h2>
-            ${recentReports.map((r) => `
-              <div class="feed-item">
-                <strong>${esc(r.title)}</strong>
-                <div class="muted small">${esc(fmtTime(r.createdAt))}</div>
-                <p>${esc(r.summary || "")}</p>
-              </div>`).join("")}
-            <a class="btn secondary" style="display:block;text-align:center;margin-top:0.5rem" href="#/reports">All Reports →</a>
-          </div>` : ""}
-
+          ${(p.openDecisions || []).length ? `<div class="sidebar-card"><h2 class="section-title">Open decisions</h2>${p.openDecisions.map((id) => `<div class="feed-item"><p>${esc(id)}</p></div>`).join("")}</div>` : ""}
         </div>
       </div>`;
-
-    document.getElementById("profile-edit-json").onclick = () => openProjectJsonModal(route.id, p);
-
-    app.querySelectorAll(".arc-run-btn").forEach((btn) => {
-      const [proj, aid] = (btn.dataset.agentKey || "").split("/");
-      if (proj && aid) btn.onclick = () => runAgent(proj, aid, false);
-    });
-
-    app.querySelectorAll(".arc-logs-btn").forEach((btn) => {
-      const [proj, aid] = (btn.dataset.agentKey || "").split("/");
-      if (proj && aid) {
-        btn.onclick = async () => {
-          try {
-            const r = await api(
-              `/api/agents/${encodeURIComponent(proj)}/${encodeURIComponent(aid)}/logs?lines=60`
-            );
-            openModal(`Logs: ${proj}/${aid}`, `<pre class="code">${esc(await r.text())}</pre>`);
-          } catch (e) {
-            showToast(String(e.message || e), true);
-          }
-        };
-      }
-    });
-
-    app.querySelectorAll(".arc-cfg-btn").forEach((btn) => {
-      const [proj, aid] = (btn.dataset.agentKey || "").split("/");
-      if (proj && aid) {
-        btn.onclick = async () => {
-          try {
-            const r = await api(
-              `/api/agents/${encodeURIComponent(proj)}/${encodeURIComponent(aid)}/workspace/agent.config.json`
-            );
-            openModal(
-              `Config: ${proj}/${aid}`,
-              `<pre class="code">${esc(await r.text())}</pre>`
-            );
-          } catch (e) {
-            showToast(String(e.message || e), true);
-          }
-        };
-      }
-    });
   }
+
+  // ── Task Board / SOPs / Reports — legacy example data ──────────
 
   async function renderTasks() {
     const d = await loadHq();
     app.innerHTML = `
+      ${demoBanner()}
       <div class="page-head">
         <div>
           <h1 class="page-title">Task Board</h1>
-          <p class="muted">Inbox, Assigned, In Progress, Review, Done, and Blocked across the whole HQ.</p>
+          <p class="muted">Inbox, Assigned, In Progress, Review, Done, and Blocked. Example data seeded by scripts/seed-hq.sh — not the real factory task pipeline.</p>
         </div>
         <button class="btn secondary" id="edit-tasks">Edit tasks JSON</button>
       </div>
@@ -821,8 +709,9 @@
   async function renderSops() {
     const d = await loadHq();
     app.innerHTML = `
+      ${demoBanner()}
       <div class="page-head">
-        <div><h1 class="page-title">SOPs</h1><p class="muted">Global and project-specific operating procedures.</p></div>
+        <div><h1 class="page-title">SOPs</h1><p class="muted">Example operating procedures seeded for demo purposes — not real company SOPs.</p></div>
         <button class="btn secondary" id="edit-sops">Edit SOPs JSON</button>
       </div>
       ${["global", "project"].map((scope) => `
@@ -844,8 +733,8 @@
     app.innerHTML = `
       <h1 class="page-title">Logs</h1>
       <div class="log-grid">
-        ${logSection("Daily / Decision / Task Logs", d.logs, d)}
-        ${logSection("Agent Run Logs", (runRows.runs || []).map((r) => ({
+        ${logSection("Daily / Decision / Task Logs (example data)", d.logs, d)}
+        ${logSection("Agent Run Logs (real — Agent Lab)", (runRows.runs || []).map((r) => ({
           type: "agent-run",
           title: `${r.agent_key} ${r.status}`,
           detail: r.summary || r.error_message || "",
@@ -872,8 +761,9 @@
   async function renderReports() {
     const d = await loadHq();
     app.innerHTML = `
+      ${demoBanner()}
       <div class="page-head">
-        <div><h1 class="page-title">Reports</h1><p class="muted">Charles daily brief, project CEO reports, and weekly reviews.</p></div>
+        <div><h1 class="page-title">Reports</h1><p class="muted">Example daily/CEO/weekly reports seeded for demo purposes — no real reports have been generated yet.</p></div>
         <button class="btn secondary" id="edit-reports">Edit reports JSON</button>
       </div>
       ${["daily-brief", "project-ceo-report", "weekly-project-review"].map((type) => `
@@ -917,11 +807,13 @@
     };
   }
 
+  // ── Runs — real Agent Lab run history ───────────────────────────
+
   async function renderRuns() {
     const d = await apiJson("/api/runs?limit=80");
     app.innerHTML = `
       <h1 class="page-title">Runs</h1>
-      <p class="muted">Existing Agent Lab run history is preserved here.</p>
+      <p class="muted">Real Agent Lab run history.</p>
       <div class="timeline">
         ${(d.runs || []).map((r) => `
           <div class="timeline-item ${r.status}">
