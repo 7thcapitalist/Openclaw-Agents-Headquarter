@@ -4,23 +4,25 @@
     {
       "key": "openclaw-factory",
       "name": "OpenClaw Agents Headquarter",
+      "kind": "headquarters",
       "repo": ".",
       "contextDir": "context",
       "status": "active",
       "owner": "founder",
       "mission": "Give every project in the factory a durable, isolated intelligence layer and feed it into every agent handoff, without changing the workflow engine.",
       "github": { "owner": "7thcapitalist", "repo": "Openclaw-Agents-Headquarter" },
-      "responsibleAgents": ["claude-main", "codex-builder", "learning-agent"]
+      "responsibleAgents": ["architect", "backend-builder", "learning-agent"]
     },
     {
       "key": "lifemaxing",
-      "name": "LifeMaxing",
+      "name": "LifeMax",
       "repo": "~/projects/lifemaxing",
       "contextDir": "context",
       "status": "active",
       "owner": "founder",
-      "mission": "AI-native productivity tools that help users improve their lives.",
-      "responsibleAgents": ["claude-main", "codex-builder"]
+      "mission": "Get LifeMax's real backend (auth, persistence, onboarding, core game loop) running well enough to use daily for a week, privacy-first, before considering any external integration.",
+      "github": { "owner": "7thcapitalist", "repo": "lifemax" },
+      "responsibleAgents": ["architect", "backend-builder", "frontend-builder"]
     }
   ]
 }

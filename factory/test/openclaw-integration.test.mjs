@@ -63,9 +63,14 @@ test("mocked OpenClaw execution drives a complete task to merge-ready", async ()
     const evidence = writeEvidence(cwd, dispatch.stage);
     writeFileSync(dispatch.resultPath, JSON.stringify(resultFor(dispatch, [evidence])));
   };
+  const publishCalls = [];
+  const publish = ({ state }) => {
+    publishCalls.push(state.status);
+    return { published: false, reason: "no github configured in this fixture" };
+  };
   let response;
   do {
-    response = await runOneStage({ hqRoot, statePath: fixture.statePath, agentIds: { openclaw: "main-agent" }, execute });
+    response = await runOneStage({ hqRoot, statePath: fixture.statePath, agentIds: { openclaw: "main-agent" }, execute, publish });
   } while (response.status === "active");
   const state = readState(fixture.statePath);
   assert.equal(response.status, "merge-ready");
@@ -75,6 +80,42 @@ test("mocked OpenClaw execution drives a complete task to merge-ready", async ()
   assert.notEqual(seen[2].actor, seen[3].actor);
   assert.notEqual(seen[2].actor, seen[4].actor);
   assert.equal(state.events.some((event) => event.type === "merged"), false);
+  // The GitHub publish step ran exactly once, only after merge-ready.
+  assert.deepEqual(publishCalls, ["merge-ready"]);
+  assert.equal(response.githubPublish.published, false);
+  assert.equal(state.githubPublish.reason, "no github configured in this fixture");
+  assert.equal(state.events.at(-1).type, "github-publish");
+  assert.equal(state.events.at(-1).outcome, "skipped");
+});
+
+test("a non-terminal stage completion never invokes the GitHub publish step", async () => {
+  const fixture = makeFixture();
+  const execute = async ({ dispatch, cwd }) => {
+    const evidence = writeEvidence(cwd, dispatch.stage);
+    writeFileSync(dispatch.resultPath, JSON.stringify(resultFor(dispatch, [evidence])));
+  };
+  let publishCalled = false;
+  const publish = () => { publishCalled = true; return { published: false }; };
+  const response = await runOneStage({ hqRoot, statePath: fixture.statePath, execute, publish });
+  assert.equal(response.status, "active");
+  assert.equal(publishCalled, false);
+  assert.equal(response.githubPublish, undefined);
+});
+
+test("a GitHub publish failure is recorded on the task, never thrown", async () => {
+  const fixture = makeFixture();
+  const execute = async ({ dispatch, cwd }) => {
+    const evidence = writeEvidence(cwd, dispatch.stage);
+    writeFileSync(dispatch.resultPath, JSON.stringify(resultFor(dispatch, [evidence])));
+  };
+  const publish = () => { throw new Error("network unreachable"); };
+  let response;
+  do {
+    response = await runOneStage({ hqRoot, statePath: fixture.statePath, execute, publish });
+  } while (response.status === "active");
+  assert.equal(response.status, "merge-ready");
+  assert.equal(response.githubPublish.published, false);
+  assert.match(response.githubPublish.reason, /network unreachable/);
 });
 
 test("agent FAIL is retried safely and blocks at the attempt limit", async () => {

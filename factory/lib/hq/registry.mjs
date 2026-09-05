@@ -49,6 +49,9 @@ export function listCompanyProjects({ hqRoot, hqProjects = [], withIntelligence 
     return {
       key: entry.key,
       name: entry.name || dashboard?.name || entry.key,
+      // "headquarters" = the factory/operator repo itself: infrastructure the
+      // company runs on, not a company project. Everything else is "project".
+      kind: entry.kind === "headquarters" ? "headquarters" : "project",
       repo,
       repoExists: repo ? existsSync(repo) : false,
       contextDir: entry.contextDir || "context",

@@ -23,6 +23,25 @@ export const DEFAULT_HQ_CONFIG = {
     commitLimit: 10,
     prLimit: 20,
     issueLimit: 20,
+    // `autoPublish`: once a task reaches merge-ready (every workflow gate —
+    // evidence, independent review, QA, security, no unresolved founder
+    // decision — already passed), push that task's own branch and open a
+    // PR. Never pushes to a default branch, never merges — founder merge
+    // stays manual. `false` disables this without touching read-only
+    // awareness above.
+    autoPublish: true,
+  },
+  runtime: {
+    // Read-only awareness of the real OpenClaw runtime (`openclaw agents list`,
+    // `openclaw audit`). `enabled: false` disables every `openclaw` call.
+    enabled: true,
+    auditLimit: 200,
+  },
+  activity: {
+    // A task/agent with no activity for longer than this, while still in a
+    // non-terminal state, is reported as STALE rather than "working" — a
+    // task's age is not evidence that an agent is currently doing anything.
+    staleAfterMinutes: 120,
   },
 };
 
@@ -69,6 +88,8 @@ function mergeConfig(base, override) {
   const out = { ...base, ...override };
   out.discovery = { ...base.discovery, ...(override.discovery || {}) };
   out.github = { ...base.github, ...(override.github || {}) };
+  out.runtime = { ...base.runtime, ...(override.runtime || {}) };
+  out.activity = { ...base.activity, ...(override.activity || {}) };
   if (!Array.isArray(out.discovery.workspaceRoots) || out.discovery.workspaceRoots.length === 0) {
     out.discovery.workspaceRoots = base.discovery.workspaceRoots;
   }

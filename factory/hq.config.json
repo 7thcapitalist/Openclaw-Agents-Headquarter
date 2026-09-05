@@ -9,6 +9,14 @@
     "enabled": true,
     "commitLimit": 10,
     "prLimit": 20,
-    "issueLimit": 20
+    "issueLimit": 20,
+    "autoPublish": true
+  },
+  "runtime": {
+    "enabled": true,
+    "auditLimit": 200
+  },
+  "activity": {
+    "staleAfterMinutes": 120
   }
 }

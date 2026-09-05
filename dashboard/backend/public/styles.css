@@ -1141,3 +1141,73 @@ pre,
 @media (max-width: 720px) {
   .founder-hero { padding: 1.1rem; }.founder-command-row { grid-template-columns:1fr; }.control-stats { grid-template-columns:repeat(2,1fr); }.project-control { grid-template-columns:1fr; }.project-facts { grid-template-columns:repeat(2,1fr); }.hq-layout { grid-template-columns:1fr; }.agent-rail { display:none; }
 }
+
+/* Headquarters Integration Layer surfaces — truthful-emptiness banners,
+   the infrastructure-vs-project distinction, and the runtime roster table. */
+.demo-banner,
+.gap-banner {
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  padding: 0.6rem 0.85rem;
+  font-size: 0.78rem;
+  margin-bottom: 0.85rem;
+}
+
+.demo-banner {
+  color: var(--muted);
+  background: var(--surface-2);
+}
+
+.gap-banner {
+  color: var(--amber);
+  background: rgba(243, 201, 105, 0.06);
+  border-color: rgba(243, 201, 105, 0.25);
+}
+
+.hq-infra-card {
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  background: #0d1016;
+  padding: 1rem;
+  margin: 1rem 0;
+}
+
+.hq-infra-note {
+  margin-bottom: 0.85rem;
+}
+
+.table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  margin-bottom: 0.75rem;
+}
+
+.runtime-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+}
+
+.runtime-table th,
+.runtime-table td {
+  text-align: left;
+  padding: 0.55rem 0.75rem;
+  border-bottom: 1px solid var(--border-soft);
+  white-space: nowrap;
+}
+
+.runtime-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.intel-list {
+  margin: 0;
+  padding-left: 1.1rem;
+  font-size: 0.82rem;
+  color: #c3c9d4;
+}
+
+.intel-list li {
+  margin-bottom: 0.3rem;
+}

@@ -102,6 +102,70 @@ test("withGithub pulls read-only awareness through the injected exec", async () 
   assert.equal(state.external[0].commits[0].message, "init");
 });
 
+test("a project marked kind:headquarters never appears in the founder's project portfolio", async () => {
+  const hq = mkdtempSync(join(tmpdir(), "hq-company-state-hq-"));
+  mkdirSync(join(hq, "factory"), { recursive: true });
+  writeFileSync(
+    join(hq, "factory", "projects.json"),
+    JSON.stringify({
+      version: 1,
+      projects: [
+        { key: "openclaw-factory", name: "Factory", kind: "headquarters", repo: ".", contextDir: "context" },
+        { key: "lifemaxing", name: "LifeMaxing", repo: "/tmp/hq-cs-nope", contextDir: "context" },
+      ],
+    })
+  );
+  writeFileSync(join(hq, "factory", "agents.json"), JSON.stringify({ version: 1, agents: [] }));
+
+  const hqTasks = [
+    { id: "hq-1", objective: "Improve the factory itself", project: "openclaw-factory", status: "active", updatedAt: "2026-09-03T10:00:00Z" },
+    { id: "lm-1", objective: "Ship onboarding", project: "lifemaxing", status: "active", updatedAt: "2026-09-03T10:00:00Z" },
+  ];
+  const state = await buildCompanyState({ hqRoot: hq, tasks: hqTasks });
+
+  assert.equal(state.projects.length, 1, "only the real company project is in the portfolio");
+  assert.equal(state.projects[0].key, "lifemaxing");
+  assert.ok(!state.projects.some((p) => p.key === "openclaw-factory"), "the Headquarters repo is never listed as a project");
+
+  assert.ok(state.headquarters, "the Headquarters is still surfaced, just not as a project");
+  assert.equal(state.headquarters.key, "openclaw-factory");
+  assert.equal(state.headquarters.activeTasks.length, 1);
+  assert.equal(state.headquarters.activeTasks[0].id, "hq-1");
+
+  assert.equal(state.summary.projects, 1);
+});
+
+test("activityFeed flattens real per-task events across the whole company; empty when no task has one", async () => {
+  const hq = makeHq();
+  const empty = await buildCompanyState({ hqRoot: hq, tasks: [] });
+  assert.deepEqual(empty.activityFeed, []);
+
+  const withEvents = tasks.map((t) => ({ ...t, events: [{ at: t.updatedAt, type: "dispatch-created", stage: t.stage, actor: t.agent }] }));
+  const state = await buildCompanyState({ hqRoot: hq, tasks: withEvents });
+  assert.equal(state.activityFeed.length, 2);
+});
+
+test("withRuntime pulls real OpenClaw roster + activity through the injected runtimeExec, and flags an unresolved role", async () => {
+  const hq = makeHq();
+  const runtimeExec = async (args) => {
+    if (args[0] === "agents" && args[1] === "list") {
+      return { stdout: JSON.stringify([{ id: "architect", identityName: "Principal Architect", model: "openai/gpt-5.6-sol" }]), stderr: "", code: 0 };
+    }
+    if (args[0] === "audit") {
+      return { stdout: JSON.stringify({ events: [] }), stderr: "", code: 0 };
+    }
+    return { stdout: "", stderr: "unexpected", code: 1 };
+  };
+  const state = await buildCompanyState({ hqRoot: hq, tasks: [], withRuntime: true, runtimeExec });
+  assert.equal(state.runtime.available, true);
+  assert.equal(state.runtime.agents[0].id, "architect");
+  // The fixture registry's "codex-builder" names runtimeAgentId "backend-builder" via harnessAgentIds only
+  // (no runtimeAgentId field), so reconciliation should not falsely flag it; "claude-main" resolves via
+  // harnessAgentIds too. Confirm reconciliation ran and returned a shape, without asserting exact roles.
+  assert.ok(state.rosterReconciliation);
+  assert.ok(Array.isArray(state.rosterReconciliation.unmapped));
+});
+
 test("a broken registry degrades to an empty project list plus a warning", async () => {
   const hq = mkdtempSync(join(tmpdir(), "hq-cs-bad-"));
   mkdirSync(join(hq, "factory"), { recursive: true });

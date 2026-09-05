@@ -8,18 +8,20 @@
     "protocolVersion": 1,
     "maxAttemptsPerStage": 3,
     "agentIds": {
+      "_doc": "builder:cursor intentionally points at the dedicated 'frontend-builder' OpenClaw agent, not the 'cursor' runtime agent. The 'cursor' agent's ACP integration does not reliably invoke real Cursor sessions (verified: silently falls back to the embedded model with no error). See factory/agents.json's frontend-builder.notes for the full finding. Do not repoint this at 'cursor' without first verifying a real fix on the OpenClaw side. qa:claude and qa:codex both point at the one 'qa' OpenClaw agent, which is Claude-backed via acpx as of 2026-09-05 (previously qa:claude was a 'reviewer' stand-in); independence still holds because the pipeline assigns QA a different harness token from the builder.",
       "product": "product",
       "architect": "architect",
       "builder:codex": "backend-builder",
       "builder:cursor": "frontend-builder",
       "builder:claude": "architect",
       "reviewer": "reviewer",
-      "qa:claude": "reviewer",
+      "qa:claude": "qa",
       "qa:codex": "qa",
       "security": "security",
       "release": "release",
       "openclaw": "main",
-      "learning": "learning"
+      "learning": "learning",
+      "research": "research"
     }
   },
   "learning": {

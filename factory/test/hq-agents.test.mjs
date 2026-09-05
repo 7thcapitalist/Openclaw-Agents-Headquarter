@@ -70,3 +70,37 @@ test("resolveAgent returns one agent by id", () => {
   assert.equal(resolveAgent(hq, "codex-builder").name, "Codex");
   assert.equal(resolveAgent(hq, "ghost"), null);
 });
+
+test("harnessAvailable defaults true and harnessFallback defaults null when absent", () => {
+  const hq = makeHq(validRegistry);
+  const { agents } = listAgents(hq);
+  for (const a of agents) {
+    assert.equal(a.harnessAvailable, true);
+    assert.equal(a.harnessFallback, null);
+  }
+});
+
+test("a role can declare its intended harness is currently unavailable, with a fallback", () => {
+  const hq = makeHq({
+    version: 1,
+    agents: [
+      { id: "frontend-builder", name: "Frontend", role: "UI", harness: "cursor", harnessAvailable: false, harnessFallback: "openclaw", runtimeAgentId: "frontend-builder" },
+    ],
+  });
+  const { agents, warnings } = listAgents(hq);
+  assert.equal(warnings.length, 0);
+  assert.equal(agents[0].harness, "cursor");
+  assert.equal(agents[0].harnessAvailable, false);
+  assert.equal(agents[0].harnessFallback, "openclaw");
+});
+
+test("validateAgentRegistry rejects a bad harnessAvailable/harnessFallback", () => {
+  assert.throws(
+    () => validateAgentRegistry({ version: 1, agents: [{ id: "a", name: "A", role: "R", harnessAvailable: "yes" }] }),
+    /harnessAvailable must be a boolean/
+  );
+  assert.throws(
+    () => validateAgentRegistry({ version: 1, agents: [{ id: "a", name: "A", role: "R", harnessFallback: "wizard" }] }),
+    /harnessFallback is invalid/
+  );
+});

@@ -69,6 +69,7 @@ import {
   setProjectPaused,
 } from "./lib/founderControlPlane.mjs";
 import { buildCompanyState } from "../../factory/lib/hq/company-state.mjs";
+import { readLearningFindings } from "../../factory/lib/hq/chief-of-staff.mjs";
 import { handleRequest as handleFactoryRequest } from "../../scripts/openclaw-factory.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -209,13 +210,27 @@ app.get("/api/founder/overview", (_req, res) => {
 app.get("/api/hq/company", async (req, res) => {
   try {
     const withGithub = req.query.github === "1" || req.query.github === "true";
+    const withRuntime = req.query.runtime === "1" || req.query.runtime === "true";
     const state = await buildCompanyState({
       hqRoot: ROOT,
       tasks: discoverFactoryTasks(ROOT),
       hqProjects: readProjects(ROOT),
       withGithub,
+      withRuntime,
     });
     res.json(state);
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+// Real, already-computed learning findings — the analysis pipeline in
+// factory/lib/learning/ writes these; this route only reads what already
+// exists (dashboard/backend/data/factory/_learning/findings.json + the
+// committed factory/knowledge/ files). It generates nothing.
+app.get("/api/hq/learning", (_req, res) => {
+  try {
+    res.json(readLearningFindings(ROOT));
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
   }
