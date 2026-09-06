@@ -57,7 +57,7 @@ export function defaultAssignments(task) {
   };
 }
 
-export function createState({ task, repo, branch, worktree, founderPublicKey = null, now = new Date().toISOString() }) {
+export function createState({ task, repo, branch, worktree, founderPublicKey = null, baseSha = null, now = new Date().toISOString() }) {
   validateTaskContract(task);
   const safeTask = sanitizeTaskContract(task);
   if (safeTask.risk === "high" && !founderPublicKey) {
@@ -71,6 +71,7 @@ export function createState({ task, repo, branch, worktree, founderPublicKey = n
     repo: resolve(repo),
     branch,
     worktree: resolve(worktree),
+    baseSha: baseSha || null,
     status: "active",
     currentStage: STAGES[0],
     assignments,

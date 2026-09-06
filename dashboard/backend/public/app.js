@@ -80,6 +80,25 @@
     }
   }
 
+  // Compact wall-clock duration: "3h 12m", "8m", "45s". Input is milliseconds.
+  function fmtDuration(ms) {
+    if (ms == null || !Number.isFinite(ms) || ms < 0) return "—";
+    const s = Math.floor(ms / 1000);
+    if (s < 60) return `${s}s`;
+    const m = Math.floor(s / 60);
+    if (m < 60) return `${m}m`;
+    const h = Math.floor(m / 60);
+    if (h < 24) return `${h}h ${m % 60}m`;
+    const d = Math.floor(h / 24);
+    return `${d}d ${h % 24}h`;
+  }
+
+  function fmtLastResult(r) {
+    if (!r || !r.stage) return "—";
+    const verdict = r.outcome === "pass" ? "passed" : r.outcome === "fail" ? "failed" : r.outcome || "—";
+    return `${r.stage} ${verdict}${r.summary ? ` — ${r.summary}` : ""}`;
+  }
+
   function byId(list) {
     return Object.fromEntries((Array.isArray(list) ? list : []).map((x) => [x.id, x]));
   }
@@ -189,7 +208,10 @@
     const projects = state.projects || [];
     const agents = state.agents?.agents || [];
     const decisions = state.decisions || [];
+    const inbox = fc.inbox || [];
+    const inboxActionable = inbox.filter((i) => i.action && i.action !== "none").length;
     const jobs = fc.jobs || [];
+    const finishedTasks = (fc.tasks || []).filter((t) => t.completionReport || t.status === "merge-ready" || t.status === "merged");
 
     app.innerHTML = `
       <section class="hq-layout">
@@ -218,7 +240,7 @@
           <div class="control-stats">
             <div><strong>${projects.length}</strong><span>Projects</span></div>
             <div><strong>${state.summary.workingAgents}</strong><span>Agents working</span></div>
-            <div class="${decisions.length ? "attention" : ""}"><strong>${decisions.length}</strong><span>Need your input</span></div>
+            <div class="${inboxActionable ? "attention" : ""}"><strong>${inboxActionable}</strong><span>Need your input</span></div>
             <div><strong>${state.summary.openPullRequests}</strong><span>Open pull requests</span></div>
           </div>
 
@@ -244,11 +266,25 @@
               </div>
             </section>
             <section class="inbox-panel">
-              <div class="panel-heading"><div><span class="eyebrow">Founder inbox</span><h2>Decisions</h2></div>${decisions.length ? pill(decisions.length, "badge-warn") : pill("Clear", "health-healthy")}</div>
-              ${decisions.map((x) => decisionCard(x)).join("") || `<div class="empty-state"><strong>Nothing needs you.</strong><span>Your agents have what they need to keep moving.</span></div>`}
+              <div class="panel-heading"><div><span class="eyebrow">Founder inbox</span><h2>Needs you</h2></div>${inboxActionable ? pill(inboxActionable, "badge-warn") : pill("Clear", "health-healthy")}</div>
+              ${inbox.map((x) => inboxItem(x)).join("") || `<div class="empty-state"><strong>Nothing needs you.</strong><span>Your agents have what they need to keep moving.</span></div>`}
               ${recommendedActions(state.company)}
             </section>
           </div>
+
+          <section class="activity-panel">
+            <div class="panel-heading"><div><span class="eyebrow">Delivered</span><h2>Completed work</h2></div>${finishedTasks.length ? pill(finishedTasks.length, "health-healthy") : ""}</div>
+            <div class="company-feed">
+              ${finishedTasks.map((t) => `
+                <div class="company-agent">
+                  <span class="activity-pulse"></span>
+                  <div><strong>${esc(t.id)}</strong><span>${esc(t.objective || "")}</span>
+                    <small class="muted">${esc(t.project || "—")} · ${esc(t.status)}${t.elapsedMs != null ? ` · ${esc(fmtDuration(t.elapsedMs))}` : ""}${t.branch ? ` · ${esc(t.branch)}` : ""}</small>
+                  </div>
+                  <button class="btn secondary" data-report-task="${esc(t.id)}">View report</button>
+                </div>`).join("") || `<div class="empty-state">No task has finished in this environment yet.</div>`}
+            </div>
+          </section>
 
           <section class="activity-panel">
             <div class="panel-heading"><div><span class="eyebrow">Live company</span><h2>Agent activity</h2></div><button class="btn secondary" id="ask-agent">Ask an agent</button></div>
@@ -359,6 +395,30 @@
     </article>`;
   }
 
+  const INBOX_KIND_LABEL = { approval: "Approval", decision: "Decision", blocked: "Blocked", question: "Question" };
+  const INBOX_KIND_CLASS = { approval: "badge-warn", decision: "badge-warn", blocked: "health-failed", question: "badge-type" };
+
+  // One Founder Inbox entry. Decisions and approvals reuse the decision-card
+  // action buttons; blocked tasks link to their completion report; questions
+  // are read-only (this system answers them synchronously).
+  function inboxItem(x) {
+    if (x.kind === "decision" || x.kind === "approval") {
+      return decisionCard({
+        question: x.title, why: x.detail, project: x.project, taskId: x.taskId,
+        recommendation: x.recommendation, options: x.options, risk: x.risk, statePath: x.statePath,
+      });
+    }
+    return `<article class="decision-card">
+      <div class="decision-top">
+        <span class="decision-icon">${x.kind === "blocked" ? "×" : "?"}</span>
+        <div><strong>${esc(x.title)}</strong><span>${pill(INBOX_KIND_LABEL[x.kind] || x.kind, INBOX_KIND_CLASS[x.kind] || "badge-type")} ${esc(x.project || "company")}${x.taskId ? ` · ${esc(x.taskId)}` : ""}</span></div>
+      </div>
+      <p>${esc(x.detail || "")}</p>
+      ${x.kind === "blocked" && x.taskId ? `<button class="btn secondary" data-report-task="${esc(x.taskId)}">View report</button>` : ""}
+      ${x.kind === "question" ? `<p class="muted small">Answered synchronously — see the Ask an agent history.</p>` : ""}
+    </article>`;
+  }
+
   function bindFounderControls() {
     const project = document.getElementById("founder-project");
     project.onchange = () => { const repo = project.selectedOptions[0]?.dataset.repo; if (repo) document.getElementById("founder-repo").value = repo; };
@@ -366,6 +426,15 @@
     app.querySelectorAll("[data-resolve-decision]").forEach((btn) => btn.onclick = () => { openModal("Founder decision", `<label class="field-label">Direction for the team</label><textarea class="editor" id="decision-direction" placeholder="Approve the recommended option because…"></textarea><button class="btn" id="submit-decision">Send decision & resume</button>`); document.getElementById("submit-decision").onclick = async () => { try { await apiJson("/api/founder/decisions/resolve", { method: "POST", body: JSON.stringify({ statePath: btn.dataset.resolveDecision, direction: document.getElementById("decision-direction").value }) }); closeModal(); showToast("Decision recorded. Work resumed."); route(); } catch (e) { showToast(e.message, true); } }; });
     app.querySelectorAll("[data-approve-decision]").forEach((btn) => btn.onclick = () => { openModal("Signed founder approval", `<p class="muted small">Create the assertion with <code>factory-sign-approval.mjs</code>, then submit its path and the matching evidence path inside the task worktree.</p><label class="field-label">Approval assertion path</label><input class="modal-input" id="approval-assertion" placeholder="/private/operator/approval.json"/><label class="field-label">Evidence path (relative to worktree)</label><input class="modal-input" id="approval-evidence" placeholder="evidence/founder-approval.md"/><button class="btn" id="submit-approval">Verify & approve</button>`); document.getElementById("submit-approval").onclick = async () => { try { await apiJson("/api/founder/decisions/approve", { method: "POST", body: JSON.stringify({ statePath: btn.dataset.approveDecision, approvalAssertionPath: document.getElementById("approval-assertion").value, evidence: document.getElementById("approval-evidence").value }) }); closeModal(); showToast("Signature verified. Work resumed."); route(); } catch (e) { showToast(e.message, true); } }; });
     document.getElementById("ask-agent").onclick = () => { openModal("Ask an agent", `<label class="field-label">Agent</label><input class="modal-input" id="question-agent" value="main"/><label class="field-label">Question</label><textarea class="editor" id="question-text" placeholder="What is blocking this project?"></textarea><button class="btn" id="send-question">Ask</button><div id="question-answer"></div>`); document.getElementById("send-question").onclick = async () => { const out = document.getElementById("question-answer"); out.innerHTML = `<p class="muted">Agent is thinking…</p>`; try { const j = await apiJson("/api/founder/questions", { method: "POST", body: JSON.stringify({ agentId: document.getElementById("question-agent").value, question: document.getElementById("question-text").value }) }); out.innerHTML = `<div class="card">${esc(j.question.answer)}</div>`; } catch (e) { out.innerHTML = `<p class="danger-text">${esc(e.message)}</p>`; } }; };
+    app.querySelectorAll("[data-report-task]").forEach((btn) => btn.onclick = async () => {
+      openModal(`Completion report — ${btn.dataset.reportTask}`, `<p class="muted">Loading…</p>`);
+      try {
+        const r = await apiJson(`/api/founder/tasks/${btn.dataset.reportTask}/report`);
+        modalBody.innerHTML = r.markdown
+          ? `<pre class="report-md">${esc(r.markdown)}</pre>`
+          : `<p class="muted">No report has been generated for this task yet.</p>`;
+      } catch (e) { modalBody.innerHTML = `<p class="danger-text">${esc(e.message)}</p>`; }
+    });
   }
 
   function renderAgentRail(agents, runtime) {
@@ -380,7 +449,7 @@
             <div>
               <strong>${esc(a.name)}</strong>
               <span>${esc(a.role)} · ${esc(a.harness || "—")}</span>
-              <em>${esc(railStatus(a, runtime))}</em>
+              <em>${esc(railStatus(a, runtime))}${a.currentTask && a.elapsedMs != null ? ` · ${esc(a.currentTask.stage || "—")} · ${esc(fmtDuration(a.elapsedMs))}` : ""}</em>
             </div>
           </div>`).join("")}
       </aside>`;
@@ -466,8 +535,11 @@
           <dt>Current project</dt><dd>${esc(a.currentProject || "—")}</dd>
           <dt>Current task</dt><dd>${esc(a.currentTask?.objective || "—")}</dd>
           <dt>Stage</dt><dd>${esc(a.currentTask?.stage || "—")}</dd>
+          <dt>Elapsed</dt><dd>${esc(a.elapsedMs != null ? fmtDuration(a.elapsedMs) : "—")}</dd>
+          <dt>Last handoff</dt><dd>${esc(a.lastHandoffAt ? fmtTime(a.lastHandoffAt) : "—")}</dd>
+          <dt>Last result</dt><dd>${esc(fmtLastResult(a.lastResult))}</dd>
           <dt>Blocker</dt><dd>${esc(a.blocker || "—")}</dd>
-          <dt>Last activity</dt><dd>${esc(a.lastActivityAt ? fmtTime(a.lastActivityAt) : "—")}</dd>
+          <dt>Last activity</dt><dd>${esc(a.lastActivityAt ? fmtTime(a.lastActivityAt) : "—")}${a.sinceLastActivityMs != null ? ` (${esc(fmtDuration(a.sinceLastActivityMs))} ago)` : ""}</dd>
         </dl>
       </article>`;
   }

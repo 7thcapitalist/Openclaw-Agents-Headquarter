@@ -62,13 +62,87 @@ export function buildPrBody(state) {
   return lines.join("\n");
 }
 
+// Parse an owner/repo out of a GitHub remote URL. Handles both
+// git@github.com:OWNER/REPO(.git) and https://github.com/OWNER/REPO(.git).
+export function parseGithubRemote(url) {
+  const s = String(url || "").trim();
+  const m = s.match(/github\.com[:/]([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/i);
+  if (!m) return null;
+  return { owner: m[1], repo: m[2] };
+}
+
+// Resolve where this task should be published: the registered project's
+// github {owner, repo} if it has one; otherwise the task worktree's own
+// `origin` remote URL; otherwise nothing (an authenticated `gh` account alone
+// is not enough — a repo name is never invented). Read-only.
+export function resolveTaskGithubTarget({ hqRoot, state, exec = defaultExec }) {
+  const project = resolveCompanyProject(hqRoot, state.task.project, { withIntelligence: false });
+  if (project?.github?.owner && project?.github?.repo) {
+    return { owner: project.github.owner, repo: project.github.repo, ownerRepo: `${project.github.owner}/${project.github.repo}`, source: "registry" };
+  }
+  // The raw configured URL — `git config` does not apply `insteadOf` rewrites,
+  // so a real GitHub remote is seen even when a local mirror is substituted.
+  for (const args of [["git", "config", "--get", "remote.origin.url"], ["git", "remote", "get-url", "origin"]]) {
+    const remote = exec(state.worktree, args);
+    if (!remote.ok) continue;
+    const parsed = parseGithubRemote(remote.out);
+    if (parsed) return { ...parsed, ownerRepo: `${parsed.owner}/${parsed.repo}`, source: "git-remote" };
+  }
+  return {
+    ownerRepo: null,
+    reason: `project "${state.task.project}" has no github {owner, repo} configured and none could be derived from the task's origin remote`,
+  };
+}
+
+function resolveBaseRef(worktree, exec) {
+  for (const ref of ["origin/HEAD", "origin/main", "origin/master", "main", "master"]) {
+    const r = exec(worktree, ["git", "rev-parse", "--verify", "--quiet", ref]);
+    if (r.ok && String(r.out).trim()) {
+      if (ref === "origin/HEAD") {
+        const named = exec(worktree, ["git", "rev-parse", "--abbrev-ref", "origin/HEAD"]);
+        return named.ok && named.out.trim() ? named.out.trim() : ref;
+      }
+      return ref;
+    }
+  }
+  return null;
+}
+
+// Guarantee the task branch actually carries the work before it is pushed.
+// The workflow engine records evidence but never commits, so an agent that
+// wrote files without committing would otherwise publish an empty branch.
+// Stages any uncommitted change and makes one audit commit; then refuses to
+// publish a branch that is not ahead of its base.
+export function ensureBranchHasCommit({ state, exec = defaultExec }) {
+  const worktree = state.worktree;
+  exec(worktree, ["git", "add", "-A"]);
+  const dirty = exec(worktree, ["git", "status", "--porcelain"]);
+  let committed = false;
+  if (dirty.ok && String(dirty.out).trim()) {
+    const message = `factory(${state.task.id}): ${truncate(state.task.outcome || state.task.id, 100)}`;
+    const commit = exec(worktree, ["git", "commit", "-m", message, "-m", buildPrBody(state)]);
+    if (!commit.ok) return { error: `git commit failed: ${commit.out}` };
+    committed = true;
+  }
+  const head = exec(worktree, ["git", "rev-parse", "HEAD"]);
+  if (!head.ok || !String(head.out).trim()) return { error: "task branch has no commit (git rev-parse HEAD failed)" };
+  const headSha = head.out.trim();
+
+  const base = state.baseSha || resolveBaseRef(worktree, exec);
+  if (base) {
+    const ahead = exec(worktree, ["git", "rev-list", "--count", `${base}..HEAD`]);
+    if (ahead.ok && Number(ahead.out.trim()) === 0) return { empty: true };
+  }
+  return { committed, commitSha: headSha, commitRange: base ? `${base}..${headSha}` : null };
+}
+
 /**
  * @param {object}   input
  * @param {string}   input.hqRoot
  * @param {object}   input.state       the task's full state.json (must be status: "merge-ready")
  * @param {Function} [input.exec]      (cwd, args:string[]) => {ok, out} — git/gh runner, injected for tests
  * @param {Function} [input.ghAvailable]
- * @returns {{ published:boolean, pushed?:boolean, prUrl?:(string|null), reason?:string }}
+ * @returns {{ published:boolean, pushed?:boolean, prUrl?:(string|null), reason?:string, ownerRepo?:(string|null), commitSha?:(string|null), commitRange?:(string|null), remote?:string }}
  */
 export function publishMergeReadyTask({ hqRoot, state, exec = defaultExec, ghAvailable = defaultGhAvailable }) {
   if (!state || state.status !== "merge-ready") {
@@ -85,9 +159,9 @@ export function publishMergeReadyTask({ hqRoot, state, exec = defaultExec, ghAva
     return { published: false, reason: `refusing to publish an empty or default branch ("${branch}")` };
   }
 
-  const project = resolveCompanyProject(hqRoot, state.task.project, { withIntelligence: false });
-  if (!project?.github?.owner || !project?.github?.repo) {
-    return { published: false, reason: `project "${state.task.project}" has no github {owner, repo} configured` };
+  const target = resolveTaskGithubTarget({ hqRoot, state, exec });
+  if (!target.ownerRepo) {
+    return { published: false, reason: target.reason };
   }
 
   const worktree = state.worktree;
@@ -96,16 +170,25 @@ export function publishMergeReadyTask({ hqRoot, state, exec = defaultExec, ghAva
     return { published: false, reason: "task worktree has no 'origin' remote" };
   }
 
+  const ensured = ensureBranchHasCommit({ state, exec });
+  if (ensured.error) {
+    return { published: false, pushed: false, ownerRepo: target.ownerRepo, reason: ensured.error };
+  }
+  if (ensured.empty) {
+    return { published: false, pushed: false, ownerRepo: target.ownerRepo, reason: "no changes to publish (task branch is not ahead of its base)" };
+  }
+  const audit = { ownerRepo: target.ownerRepo, remote: "origin", commitSha: ensured.commitSha, commitRange: ensured.commitRange };
+
   const push = exec(worktree, ["git", "push", "-u", "origin", branch]);
   if (!push.ok) {
-    return { published: false, pushed: false, reason: `git push failed: ${push.out}` };
+    return { published: false, pushed: false, ...audit, reason: `git push failed: ${push.out}` };
   }
 
   if (!ghAvailable()) {
-    return { published: true, pushed: true, prUrl: null, reason: "gh CLI unavailable; open the PR manually" };
+    return { published: true, pushed: true, prUrl: null, ...audit, reason: "gh CLI unavailable; open the PR manually" };
   }
 
-  const slug = `${project.github.owner}/${project.github.repo}`;
+  const slug = target.ownerRepo;
   const title = truncate(state.task.outcome || state.task.id, 120);
   const body = buildPrBody(state);
   try {
@@ -114,9 +197,9 @@ export function publishMergeReadyTask({ hqRoot, state, exec = defaultExec, ghAva
       ["pr", "create", "--repo", slug, "--head", branch, "--title", title, "--body", body],
       { cwd: worktree, encoding: "utf8" }
     ).trim();
-    return { published: true, pushed: true, prUrl: url || null };
+    return { published: true, pushed: true, prUrl: url || null, ...audit };
   } catch (error) {
-    return { published: true, pushed: true, prUrl: null, reason: `gh pr create failed: ${String(error.stderr || error.message).trim()}` };
+    return { published: true, pushed: true, prUrl: null, ...audit, reason: `gh pr create failed: ${String(error.stderr || error.message).trim()}` };
   }
 }
 

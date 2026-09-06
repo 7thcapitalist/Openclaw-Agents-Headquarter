@@ -111,6 +111,50 @@ test("a decision-required blocker sets needsFounder without changing the blocked
   assert.equal(summary.needsFounder, 1);
 });
 
+test("elapsed/last-handoff/last-result: derived per agent while a task is live", () => {
+  const now = new Date("2026-09-04T12:00:00Z");
+  const tasks = [
+    {
+      id: "t-live", objective: "Ship endpoint", project: "lifemaxing", stage: "reviewer",
+      agent: "backend-builder", agentStatus: "running", status: "active",
+      createdAt: "2026-09-04T09:00:00Z", updatedAt: "2026-09-04T11:40:00Z",
+      lastHandoff: { stage: "reviewer", at: "2026-09-04T11:20:00Z" },
+      lastResult: { stage: "builder", outcome: "pass", at: "2026-09-04T11:20:00Z", summary: "endpoint + tests added" },
+    },
+  ];
+  const codex = buildAgentActivity({ agents, tasks, now }).agents.find((a) => a.id === "codex-builder");
+  assert.equal(codex.elapsedMs, 3 * 60 * 60 * 1000, "now - createdAt while non-terminal");
+  assert.equal(codex.sinceLastActivityMs, 20 * 60 * 1000, "now - lastActivityAt");
+  assert.equal(codex.lastHandoffAt, "2026-09-04T11:20:00Z");
+  assert.deepEqual(codex.lastResult, tasks[0].lastResult);
+});
+
+test("elapsedMs prefers the task view's own computed value when present", () => {
+  const now = new Date("2026-09-04T12:00:00Z");
+  const tasks = [
+    { id: "t-x", project: "p", stage: "qa", agent: "backend-builder", agentStatus: "running", status: "active",
+      createdAt: "2026-09-04T11:59:00Z", updatedAt: "2026-09-04T11:59:30Z", elapsedMs: 987654 },
+  ];
+  const codex = buildAgentActivity({ agents, tasks, now }).agents.find((a) => a.id === "codex-builder");
+  assert.equal(codex.elapsedMs, 987654);
+});
+
+test("elapsedMs is null for a terminal task and when there is no live task; no crash on zero events", () => {
+  const now = new Date("2026-09-04T12:00:00Z");
+  const terminal = [
+    { id: "t-done", project: "p", stage: null, agent: "backend-builder", status: "merge-ready",
+      createdAt: "2026-09-04T09:00:00Z", updatedAt: "2026-09-04T10:00:00Z" },
+  ];
+  const codex = buildAgentActivity({ agents, tasks: terminal, now }).agents.find((a) => a.id === "codex-builder");
+  assert.equal(codex.elapsedMs, null);
+
+  const idle = buildAgentActivity({ agents, tasks: [], now }).agents.find((a) => a.id === "codex-builder");
+  assert.equal(idle.elapsedMs, null);
+  assert.equal(idle.lastHandoffAt, null);
+  assert.equal(idle.lastResult, null);
+  assert.equal(idle.sinceLastActivityMs, null);
+});
+
 test("buildActivityFeed flattens and sorts real task events; no tasks means an empty feed, not invented activity", () => {
   assert.deepEqual(buildActivityFeed([], { limit: 10 }), []);
   const tasks = [
