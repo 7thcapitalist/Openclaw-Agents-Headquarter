@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "_doc": "The AI workforce: one entry per AGENT (a role/employee), not per model. `harness` names the model/tool that powers the agent for its default work; `runtimeAgentId` is the OpenClaw runtime agent that executes it. Models (Claude, Codex, Cursor, OpenClaw) are tools, never employees.",
+  "_doc": "The AI workforce: one entry per AGENT (a role/employee), not per model. `harness` names the model/tool that powers the agent for its default work; `runtimeAgentId` is the OpenClaw runtime agent that executes it. Models (Claude, Codex, Cursor, OpenClaw) are tools, never employees. Live status is derived from the runtime by factory/lib/hq/activity.mjs, not stored here.",
   "agents": [
     {
       "id": "chief-of-staff",
@@ -10,8 +10,7 @@
       "stages": [],
       "harness": "openclaw",
       "runtimeAgentId": "main",
-      "reportsTo": "founder",
-      "status": "idle"
+      "reportsTo": "founder"
     },
     {
       "id": "product",
@@ -21,8 +20,7 @@
       "stages": ["product"],
       "harness": "openclaw",
       "runtimeAgentId": "product",
-      "reportsTo": "chief-of-staff",
-      "status": "idle"
+      "reportsTo": "chief-of-staff"
     },
     {
       "id": "architect",
@@ -32,8 +30,7 @@
       "stages": ["architect"],
       "harness": "claude",
       "runtimeAgentId": "architect",
-      "reportsTo": "chief-of-staff",
-      "status": "idle"
+      "reportsTo": "chief-of-staff"
     },
     {
       "id": "backend-builder",
@@ -43,8 +40,7 @@
       "stages": ["builder"],
       "harness": "codex",
       "runtimeAgentId": "backend-builder",
-      "reportsTo": "chief-of-staff",
-      "status": "idle"
+      "reportsTo": "chief-of-staff"
     },
     {
       "id": "frontend-builder",
@@ -55,7 +51,6 @@
       "harness": "openclaw",
       "runtimeAgentId": "frontend-builder",
       "reportsTo": "chief-of-staff",
-      "status": "idle",
       "notes": "UI/product implementation runs on the dedicated `frontend-builder` OpenClaw agent in a real isolated worktree (acpx ACP backend), using the OpenClaw gateway model (currently openai/gpt-5.6-sol). factory.config.json's `builder:cursor` routing token maps here — `cursor` is the historical name for the UI-builder slot, not a live Cursor session. There is no Cursor dependency."
     },
     {
@@ -66,8 +61,7 @@
       "stages": ["reviewer"],
       "harness": "multiple",
       "runtimeAgentId": "reviewer",
-      "reportsTo": "chief-of-staff",
-      "status": "idle"
+      "reportsTo": "chief-of-staff"
     },
     {
       "id": "qa",
@@ -78,7 +72,6 @@
       "harness": "multiple",
       "runtimeAgentId": "qa",
       "reportsTo": "chief-of-staff",
-      "status": "idle",
       "notes": "The OpenClaw `qa` runtime agent runs on Claude via the acpx ACP backend (`runtime.acp.agent: \"claude\"` in ~/.openclaw/openclaw.json), same pattern as architect/reviewer/security. Was codex-backed until 2026-09-05. `harness` stays \"multiple\" because the pipeline still selects QA to differ from the builder (task-workflow.mjs defaultAssignments); factory.config.json now maps both `qa:claude` and `qa:codex` to this one agent."
     },
     {
@@ -89,8 +82,7 @@
       "stages": ["security"],
       "harness": "claude",
       "runtimeAgentId": "security",
-      "reportsTo": "chief-of-staff",
-      "status": "idle"
+      "reportsTo": "chief-of-staff"
     },
     {
       "id": "release-manager",
@@ -100,8 +92,7 @@
       "stages": ["release"],
       "harness": "openclaw",
       "runtimeAgentId": "release",
-      "reportsTo": "chief-of-staff",
-      "status": "idle"
+      "reportsTo": "chief-of-staff"
     },
     {
       "id": "research",
@@ -112,7 +103,6 @@
       "harness": "claude",
       "runtimeAgentId": "research",
       "reportsTo": "founder",
-      "status": "idle",
       "notes": "Real OpenClaw agent `research` created 2026-09-05, Claude-backed via the acpx ACP backend. Founder-invoked (not a pipeline stage); callable with `openclaw agent --agent research`."
     },
     {
@@ -124,7 +114,6 @@
       "harness": "claude",
       "runtimeAgentId": "learning",
       "reportsTo": "founder",
-      "status": "idle",
       "notes": "Real OpenClaw agent `learning` created 2026-09-05, Claude-backed via the acpx ACP backend. The scheduled analysis pipeline (scripts/factory-learn.mjs, factory/lib/learning/*) is deterministic and needs no model call; the model-backed agent is used for the research/synthesis dispatch (factory-learn.mjs research, which resolves `openclawIntegration.agentIds.learning`). `harness` reads \"claude\" to reflect the runtime agent; SFD-2026-006 (read-only, proposal-driven) is unchanged."
     }
   ]

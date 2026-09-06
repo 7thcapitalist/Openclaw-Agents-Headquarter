@@ -5,6 +5,17 @@ import { writeHandoff } from "./handoff.mjs";
 
 export const PROTOCOL_VERSION = 1;
 
+// The deterministic dispatch id and result path for a (task, stage) at its next
+// attempt. `prepareDispatch` is the only writer of dispatch state; the concurrent
+// review fan-out in openclaw-runner.mjs pre-computes the same ids/paths so the
+// result files it writes are picked up verbatim by a later `prepareDispatch`.
+export function computeDispatchPaths({ state, stage, statePath }) {
+  const attempt = (state.dispatches || []).filter((item) => item.stage === stage).length + 1;
+  const dispatchId = `${state.task.id}-${stage}-${attempt}`;
+  const resultPath = join(dirname(statePath), "results", `${dispatchId}.json`);
+  return { dispatchId, resultPath, attempt };
+}
+
 export function prepareDispatch({ hqRoot, statePath, now = new Date().toISOString() }) {
   const state = readState(statePath);
   if (state.status !== "active") return terminalResponse(state);
@@ -12,11 +23,8 @@ export function prepareDispatch({ hqRoot, statePath, now = new Date().toISOStrin
     return dispatchResponse(state.currentDispatch, state);
   }
   const stage = state.currentStage;
-  const attempt = (state.dispatches || []).filter((item) => item.stage === stage).length + 1;
-  const dispatchId = `${state.task.id}-${stage}-${attempt}`;
-  const resultDir = join(dirname(statePath), "results");
-  mkdirSync(resultDir, { recursive: true });
-  const resultPath = join(resultDir, `${dispatchId}.json`);
+  const { dispatchId, resultPath, attempt } = computeDispatchPaths({ state, stage, statePath });
+  mkdirSync(dirname(resultPath), { recursive: true });
   const promptPath = writeHandoff({ hqRoot, statePath, state, resultPath, dispatchId });
   const dispatch = {
     id: dispatchId,
