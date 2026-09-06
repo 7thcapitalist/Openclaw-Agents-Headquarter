@@ -84,7 +84,9 @@ test("shared initializer creates state and handoff using a single worktree opera
   };
   const result = initializeTask({ hqRoot: process.cwd(), contractPath, repo, worktree, stateRoot, git });
   assert.equal(result.next, "product");
-  assert.deepEqual(calls.map((args) => args[0]), ["rev-parse", "show-ref", "worktree"]);
+  // rev-parse --show-toplevel, show-ref (branch exists?), rev-parse HEAD (base
+  // sha for the publish gate), then the single worktree add.
+  assert.deepEqual(calls.map((args) => args[0]), ["rev-parse", "show-ref", "rev-parse", "worktree"]);
   assert.equal(existsSync(result.state), true);
   assert.match(readFileSync(join(stateRoot, "tasks", "issue-42", "handoff-product.md"), "utf8"), /Assigned harness: openclaw/);
 });

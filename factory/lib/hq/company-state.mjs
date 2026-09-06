@@ -290,5 +290,8 @@ function slimTask(task) {
     branch: task.branch || null,
     createdAt: task.createdAt || null,
     updatedAt: task.updatedAt || null,
+    elapsedMs: Number.isFinite(task.elapsedMs) ? task.elapsedMs : null,
+    lastHandoff: task.lastHandoff || null,
+    lastResult: task.lastResult || null,
   };
 }

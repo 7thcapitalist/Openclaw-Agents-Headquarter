@@ -36,10 +36,52 @@ function writeControl(root, value) {
   renameSync(temp, path);
 }
 
+const TERMINAL_TASK_STATUSES = new Set(["merge-ready", "merged"]);
+const RESULT_EVENT_OUTCOME = {
+  "stage-pass": "pass",
+  "stage-fail": "fail",
+  "stage-decision-required": "decision-required",
+  "dispatch-failed": "fail",
+};
+
+// Derived progress signals for one task, computed from the full state (not the
+// truncated event slice the task view exposes): wall time since the task was
+// created, the most recent handoff into a stage, and the most recent stage
+// result. All read-only projections — nothing here is a new sensor.
+function summariseTaskProgress(state, now = Date.now()) {
+  const events = Array.isArray(state.events) ? state.events : [];
+  const createdMs = Date.parse(state.createdAt || "");
+  const lastEventMs = events.length ? Date.parse(events[events.length - 1].at || "") : NaN;
+  const terminal = TERMINAL_TASK_STATUSES.has(state.status);
+  const endMs = terminal && Number.isFinite(lastEventMs) ? lastEventMs : now;
+  const elapsedMs = Number.isFinite(createdMs) ? Math.max(0, endMs - createdMs) : null;
+
+  let lastHandoff = null;
+  let lastResult = null;
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const event = events[i];
+    if (!lastHandoff && (event.type === "handoff-ready" || event.type === "dispatch-ready")) {
+      lastHandoff = { stage: event.stage || null, at: event.at || null };
+    }
+    if (!lastResult && RESULT_EVENT_OUTCOME[event.type]) {
+      const stage = event.stage || null;
+      lastResult = {
+        stage,
+        outcome: RESULT_EVENT_OUTCOME[event.type],
+        at: event.at || null,
+        summary: (stage && state.stages?.[stage]?.summary) || state.blocker?.summary || null,
+      };
+    }
+    if (lastHandoff && lastResult) break;
+  }
+  return { elapsedMs, lastHandoff, lastResult };
+}
+
 function taskView(path) {
   const state = readState(path);
   const updatedAt = state.updatedAt || statSync(path).mtime.toISOString();
   const dispatch = state.currentDispatch || null;
+  const progress = summariseTaskProgress(state);
   return {
     id: state.task.id,
     objective: state.task.outcome,
@@ -55,10 +97,38 @@ function taskView(path) {
     createdAt: state.createdAt,
     branch: state.branch,
     risk: state.task.risk,
+    elapsedMs: progress.elapsedMs,
+    lastHandoff: progress.lastHandoff,
+    lastResult: progress.lastResult,
+    completionReport: state.completionReport
+      ? { generatedAt: state.completionReport.generatedAt || null, status: state.completionReport.status || state.status }
+      : null,
     events: (state.events || []).slice(-5).reverse(),
     founderApprovalRequest: state.founderApprovalRequest || null,
     decisionCard: readDecisionCard(state),
   };
+}
+
+// Return the rendered completion-report markdown for one task id, read from the
+// factory state tree. Never returns a path outside that tree.
+export function readTaskCompletionReport(root, taskId) {
+  const allowedRoot = resolve(factoryRoot(root));
+  for (const statePath of walkStateFiles(factoryRoot(root))) {
+    let state;
+    try { state = readState(statePath); } catch { continue; }
+    if (state?.task?.id !== taskId) continue;
+    const reportPath = resolve(dirname(statePath), "completion-report.md");
+    if (!reportPath.startsWith(`${allowedRoot}/`) || !existsSync(reportPath)) {
+      return { taskId, markdown: null, generatedAt: state.completionReport?.generatedAt || null, status: state.status };
+    }
+    return {
+      taskId,
+      markdown: readFileSync(reportPath, "utf8"),
+      generatedAt: state.completionReport?.generatedAt || null,
+      status: state.completionReport?.status || state.status,
+    };
+  }
+  return null;
 }
 
 function readDecisionCard(state) {
@@ -144,16 +214,85 @@ export function buildFounderOverview(root, hqProjects = []) {
   const activity = tasks.flatMap((task) => task.events.map((event) => ({ ...event, taskId: task.id, project: task.project, objective: task.objective })))
     .sort((a, b) => String(b.at || "").localeCompare(String(a.at || ""))).slice(0, 30);
 
+  const inbox = buildFounderInbox({ tasks, decisions, questions: control.questions });
+
   const intel = attachProjectIntelligence(root, projects, decisions);
   return {
     projects: intel.projects,
     tasks,
     decisions,
     openDecisions: intel.company?.openDecisions || decisions,
+    inbox,
     company: intel.company,
     questions: control.questions.slice(-20).reverse(),
     activity,
   };
+}
+
+// The Founder Inbox — a single ordered list of everything that actually needs
+// the founder: high-risk approvals, decisions a stage raised, terminally
+// blocked tasks, and any unanswered question. It is a projection of task state
+// + the control file; it adds no new state and no new workflow.
+function buildFounderInbox({ tasks, decisions, questions }) {
+  const items = [];
+  const byId = new Map(tasks.map((t) => [t.id, t]));
+
+  for (const d of decisions) {
+    const task = byId.get(d.taskId);
+    const isApproval = d.risk === "high" && Boolean(task?.founderApprovalRequest);
+    items.push({
+      kind: isApproval ? "approval" : "decision",
+      id: d.id,
+      taskId: d.taskId,
+      project: d.project || null,
+      statePath: d.statePath || null,
+      title: d.question,
+      detail: d.why,
+      recommendation: d.recommendation,
+      options: d.options,
+      risk: d.risk || null,
+      requestedAt: d.requestedAt || null,
+      action: isApproval ? "submit-signed-approval" : "respond-and-resume",
+    });
+  }
+
+  // `routeStageFailure` keeps a still-retriable task `active`; a task found
+  // `blocked` with a `fail` outcome has exhausted its retry budget and is
+  // genuinely stuck.
+  for (const task of tasks) {
+    if (task.status !== "blocked" || task.blocker?.outcome !== "fail") continue;
+    items.push({
+      kind: "blocked",
+      id: `${task.id}:${task.blocker.stage || "stage"}`,
+      taskId: task.id,
+      project: task.project || null,
+      statePath: task.statePath || null,
+      title: `${task.blocker.stage || "A stage"} failed — retry budget exhausted`,
+      detail: task.blocker.summary || "The task cannot proceed without founder attention.",
+      risk: task.risk || null,
+      requestedAt: task.blocker.at || null,
+      action: "review-blocked-task",
+    });
+  }
+
+  for (const q of questions || []) {
+    if (q.answer) continue;
+    items.push({
+      kind: "question",
+      id: q.id,
+      taskId: null,
+      project: null,
+      statePath: null,
+      title: `Question to ${q.agentId}`,
+      detail: q.question,
+      requestedAt: q.askedAt || null,
+      action: "none",
+    });
+  }
+
+  const rank = { approval: 0, decision: 1, blocked: 2, question: 3 };
+  return items.sort((a, b) =>
+    (rank[a.kind] - rank[b.kind]) || String(b.requestedAt || "").localeCompare(String(a.requestedAt || "")));
 }
 
 // Enrich each project with its intelligence-layer brief + health, and produce a

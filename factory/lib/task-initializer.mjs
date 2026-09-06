@@ -21,6 +21,10 @@ export function initializeTask({ hqRoot, contractPath, repo: repoInput, branch: 
   if (git(repo, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], { allowFailure: true }).ok) {
     throw new Error(`Branch already exists: ${branch}`);
   }
+  // The commit the task branch is cut from — recorded so the GitHub publish
+  // step can prove the branch is ahead of its base before pushing.
+  const baseShaResult = git(repo, ["rev-parse", "HEAD"], { allowFailure: true });
+  state.baseSha = baseShaResult.ok ? String(baseShaResult.stdout).trim() || null : null;
   mkdirSync(dirname(worktree), { recursive: true });
   git(repo, ["worktree", "add", "-b", branch, worktree]);
   writeState(statePath, state);

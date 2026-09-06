@@ -1211,3 +1211,16 @@ pre,
 .intel-list li {
   margin-bottom: 0.3rem;
 }
+
+.report-md {
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 60vh;
+  overflow-y: auto;
+  font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: var(--panel, #f6f6f4);
+  border: 1px solid var(--border, #ddd);
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin: 0;
+}

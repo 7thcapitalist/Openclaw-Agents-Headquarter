@@ -1,8 +1,11 @@
 import { execFile } from "child_process";
 import { promisify } from "util";
+import { writeFileSync } from "fs";
+import { dirname, join } from "path";
 import { failDispatch, ingestResult, markDispatchRunning, prepareDispatch, readResultFile } from "./openclaw-protocol.mjs";
 import { readState, writeState } from "./task-workflow.mjs";
 import { publishMergeReadyTask } from "./hq/github-publish.mjs";
+import { buildCompletionReport } from "./hq/completion-report.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -11,6 +14,7 @@ export async function runOneStage({ hqRoot, statePath, agentIds = {}, maxAttempt
   if (prepared.status !== "dispatch") return prepared;
   markDispatchRunning({ statePath, dispatchId: prepared.dispatchId });
   const agentId = selectAgentId(prepared, agentIds);
+  let response;
   try {
     await execute({
       agentId,
@@ -19,13 +23,39 @@ export async function runOneStage({ hqRoot, statePath, agentIds = {}, maxAttempt
       cwd: prepared.cwd,
       dispatch: prepared,
     });
-    const response = ingestResult({ statePath, result: readResultFile(prepared.resultPath), maxAttemptsPerStage });
+    response = ingestResult({ statePath, result: readResultFile(prepared.resultPath), maxAttemptsPerStage });
     if (response.status === "merge-ready") {
       response.githubPublish = publishAndRecord({ hqRoot, statePath, publish });
     }
-    return response;
   } catch (error) {
-    return failDispatch({ statePath, dispatchId: prepared.dispatchId, error: summarizeError(error), maxAttemptsPerStage });
+    response = failDispatch({ statePath, dispatchId: prepared.dispatchId, error: summarizeError(error), maxAttemptsPerStage });
+  }
+  // A founder-readable completion report for every terminal or paused outcome —
+  // successes and blockers alike. Rewritten (idempotent) each time the task
+  // settles, and never allowed to break the run.
+  if (response.status === "merge-ready" || response.status === "blocked") {
+    writeCompletionReport({ statePath });
+  }
+  return response;
+}
+
+// Render the task's completion report from its own recorded state and drop it
+// next to state.json as completion-report.md. Guarded: a report failure is
+// swallowed — the workflow outcome stands regardless.
+export function writeCompletionReport({ statePath }) {
+  try {
+    const state = readState(statePath);
+    const markdown = buildCompletionReport(state);
+    const path = join(dirname(statePath), "completion-report.md");
+    writeFileSync(path, `${markdown}\n`, "utf8");
+    const next = structuredClone(state);
+    const generatedAt = new Date().toISOString();
+    next.completionReport = { path, generatedAt, status: state.status };
+    next.events.push({ at: generatedAt, type: "completion-report", stage: state.currentStage || "release", actor: "system", outcome: state.status });
+    writeState(statePath, next);
+    return { path, generatedAt };
+  } catch (error) {
+    return { error: summarizeError(error) };
   }
 }
 

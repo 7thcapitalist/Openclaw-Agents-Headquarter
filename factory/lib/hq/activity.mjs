@@ -126,6 +126,17 @@ export function buildAgentActivity({ agents = [], tasks = [], now = new Date(), 
       blocker: blockedTask ? blockerText(blockedTask.blocker) : null,
       taskCreatedAt: activeTask?.createdAt || null,
       lastActivityAt,
+      // How long ago the last real activity was, and how long this task has been
+      // running overall — both wall-clock milliseconds, both derived (never a
+      // new sensor). `elapsedMs` prefers the value the task view already
+      // computed from the full event log; otherwise it is now − task creation
+      // while the task is non-terminal.
+      sinceLastActivityMs: lastActivityMs != null ? Math.max(0, nowMs - lastActivityMs) : null,
+      elapsedMs: Number.isFinite(activeTask?.elapsedMs)
+        ? activeTask.elapsedMs
+        : (nonTerminal && parseTime(activeTask?.createdAt) != null ? Math.max(0, nowMs - parseTime(activeTask.createdAt)) : null),
+      lastHandoffAt: activeTask?.lastHandoff?.at || null,
+      lastResult: activeTask?.lastResult || null,
       lastRun: rt?.lastRun || null,
       tasks: agentTasks.map(slimTask),
     };

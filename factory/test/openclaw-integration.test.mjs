@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync } from "fs";
 import { spawnSync } from "child_process";
 import { join, resolve } from "path";
 import { tmpdir } from "os";
@@ -84,8 +84,14 @@ test("mocked OpenClaw execution drives a complete task to merge-ready", async ()
   assert.deepEqual(publishCalls, ["merge-ready"]);
   assert.equal(response.githubPublish.published, false);
   assert.equal(state.githubPublish.reason, "no github configured in this fixture");
-  assert.equal(state.events.at(-1).type, "github-publish");
-  assert.equal(state.events.at(-1).outcome, "skipped");
+  const publishEvent = state.events.find((event) => event.type === "github-publish");
+  assert.equal(publishEvent.outcome, "skipped");
+  // A founder-readable completion report is generated once the task settles,
+  // recorded as the final event and a completion-report.md next to state.json.
+  assert.equal(state.events.at(-1).type, "completion-report");
+  assert.ok(state.completionReport?.path);
+  assert.ok(existsSync(state.completionReport.path));
+  assert.match(readFileSync(state.completionReport.path, "utf8"), /# Completion report/);
 });
 
 test("a non-terminal stage completion never invokes the GitHub publish step", async () => {

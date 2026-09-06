@@ -52,13 +52,11 @@
       "role": "Implementation — UI & product",
       "responsibility": "Implements UI/product changes with visual iteration and responsive checks; also the founder's interactive development surface.",
       "stages": ["builder"],
-      "harness": "cursor",
-      "harnessAvailable": false,
-      "harnessFallback": "openclaw",
+      "harness": "openclaw",
       "runtimeAgentId": "frontend-builder",
       "reportsTo": "chief-of-staff",
       "status": "idle",
-      "notes": "Cursor is the intended harness (factory.config.json roles.productBuilder), but its OpenClaw ACP integration does not reliably invoke real Cursor sessions — see ~/.openclaw/workspace/skills/cursor-acp-fallback and the .before-cursor-* config backups, which record several prior fix attempts. Verified live on 2026-09-05: `openclaw agent --agent cursor ...` returns a normal-looking success response but executionTrace shows runner:\"embedded\", provider/model:\"openai/gpt-5.6-sol\", fallbackUsed:false — it silently answers via the embedded model instead of dispatching to cursor-agent's ACP backend, with no visible error. factory.config.json's builder:cursor routing therefore intentionally points at the dedicated \"frontend-builder\" OpenClaw agent (a real, isolated, working agent — just not Cursor-backed) rather than the broken \"cursor\" runtime agent, so UI tasks keep working. Revisit only as its own focused task against OpenClaw's ACP/acpx plugin config, not by guessing at further changes here."
+      "notes": "UI/product implementation runs on the dedicated `frontend-builder` OpenClaw agent in a real isolated worktree (acpx ACP backend), using the OpenClaw gateway model (currently openai/gpt-5.6-sol). factory.config.json's `builder:cursor` routing token maps here — `cursor` is the historical name for the UI-builder slot, not a live Cursor session. There is no Cursor dependency."
     },
     {
       "id": "reviewer",
