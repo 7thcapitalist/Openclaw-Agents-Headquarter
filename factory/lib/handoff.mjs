@@ -3,9 +3,12 @@ import { dirname, join } from "path";
 import { assembleContextPack } from "./intel/assemble.mjs";
 import { buildKnowledgeBlock } from "./learning/handoff-inject.mjs";
 
-export function writeHandoff({ hqRoot, statePath, state, resultPath = null, dispatchId = null }) {
-  if (!state.currentStage) throw new Error("Task has no pending handoff; it is merge-ready.");
-  const stage = state.currentStage;
+export function writeHandoff({ hqRoot, statePath, state, resultPath = null, dispatchId = null, stage: stageOverride = null }) {
+  // `stageOverride` lets the concurrent review fan-out write a handoff for a
+  // group member that is not yet `state.currentStage`. Defaults to the normal
+  // linear behaviour.
+  const stage = stageOverride || state.currentStage;
+  if (!stage) throw new Error("Task has no pending handoff; it is merge-ready.");
   const prompt = readFileSync(join(hqRoot, "factory", "prompts", `${stage === "builder" ? "builder" : stage}.md`), "utf8");
   const completed = Object.entries(state.stages)
     .filter(([, result]) => result.status === "pass")

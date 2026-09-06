@@ -1,13 +1,19 @@
 import { execFile } from "child_process";
 import { promisify } from "util";
-import { writeFileSync } from "fs";
+import { existsSync, unlinkSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
-import { failDispatch, ingestResult, markDispatchRunning, prepareDispatch, readResultFile } from "./openclaw-protocol.mjs";
+import { PROTOCOL_VERSION, computeDispatchPaths, failDispatch, ingestResult, markDispatchRunning, prepareDispatch, readResultFile } from "./openclaw-protocol.mjs";
 import { readState, writeState } from "./task-workflow.mjs";
+import { writeHandoff } from "./handoff.mjs";
 import { publishMergeReadyTask } from "./hq/github-publish.mjs";
 import { buildCompletionReport } from "./hq/completion-report.mjs";
 
 const execFileAsync = promisify(execFile);
+
+// Stages that may run concurrently once the builder is done and the branch is
+// frozen. All three read-only against the same worktree; order of results does
+// not matter because the engine still applies them one at a time.
+export const DEFAULT_CONCURRENT_GROUPS = [["reviewer", "qa", "security"]];
 
 export async function runOneStage({ hqRoot, statePath, agentIds = {}, maxAttemptsPerStage = 3, execute = executeOpenClaw, publish = publishMergeReadyTask }) {
   const prepared = prepareDispatch({ hqRoot, statePath });
@@ -85,9 +91,74 @@ function publishAndRecord({ hqRoot, statePath, publish }) {
 }
 
 export async function runToTerminal(options) {
+  const groups = options.concurrentGroups || DEFAULT_CONCURRENT_GROUPS;
   let response;
-  do response = await runOneStage(options);
-  while (response.status === "active");
+  do {
+    response = (await runConcurrentGroupIfReady({ ...options, groups })) || (await runOneStage(options));
+  } while (response.status === "active");
+  return response;
+}
+
+// When the task is parked at the head of a concurrent group with the rest of the
+// group still pending, run every member's `openclaw agent` call at once (the
+// slow part), then feed each result back through the UNCHANGED engine one stage
+// at a time. Returns the engine response, or null when no fan-out applies (the
+// caller then does a normal sequential `runOneStage`).
+export async function runConcurrentGroupIfReady({ hqRoot, statePath, agentIds = {}, maxAttemptsPerStage = 3, execute = executeOpenClaw, publish = publishMergeReadyTask, groups = DEFAULT_CONCURRENT_GROUPS }) {
+  const state = readState(statePath);
+  if (state.status !== "active" || state.currentDispatch) return null;
+  const pending = (s) => {
+    const st = state.stages?.[s]?.status;
+    return st === undefined || st === "pending";
+  };
+  const group = (groups || []).find((g) => Array.isArray(g) && g.length >= 2 && g[0] === state.currentStage && g.slice(1).every(pending));
+  if (!group) return null;
+
+  const members = group.map((stage) => {
+    const { dispatchId, resultPath } = computeDispatchPaths({ state, stage, statePath });
+    const actor = state.assignments[stage];
+    const agentId = selectAgentId({ stage, actor }, agentIds);
+    const promptPath = writeHandoff({ hqRoot, statePath, state, resultPath, dispatchId, stage });
+    return { stage, actor, dispatchId, resultPath, promptPath, agentId };
+  });
+
+  // The expensive part, concurrent. `allSettled`: a member whose agent throws
+  // simply leaves no result file — the engine then routes it as a normal
+  // failure when we apply results below.
+  await Promise.allSettled(members.map((m) => execute({
+    agentId: m.agentId,
+    messageFile: m.promptPath,
+    sessionKey: `agent:${m.agentId}:factory-${m.dispatchId}`,
+    cwd: state.worktree,
+    dispatch: {
+      version: PROTOCOL_VERSION,
+      status: "dispatch",
+      taskId: state.task.id,
+      dispatchId: m.dispatchId,
+      stage: m.stage,
+      actor: m.actor,
+      cwd: state.worktree,
+      promptPath: m.promptPath,
+      resultPath: m.resultPath,
+    },
+  })));
+
+  // Apply through the real engine, one stage at a time, with a no-op execute so
+  // `runOneStage` consumes the result file each member already wrote.
+  const noop = async () => {};
+  const applied = new Set();
+  let response;
+  for (const m of members) {
+    response = await runOneStage({ hqRoot, statePath, agentIds, maxAttemptsPerStage, execute: noop, publish });
+    applied.add(m.stage);
+    if (readState(statePath).stages?.[m.stage]?.status !== "pass") break; // failed → routed away
+  }
+  // Discard the not-yet-applied members' result files so a later attempt of
+  // those stages regenerates them cleanly.
+  for (const m of members) {
+    if (applied.has(m.stage)) continue;
+    try { if (existsSync(m.resultPath)) unlinkSync(m.resultPath); } catch { /* best effort */ }
+  }
   return response;
 }
 

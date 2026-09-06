@@ -44,6 +44,7 @@ export async function handleRequest(request, dependencies = {}) {
       statePath: requiredPath(request),
       agentIds: { ...(config.openclawIntegration?.agentIds || {}), ...(request.agentIds || {}) },
       maxAttemptsPerStage: config.openclawIntegration?.maxAttemptsPerStage || 3,
+      concurrentGroups: config.openclawIntegration?.concurrentGroups,
     };
     return request.action === "run" ? runToTerminal(options) : runOneStage(options);
   }
@@ -87,6 +88,7 @@ async function startFromObjective(request, dependencies) {
     statePath: created.statePath,
     agentIds: config.openclawIntegration?.agentIds || {},
     maxAttemptsPerStage: config.openclawIntegration?.maxAttemptsPerStage || 3,
+    concurrentGroups: config.openclawIntegration?.concurrentGroups,
     execute: dependencies.execute,
   });
   return { ...result, statePath: created.statePath, worktree: created.worktree, branch: created.branch, contract: intake.contract };

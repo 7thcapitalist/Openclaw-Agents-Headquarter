@@ -15,6 +15,9 @@
     "factory:learn": "node scripts/factory-learn.mjs",
     "factory:smoke": "node scripts/factory-smoke.mjs",
     "factory:smoke:github": "node scripts/factory-smoke-github.mjs",
+    "factory:run-many": "node scripts/factory-run-many.mjs",
+    "factory:prune-sessions": "node scripts/prune-factory-sessions.mjs",
+    "factory:route-review": "node scripts/apply-review-model-routing.mjs",
     "register:example": "AGENT_LAB_ROOT=$PWD ./scripts/register-agent.sh example-project research-analyst"
   }
 }
