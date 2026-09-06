@@ -24,6 +24,7 @@ const arg = (name, def) => {
 };
 const CONCURRENCY = Math.max(1, Number(arg("--concurrency", "2")));
 const FILE = arg("--file", null);
+const STATE_ROOT = arg("--state-root", null);
 
 function readInput() {
   const raw = FILE ? readFileSync(resolve(FILE), "utf8") : readFileSync(0, "utf8");
@@ -51,14 +52,17 @@ export async function runPool(items, size, worker) {
 }
 
 // Run every task through `handle` (defaults to the real factory adapter),
-// `concurrency` at a time. Exported for tests; the CLI wraps it.
-export async function runMany({ tasks, concurrency = 2, handle = handleRequest, dependencies = {} }) {
+// `concurrency` at a time. Exported for tests; the CLI wraps it. A per-task
+// `stateRoot` (or one from the task object) keeps factory state out of the HQ
+// repo's own data dir.
+export async function runMany({ tasks, concurrency = 2, handle = handleRequest, dependencies = {}, stateRoot = null }) {
   return runPool(tasks, concurrency, async (t) => {
     const started = Date.now();
     const res = await handle({
       version: 1, action: "start",
       objective: t.objective, repo: resolve(t.repo),
       project: t.project || undefined, issue: t.issue || undefined,
+      stateRoot: t.stateRoot || stateRoot || undefined,
     }, dependencies);
     return { objective: t.objective, elapsedMs: Date.now() - started, ...res };
   });
@@ -68,7 +72,7 @@ async function main() {
   const tasks = readInput();
   console.log(`Running ${tasks.length} task(s), ${CONCURRENCY} at a time...\n`);
 
-  const results = await runMany({ tasks, concurrency: CONCURRENCY });
+  const results = await runMany({ tasks, concurrency: CONCURRENCY, stateRoot: STATE_ROOT ? resolve(STATE_ROOT) : null });
 
   console.log("\n=== results ===");
   let ok = 0;

@@ -1,0 +1,23 @@
+{
+  "id": "lifemaxing-health-endpoint",
+  "issue": "local:lifemaxing-health-endpoint",
+  "outcome": "LifeMax exposes an unauthenticated GET /api/health route that returns HTTP 200 with a small JSON body ({ status: \"ok\", uptimeSeconds, version }) when the process is up and the database is reachable, and HTTP 503 with { status: \"degraded\", reason } when the database check fails. No owner data, secrets, or setup state are exposed.",
+  "acceptanceCriteria": [
+    "GET /api/health returns 200 and JSON { status: \"ok\", uptimeSeconds: <number>, version: <string> } on a healthy process",
+    "When the database health probe throws, the route returns 503 and JSON { status: \"degraded\", reason: <short string> } without leaking a stack trace",
+    "The route requires no authentication and is reachable with SETUP_MODE=disabled",
+    "Response contains no owner PII, password state, environment values, or setup tokens",
+    "An automated test (unit or integration, matching the repo's existing test style) covers the 200 and 503 paths",
+    "corepack pnpm verify passes"
+  ],
+  "project": "lifemaxing",
+  "workType": "backend",
+  "risk": "low",
+  "preferredBuilder": "auto",
+  "constraints": [
+    "Next.js App Router route under src/app/api/health/route.ts; follow the patterns already in src/app/api and src/infrastructure/db",
+    "Reuse the existing DB accessor / clock abstractions in src/infrastructure — do not open a raw connection",
+    "Do not change auth, setup, or migration code",
+    "Keep the payload minimal and non-sensitive; no per-request logging of the body"
+  ]
+}

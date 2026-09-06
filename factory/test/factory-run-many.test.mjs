@@ -74,6 +74,7 @@ test("two independent factory tasks run concurrently and both reach merge-ready"
       { objective: "Add feature B", repo: repoB },
     ],
     concurrency: 2,
+    stateRoot: join(root, "factory-state"), // keep state out of the HQ repo
     dependencies: { executeChiefOfStaff, execute: makeExecute(windows) },
   });
 

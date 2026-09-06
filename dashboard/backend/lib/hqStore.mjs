@@ -1,5 +1,32 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "fs";
 import { basename, join } from "path";
+import { listAgents } from "../../../factory/lib/hq/agents.mjs";
+import { buildAgentActivity } from "../../../factory/lib/hq/activity.mjs";
+import { discoverFactoryTasks } from "./founderControlPlane.mjs";
+
+// The real workforce roster (factory/agents.json) with live per-agent status
+// derived from the runtime, shaped for the legacy command-center views. Falls
+// back to the (usually empty) seed collection on any error.
+function liveAgents(root) {
+  try {
+    const { agents } = listAgents(root);
+    if (!agents.length) return null;
+    const activity = buildAgentActivity({ agents, tasks: discoverFactoryTasks(root) });
+    const byId = new Map(activity.agents.map((a) => [a.id, a]));
+    return agents.map((a) => ({
+      id: a.id,
+      name: a.name,
+      role: a.role,
+      harness: a.harness,
+      reportsTo: a.reportsTo || null,
+      status: byId.get(a.id)?.status || "idle",
+      currentProject: byId.get(a.id)?.currentProject || null,
+      currentTask: byId.get(a.id)?.currentTask?.objective || null,
+    }));
+  } catch {
+    return null;
+  }
+}
 
 const PROJECT_ORDER = [
   "personal-automation",
@@ -163,7 +190,7 @@ function priorityRank(priority) {
 
 export function readHqState(root) {
   const projects = readProjects(root);
-  const agents = readHqCollection(root, "agents");
+  const agents = liveAgents(root) || readHqCollection(root, "agents");
   const tasks = readHqCollection(root, "tasks");
   const sops = readHqCollection(root, "sops");
   const reports = readHqCollection(root, "reports");

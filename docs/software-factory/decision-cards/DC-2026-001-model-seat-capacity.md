@@ -24,6 +24,16 @@ This PR mitigates but does not remove the ceiling:
 - Cost/risk: recurring spend (a second ChatGPT/OpenAI plan, or metered API
   usage); another credential to manage in `~/.openclaw`.
 
+## Option A2 — Put the review agents on the Claude subscription
+- Benefit: `architect`/`reviewer`/`qa`/`security` run on Claude (already paid),
+  fully off both the OpenAI seat and the Copilot premium-request budget; the
+  strongest independence story.
+- Cost/risk: `claude` (Claude Code) has no ACP server mode, so acpx cannot spawn
+  it. Needs either an interactive `openclaw models auth` login for the
+  `anthropic` provider that actually reuses the Claude Code OAuth (unverified —
+  prior attempts hit `x-api-key` 401s), or Anthropic API credit (recurring
+  spend). Effort + possibly spend.
+
 ## Option B — Upgrade the existing OpenAI plan tier
 - Benefit: larger 5h / weekly windows on the seat already configured; no new
   credential.
@@ -40,10 +50,12 @@ This PR mitigates but does not remove the ceiling:
 ## Recommendation
 **C now.** It is already in effect after this PR and costs nothing. Move to **A**
 if factory build throughput becomes a priority (multiple projects, daily builds)
-— a second seat is the only option that removes the ceiling rather than raising it.
+— a second seat is the only option that removes the ceiling rather than raising
+it. **A2** is worth a timeboxed spike (no spend if the `anthropic` OAuth login
+works) before paying for A.
 
 ## Default if no decision
 C. Nothing pauses — the factory keeps running on the mitigated single-seat setup.
 
 ## Reply format
-`A`, `B`, `C`, or `discuss`.
+`A`, `A2`, `B`, `C`, or `discuss`.
