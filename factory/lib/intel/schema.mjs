@@ -4,6 +4,10 @@
 
 const PROJECT_STATUS = new Set(["active", "paused", "archived"]);
 const SEVERITY = new Set(["low", "medium", "high"]);
+// "headquarters" marks the factory/operator repository itself: it is
+// infrastructure the company runs on, not a company project, and the
+// Integration Layer excludes it from the founder's project portfolio.
+const PROJECT_KIND = new Set(["project", "headquarters"]);
 
 function isNonEmptyString(value) {
   return typeof value === "string" && value.trim().length > 0;
@@ -39,6 +43,29 @@ export function validateRegistry(value) {
     }
     if (entry.name !== undefined && typeof entry.name !== "string") {
       throw new Error(`registry: projects[${i}].name must be a string.`);
+    }
+    // Integration-layer optional fields. Absent is fine; present must be well shaped.
+    if (entry.mission !== undefined && typeof entry.mission !== "string") {
+      throw new Error(`registry: projects[${i}].mission must be a string.`);
+    }
+    if (entry.owner !== undefined && typeof entry.owner !== "string") {
+      throw new Error(`registry: projects[${i}].owner must be a string.`);
+    }
+    if (entry.github !== undefined && entry.github !== null) {
+      const gh = entry.github;
+      if (typeof gh !== "object" || Array.isArray(gh) ||
+        !isNonEmptyString(gh.owner) || !isNonEmptyString(gh.repo)) {
+        throw new Error(`registry: projects[${i}].github must be { owner, repo } with non-empty strings.`);
+      }
+    }
+    if (entry.responsibleAgents !== undefined) {
+      if (!Array.isArray(entry.responsibleAgents) ||
+        !entry.responsibleAgents.every((x) => typeof x === "string")) {
+        throw new Error(`registry: projects[${i}].responsibleAgents must be an array of strings.`);
+      }
+    }
+    if (entry.kind !== undefined && !PROJECT_KIND.has(entry.kind)) {
+      throw new Error(`registry: projects[${i}].kind is invalid (${[...PROJECT_KIND].join(", ")}).`);
     }
   }
   return value;

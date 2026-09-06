@@ -95,3 +95,31 @@ entries. When a decision changes, add a new entry and mark the old one
   Handoff injection of accepted knowledge is opt-in
   (`FACTORY_LEARNING_IN_HANDOFF=1` or `factory.config.json` →
   `learning.injectIntoHandoff`).
+
+## SFD-2026-007 — QA, Learning, and Research are real Claude-backed OpenClaw agents
+
+- Date: 2026-09-05
+- Status: Accepted
+- Decision: The `qa`, `learning`, and `research` organizational roles each map to
+  a real, isolated OpenClaw agent that executes on Claude through the acpx ACP
+  backend (`runtime.acp.agent: "claude"`), the same mechanism already used by
+  `architect`, `reviewer`, and `security`. `learning` and `research` were created
+  on this date (they previously existed only as role entries in
+  `factory/agents.json` with a `runtimeAgentId` that resolved to nothing).
+  `qa` already existed but was codex-backed; it is now Claude-backed.
+  `factory.config.json` maps both `qa:claude` and `qa:codex` to the single `qa`
+  agent, and adds `research`.
+- Rationale: A role that names a non-existent runtime agent cannot run and is
+  invisible to `factory/lib/hq/runtime.mjs`'s resolution check. Putting
+  verification, learning, and research on Claude gives them an auth path
+  independent of the shared OpenAI seat used by the other agents, and matches the
+  factory's intent that review/verification/security run on a different model
+  family from the (codex/cursor) builders.
+- Consequences: SFD-2026-006 is unchanged — the Learning Agent stays read-only
+  and proposal-driven. Each acpx-Claude agent still resolves a base OpenClaw
+  gateway model to start its turn, so all agents remain dependent on that base
+  model's auth being healthy; a true Claude *model* provider
+  (`anthropic` / `github-copilot`) is not configured on the current machine and
+  would need founder-supplied credentials. Reverting is
+  `openclaw agents delete learning research` plus restoring
+  `~/.openclaw/openclaw.json.before-learning-research-agents`.

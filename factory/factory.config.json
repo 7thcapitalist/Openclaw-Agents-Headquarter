@@ -8,18 +8,20 @@
     "protocolVersion": 1,
     "maxAttemptsPerStage": 3,
     "agentIds": {
+      "_doc": "Keys are '<stage>' or '<stage>:<harness-token>' routing tokens; values are OpenClaw runtime agent ids. 'builder:cursor' maps to the 'frontend-builder' OpenClaw agent — 'cursor' is the historical name for the UI-builder slot, not a live Cursor session; frontend-builder runs on the OpenClaw gateway model in its own isolated worktree (see factory/agents.json). qa:claude and qa:codex both point at the one 'qa' OpenClaw agent, which is Claude-backed via acpx as of 2026-09-05; independence still holds because the pipeline assigns QA a different harness token from the builder.",
       "product": "product",
       "architect": "architect",
       "builder:codex": "backend-builder",
       "builder:cursor": "frontend-builder",
       "builder:claude": "architect",
       "reviewer": "reviewer",
-      "qa:claude": "reviewer",
+      "qa:claude": "qa",
       "qa:codex": "qa",
       "security": "security",
       "release": "release",
       "openclaw": "main",
-      "learning": "learning"
+      "learning": "learning",
+      "research": "research"
     }
   },
   "learning": {

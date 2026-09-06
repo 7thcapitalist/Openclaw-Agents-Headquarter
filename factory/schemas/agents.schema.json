@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclaw.local/factory/agents.schema.json",
+  "title": "Agent registry",
+  "description": "Reference contract for factory/agents.json — the company's awareness of its own agents. Runtime validation is factory/lib/hq/agents.mjs (validateAgentRegistry).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "agents"],
+  "properties": {
+    "version": { "const": 1 },
+    "agents": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "name", "role"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]*$",
+            "description": "Stable agent id."
+          },
+          "name": { "type": "string", "minLength": 1 },
+          "kind": {
+            "enum": ["claude", "codex", "openclaw", "cursor", "learning", "other"],
+            "description": "Runtime family. Defaults to 'other'."
+          },
+          "role": { "type": "string", "minLength": 1 },
+          "capabilities": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "currentProject": {
+            "type": ["string", "null"],
+            "pattern": "^[a-z0-9][a-z0-9-]*$",
+            "description": "Project key this agent is currently assigned to, or null."
+          },
+          "status": {
+            "enum": ["working", "idle", "blocked", "offline", "disabled"],
+            "description": "Registry-declared status. Live status is derived in hq/activity.mjs. Defaults to 'idle'."
+          },
+          "harnessAgentId": {
+            "type": "string",
+            "description": "Single OpenClaw agent id this maps to (from factory.config.json openclawIntegration.agentIds)."
+          },
+          "harnessAgentIds": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "All OpenClaw agent ids this agent acts as (architect/reviewer/security can be one Claude)."
+          },
+          "reportsTo": { "type": "string" },
+          "notes": { "type": "string" }
+        }
+      }
+    }
+  }
+}

@@ -31,7 +31,30 @@
             "description": "Repo-relative directory holding the canonical context files. No leading '/', no '..' segment. Default 'context'.",
             "pattern": "^(?!/)(?!.*(^|/)\\.\\.(/|$)).*$"
           },
-          "status": { "enum": ["active", "paused", "archived"] }
+          "status": { "enum": ["active", "paused", "archived"] },
+          "mission": {
+            "type": "string",
+            "description": "One-line project mission. A convenience mirror of context/MISSION.md / ownership.json for the company view."
+          },
+          "owner": {
+            "type": "string",
+            "description": "Who owns this project's direction. Usually 'founder'."
+          },
+          "github": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["owner", "repo"],
+            "description": "GitHub coordinates for read-only external awareness.",
+            "properties": {
+              "owner": { "type": "string", "minLength": 1 },
+              "repo": { "type": "string", "minLength": 1 }
+            }
+          },
+          "responsibleAgents": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Agent ids (from factory/agents.json) currently responsible for this project."
+          }
         }
       }
     }

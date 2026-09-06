@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclaw.local/factory/hq-config.schema.json",
+  "title": "Headquarters Integration Layer config",
+  "description": "Reference contract for factory/hq.config.json. Optional file; factory/lib/hq/config.mjs supplies defaults for anything missing.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version"],
+  "properties": {
+    "version": { "const": 1 },
+    "discovery": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "workspaceRoots": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Folders scanned for sibling project repositories. '~' is expanded; relative paths resolve against the HQ root."
+        },
+        "ignore": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Directory names never treated as a project."
+        },
+        "maxDepth": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 6,
+          "description": "How deep below each workspace root to look for a .git directory."
+        }
+      }
+    },
+    "github": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "description": "Master switch for all read-only `gh` calls." },
+        "commitLimit": { "type": "integer", "minimum": 1, "maximum": 100 },
+        "prLimit": { "type": "integer", "minimum": 1, "maximum": 100 },
+        "issueLimit": { "type": "integer", "minimum": 1, "maximum": 100 }
+      }
+    }
+  }
+}

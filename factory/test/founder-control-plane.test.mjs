@@ -179,3 +179,66 @@ test("resolving a founder decision writes a handoff that carries project context
   assert.match(handoff, /## Project context: Startup Ops/);
   assert.match(handoff, /Worktree mission copy\./);
 });
+
+test("founder inbox: a decision-required blocker is a 'decision' item and clears when resolved", () => {
+  const { root, statePath } = fixture();
+  registerIntelligence(root);
+  const state = JSON.parse(readFileSync(statePath, "utf8"));
+  mkdirSync(join(state.worktree, "evidence"), { recursive: true });
+  writeFileSync(join(state.worktree, "evidence/decision.md"), "# Decision Required\n\n## Decision\nWhich storage engine?\n");
+  state.status = "blocked";
+  state.blocker = { stage: "product", outcome: "decision-required", summary: "Which storage engine?", actor: "openclaw", at: "2026-09-05T10:00:00.000Z" };
+  state.stages.product = { status: "decision-required", evidence: [{ path: "evidence/decision.md" }] };
+  writeState(statePath, state);
+
+  const before = buildFounderOverview(root, [{ id: "startup-ops", name: "Startup Ops" }]);
+  assert.equal(before.inbox.length, 1);
+  assert.equal(before.inbox[0].kind, "decision");
+  assert.equal(before.inbox[0].taskId, "task-demo");
+  assert.equal(before.inbox[0].action, "respond-and-resume");
+
+  resolveFounderDecision({ root, hqRoot: root, statePath, direction: "Use SQLite." });
+  const after = buildFounderOverview(root, [{ id: "startup-ops", name: "Startup Ops" }]);
+  assert.equal(after.inbox.length, 0, "resolved decision leaves the inbox");
+  assert.equal(JSON.parse(readFileSync(statePath, "utf8")).status, "active", "task resumed");
+});
+
+test("founder inbox: a terminally failed task is a 'blocked' item, not a decision", () => {
+  const { root, statePath } = fixture();
+  registerIntelligence(root);
+  const state = JSON.parse(readFileSync(statePath, "utf8"));
+  state.status = "blocked";
+  state.currentStage = "qa";
+  state.blocker = { stage: "qa", outcome: "fail", summary: "acceptance criterion 2 cannot pass", actor: "qa", at: "2026-09-05T12:00:00.000Z" };
+  state.dispatches = [
+    { stage: "qa", status: "failed" }, { stage: "qa", status: "failed" }, { stage: "qa", status: "failed" },
+  ];
+  writeState(statePath, state);
+
+  const overview = buildFounderOverview(root, [{ id: "startup-ops", name: "Startup Ops" }]);
+  assert.equal(overview.inbox.length, 1);
+  assert.equal(overview.inbox[0].kind, "blocked");
+  assert.equal(overview.inbox[0].action, "review-blocked-task");
+  assert.match(overview.inbox[0].title, /qa failed/);
+  assert.equal(overview.decisions.length, 0, "a fail is not a decision");
+});
+
+test("task view carries derived elapsed / last-handoff / last-result", () => {
+  const { root, statePath } = fixture();
+  const state = JSON.parse(readFileSync(statePath, "utf8"));
+  state.createdAt = "2026-09-05T09:00:00.000Z";
+  state.events = [
+    { at: "2026-09-05T09:00:00.000Z", type: "task-created", stage: "product" },
+    { at: "2026-09-05T09:30:00.000Z", type: "stage-pass", stage: "product", actor: "openclaw" },
+    { at: "2026-09-05T09:31:00.000Z", type: "handoff-ready", stage: "architect" },
+  ];
+  state.stages.product = { status: "pass", actor: "openclaw", summary: "outcome normalized", evidence: [{ path: "e.md" }] };
+  writeState(statePath, state);
+
+  const [task] = discoverFactoryTasks(root);
+  assert.ok(task.elapsedMs >= 30 * 60 * 1000, "at least the 31 minutes of recorded events");
+  assert.deepEqual(task.lastHandoff, { stage: "architect", at: "2026-09-05T09:31:00.000Z" });
+  assert.equal(task.lastResult.stage, "product");
+  assert.equal(task.lastResult.outcome, "pass");
+  assert.equal(task.lastResult.summary, "outcome normalized");
+});
