@@ -70,20 +70,16 @@ function main() {
     }
     for (const [agentId, keys] of byAgent) {
       try {
+        // `sessions delete` already archives the transcript and runs runtime
+        // cleanup for each removed session (per its own help text).
         oc(["sessions", "delete", ...keys, "--agent", agentId, "--yes"]);
         console.log(`deleted ${keys.length} session(s) for ${agentId}`);
       } catch (error) {
         console.warn(`delete failed for ${agentId}: ${String(error.stderr || error.message).trim()}`);
       }
-    }
-  }
-
-  if (APPLY) {
-    try {
-      oc(["sessions", "cleanup"]);
-      console.log("ran: openclaw sessions cleanup");
-    } catch (error) {
-      console.warn(`cleanup failed: ${String(error.stderr || error.message).trim()}`);
+      try {
+        oc(["sessions", "cleanup", "--agent", agentId]);
+      } catch { /* cleanup is best-effort store maintenance */ }
     }
   }
 }

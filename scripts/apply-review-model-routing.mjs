@@ -1,12 +1,19 @@
 #!/usr/bin/env node
-// Re-route the review-side OpenClaw agents (architect, reviewer, qa, security)
-// off the single exhausted OpenAI seat and onto a second model, so:
-//   1. builder (codex/openai) and reviewer are genuinely different models again
-//      — real independence, per docs/software-factory/OPERATING_RULES.md;
-//   2. the design + review load leaves the seat that is repeatedly near its 5h
-//      window limit.
+// Give the factory agents a model path that survives an OpenAI cooldown, and
+// restore real builder/reviewer independence.
 //
-// Target: github-copilot/gpt-4.1 primary + openai/gpt-5.4-mini fallback.
+//   review side (architect, reviewer, qa, security):
+//     github-copilot/gpt-4.1 PRIMARY + openai/gpt-5.4-mini fallback
+//     -> different model from the builder (codex/openai); design+review load
+//        leaves the single OpenAI seat entirely.
+//   intake/release (product, release):
+//     openai/gpt-5.4-mini PRIMARY (unchanged) + github-copilot/gpt-4.1 fallback
+//     -> the pipeline can still START and FINISH while OpenAI is rate-limited
+//        (product is stage 1 and today has no fallback at all).
+//
+// main / backend-builder / frontend-builder inherit agents.defaults.model, which
+// already carries the github-copilot/gpt-4.1 fallback — left untouched.
+//
 // Operates on ~/.openclaw/openclaw.json (private runtime state, NOT in the repo).
 // Reversible via scripts/revert-review-model-routing.mjs.
 //
@@ -22,15 +29,26 @@ import { join } from "path";
 
 const CONFIG = process.env.OPENCLAW_CONFIG || join(homedir(), ".openclaw", "openclaw.json");
 const BACKUP = `${CONFIG}.before-review-routing`;
-const AGENTS = ["architect", "reviewer", "qa", "security"];
-const PRIMARY = "github-copilot/gpt-4.1";
-const FALLBACK = "openai/gpt-5.4-mini";
+const COPILOT = "github-copilot/gpt-4.1";
+const MINI = "openai/gpt-5.4-mini";
 const DRY_RUN = process.argv.includes("--dry-run");
 
-function desiredEntry(entry) {
+// id -> { primary, fallbacks }
+const ROUTES = {
+  architect: { primary: COPILOT, fallbacks: [MINI] },
+  reviewer: { primary: COPILOT, fallbacks: [MINI] },
+  qa: { primary: COPILOT, fallbacks: [MINI] },
+  security: { primary: COPILOT, fallbacks: [MINI] },
+  product: { primary: MINI, fallbacks: [COPILOT] },
+  release: { primary: MINI, fallbacks: [COPILOT] },
+};
+
+function desiredEntry(entry, route) {
   const next = structuredClone(entry ?? {});
-  next.models = { ...(next.models || {}), [PRIMARY]: next.models?.[PRIMARY] || {}, [FALLBACK]: next.models?.[FALLBACK] || {} };
-  next.model = { primary: PRIMARY, fallbacks: [FALLBACK] };
+  const refs = [route.primary, ...route.fallbacks];
+  next.models = { ...(next.models || {}) };
+  for (const ref of refs) next.models[ref] = next.models[ref] || {};
+  next.model = { primary: route.primary, fallbacks: [...route.fallbacks] };
   return next;
 }
 
@@ -55,20 +73,20 @@ function main() {
   }
 
   const changes = [];
-  for (const id of AGENTS) {
+  for (const [id, route] of Object.entries(ROUTES)) {
     if (!entries[id]) {
       console.warn(`- ${id}: no such agent entry, skipping`);
       continue;
     }
     const before = JSON.stringify({ model: entries[id].model, models: entries[id].models });
-    const updated = desiredEntry(entries[id]);
+    const updated = desiredEntry(entries[id], route);
     const after = JSON.stringify({ model: updated.model, models: updated.models });
     if (before === after) {
-      console.log(`- ${id}: already routed to ${PRIMARY}`);
+      console.log(`- ${id}: already ${route.primary} (fallback ${route.fallbacks.join(", ")})`);
       continue;
     }
     changes.push({ id, updated });
-    console.log(`- ${id}: model -> ${PRIMARY} (fallback ${FALLBACK})`);
+    console.log(`- ${id}: primary -> ${route.primary}, fallbacks -> [${route.fallbacks.join(", ")}]`);
   }
 
   if (!changes.length) {

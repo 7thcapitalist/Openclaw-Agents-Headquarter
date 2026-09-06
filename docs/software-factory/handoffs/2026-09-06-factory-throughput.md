@@ -107,3 +107,68 @@ Branch: `factory/throughput-and-independence` · Date: 2026-09-06
 Not self-reviewed for merge. Needs an independent pass on
 `runConcurrentGroupIfReady` (result-file / attempt-number interplay with
 `prepareDispatch`, failure routing, orphan cleanup) before merge to `main`.
+
+---
+
+# Round 2 (same branch / PR)
+
+## Applied live to `~/.openclaw/openclaw.json` (backed up + reversible)
+
+- `scripts/apply-review-model-routing.mjs` **run**. Backup:
+  `~/.openclaw/openclaw.json.before-review-routing`. Daemon restarted.
+  - `architect`/`reviewer`/`qa`/`security`: primary `github-copilot/gpt-4.1`,
+    fallback `openai/gpt-5.4-mini`.
+  - `product`/`release`: primary `openai/gpt-5.4-mini` (unchanged), fallback
+    `github-copilot/gpt-4.1` — so the pipeline can start/finish during an OpenAI
+    cooldown (`product` had no fallback before).
+  - Verified: `openclaw agent --agent reviewer -m PROBE_OK` → session shows
+    `model gpt-4.1 / provider github-copilot / runtime openclaw` (was
+    `gpt-5.6-sol / openai / codex`). `product` probe succeeded.
+  - Revert: `node scripts/revert-review-model-routing.mjs && openclaw daemon restart`.
+- `scripts/prune-factory-sessions.mjs --apply` **run** — deleted 22 stale
+  factory/probe sessions (86 → ~70). `agent:main:main` untouched.
+
+## Repo changes (this commit)
+
+- `scripts/apply-review-model-routing.mjs` — now also gives `product`/`release`
+  a Copilot fallback (table-driven).
+- `scripts/factory-doctor.mjs` (new) + `npm run factory:doctor` — read-only
+  health check: OpenAI quota/cooldown, Copilot readiness, session bloat, the
+  `acpx.config.agents` gap, whether any task has run through the engine, gateway.
+  Live output right now: **✗ OpenAI seat in cooldown (5h 0% left), ! Copilot
+  [indeterminate], ! acpx has no claude/codex mapping** — everything else ✓.
+- `scripts/prune-factory-sessions.mjs` — `cleanup` is now per-agent (the global
+  form errored on a multi-agent install).
+- `scripts/factory-run-many.mjs` — `--state-root` / `runMany({stateRoot})` so a
+  run does not write factory state into the HQ repo's own data dir.
+- `dashboard/backend/lib/hqStore.mjs` — `readHqState` now surfaces the real
+  `factory/agents.json` roster + live status for `/api/hq` and
+  `/api/hq/command-center` instead of the empty seed collection (guarded
+  fallback).
+- `factory/intake/lifemaxing-health-endpoint.json` — a validated, low-risk task
+  contract for the first real LifeMax end-to-end run. **Not executed.** Kick off
+  with:
+  `node scripts/factory-task.mjs init --contract factory/intake/lifemaxing-health-endpoint.json --repo ~/projects/lifemaxing`
+  then `node scripts/openclaw-factory.mjs` (or `factory:openclaw` run).
+- `docs/software-factory/REVIEW_MODEL_ROUTING.md` — product/release table + an
+  "ACP / acpx root cause" section (the `acpx.config.agents` gap; `claude` has no
+  ACP mode).
+- `DC-2026-001` — added **Option A2** (review agents on the Claude subscription).
+
+## Verification
+
+- `npm run test:factory` — **215 / 215** (9 new: `factory-doctor.test.mjs` x7,
+  `hq-store-live-agents.test.mjs` x2).
+- `npm run factory:smoke:github` — hermetic pipeline still `merge-ready`.
+- Live probes above (reviewer → gpt-4.1, product → starts).
+- `npm run factory:doctor` — runs, exits 1 while OpenAI is in cooldown.
+
+## Still not done (blocked / founder-only)
+
+- **Review agents on the Claude subscription** — DC-2026-001 Option A2.
+- **First real LifeMax factory run** — contract is ready (`factory/intake/…`);
+  run it once the OpenAI cooldown clears (or rely on the Copilot fallback).
+- **Engine phase-group / DAG parallelism** — deferred by decision.
+- **Prune cron** — `openclaw cron add` with `node scripts/prune-factory-sessions.mjs --apply`; not automated here.
+- **Real 7-agent `npm run factory:smoke`** — still blocked by the OpenAI cooldown
+  at the time of writing; re-run when it clears.

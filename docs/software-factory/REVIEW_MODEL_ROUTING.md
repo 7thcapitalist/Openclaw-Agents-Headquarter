@@ -18,18 +18,17 @@ Every factory agent resolves to `openai/gpt-5.6-sol` on one OAuth seat
 ## What the script changes
 
 `scripts/apply-review-model-routing.mjs` edits `~/.openclaw/openclaw.json`
-(private runtime state, not in this repo). For `architect`, `reviewer`, `qa`,
-`security` it sets:
+(private runtime state, not in this repo).
 
-```jsonc
-"models": { "github-copilot/gpt-4.1": {}, "openai/gpt-5.4-mini": {} },
-"model":  { "primary": "github-copilot/gpt-4.1", "fallbacks": ["openai/gpt-5.4-mini"] }
-```
+| Agents | primary | fallbacks | effect |
+| --- | --- | --- | --- |
+| `architect`, `reviewer`, `qa`, `security` | `github-copilot/gpt-4.1` | `openai/gpt-5.4-mini` | different model from the builder; design+review load leaves the OpenAI seat entirely |
+| `product`, `release` | `openai/gpt-5.4-mini` *(unchanged)* | `github-copilot/gpt-4.1` | the pipeline can still **start** (`product` is stage 1 and had no fallback) and **finish** during an OpenAI cooldown |
 
-`product`, `release`, `backend-builder`, `frontend-builder`, `main` are left
-untouched. After this, the builder (Codex/OpenAI) and every review-side agent
-(gpt-4.1 via GitHub Copilot) are different models, and the whole design + review
-load leaves the OpenAI seat.
+Each `model` becomes the object form `{ primary, fallbacks }` and every ref is
+registered in the sibling `models` map. `main`, `backend-builder`,
+`frontend-builder` inherit `agents.defaults.model`, which already carries the
+`github-copilot/gpt-4.1` fallback — untouched.
 
 ## Run / revert
 
@@ -64,6 +63,27 @@ Before the change that row reads runtime "OpenAI Codex", model "gpt-5.6-sol".
 - `openclaw models` currently reports `github-copilot/gpt-4.1` as
   `[indeterminate]` auth readiness. In practice it serves `main` / `research` /
   `learning` today; the `openai/gpt-5.4-mini` fallback covers a miss.
-- This does **not** fix the underlying `runtime.acp.agent: "claude"` dispatch —
-  that is a separate spike (getting the review agents onto the Claude
-  subscription instead of Copilot).
+- This does **not** put the review agents on the Claude *subscription* — see
+  below.
+
+## ACP / acpx root cause (why "claude" agents run on OpenAI)
+
+`architect`/`reviewer`/`qa`/`security` are configured with
+`runtime.acp.agent: "claude"`, `backend: "acpx"`. But
+`~/.openclaw/openclaw.json` `plugins.entries.acpx.config.agents` maps **only
+`cursor`** to a command:
+
+```jsonc
+"acpx": { "config": { "agents": {
+  "cursor": { "command": "/home/joao-vitor/.local/bin/cursor-agent", "args": ["acp"] }
+} } }
+```
+
+There is no `claude` (or `codex`) entry, so acpx has nothing to spawn for
+`agent: "claude"` and the turn silently falls back to the OpenAI seat. It cannot
+be wired the way `cursor` is: **`claude` (Claude Code) has no `acp` subcommand**
+— it is not an ACP server. Putting these agents on the Claude subscription needs
+OpenClaw's `anthropic` provider (interactive `openclaw models auth` login) or
+Anthropic API credit. That is a spend/effort decision — see
+`decision-cards/DC-2026-001-model-seat-capacity.md`. The no-spend answer is the
+`github-copilot/gpt-4.1` routing above. `npm run factory:doctor` flags this gap.
