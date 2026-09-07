@@ -123,3 +123,35 @@ entries. When a decision changes, add a new entry and mark the old one
   would need founder-supplied credentials. Reverting is
   `openclaw agents delete learning research` plus restoring
   `~/.openclaw/openclaw.json.before-learning-research-agents`.
+
+## SFD-2026-008 — Learning Agent runs a scheduled cycle and may auto-merge a whitelisted class
+
+- Date: 2026-09-07
+- Status: Accepted (founder decision on `decision-cards/DC-2026-002-learning-agent-autonomy.md`)
+- Decision: The Learning / R&D Agent runs `npm run factory:learn -- cycle` every
+  3 days (`factory/ops/systemd/factory-learn.{service,timer}`). Each cycle has a
+  **retrospective pass** (failure/success analysis + performance metrics —
+  cycle time, per-stage wall time, retry burn, first-pass rate, blocked rate,
+  run-over-run trend; `factory/lib/learning/metrics.mjs`) and an **always-on
+  mastery pass** (`factory/lib/learning/mastery.mjs`): one rotating deep-dive
+  role per cycle, studied against its recent work plus allowlisted, budgeted web
+  research, producing `agent-improvement` findings and a dated entry in
+  `factory/knowledge/agents/<role>.md`. Proposals in a founder-set whitelist
+  (`factory.config.json → learning.autonomy.whitelist`, currently
+  `knowledge-append`) are opened as one auto-merge-candidate PR per cycle, capped
+  at `maxAutoMergesPerRun` (default 2); that PR still runs the full factory
+  pipeline (independent review + QA + security) and merges only all-green.
+- Rationale: `SFD-2026-006`'s proposal-only rule made every improvement depend on
+  founder attention, which kept the agent idle. The goal is agents that get
+  measurably better at their craft month over month; that needs a cadence and a
+  low-friction path for the safe, high-volume class of change.
+- Consequences: `SFD-2026-006` is **superseded only for the whitelisted class** —
+  everything else (role prompts, `factory.config.json` routing/gates/risk,
+  `OPERATING_RULES.md`, `AGENTS.md`, `run.sh`, `DECISIONS.md`, any project repo)
+  stays a founder-promoted proposal or a Decision Card. Guardrails: master kill
+  switch `learning.autonomy.enabled: false` (instant revert to proposal-only);
+  per-run cap; full audit trail in `dashboard/backend/data/factory/_learning/autonomy-log.jsonl`
+  and `digest.md`; each autonomous merge is one squashed commit (`git revert`).
+  Web research stays read-only, source-cited, redacted, allowlist + per-run
+  budget. Reverting the whole change: set `learning.autonomy.enabled: false`,
+  disable the systemd timer, and (optionally) `git revert` the feature commit.

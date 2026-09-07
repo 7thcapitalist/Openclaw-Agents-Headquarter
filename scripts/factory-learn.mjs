@@ -26,6 +26,11 @@ import {
 import { synthesize, renderProposalsCommitBody } from "../factory/lib/learning/synthesize.mjs";
 import { publishProposals, branchName } from "../factory/lib/learning/publish.mjs";
 import { runResearch, renderResearchNoteMarkdown } from "../factory/lib/learning/research.mjs";
+import { computeFactoryMetrics, diffMetrics, renderMetricsDigest } from "../factory/lib/learning/metrics.mjs";
+import {
+  DEFAULT_ROTATION, ROLE_TARGET, readMasteryState, pickDeepDiveRoles, roleRecords,
+  masteryFindings, renderMasteryLogEntry, insertMasteryLogEntry, dossierHeader, runMasteryPass,
+} from "../factory/lib/learning/mastery.mjs";
 import { slugify } from "../factory/lib/common/fingerprint.mjs";
 
 const hqRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -65,6 +70,7 @@ export async function handleRequest(request, deps = {}) {
     case "digest": return digest(request);
     case "synthesize": return synthesizeAction(request, deps);
     case "promote": return promote(request, deps);
+    case "cycle": return cycle(request, deps);
     case "dismiss": return dismiss(request);
     case "prune": return prune(request);
     case "research": return research(request, deps);
@@ -365,6 +371,203 @@ async function research(request, deps) {
   writeFileSync(notePath, `${JSON.stringify({ version: 1, ...note }, null, 2)}\n`, "utf8");
   writeFileSync(notePath.replace(/\.json$/, ".md"), `${renderResearchNoteMarkdown(note)}\n`, "utf8");
   return { version: 1, status: "ok", note, notePath };
+}
+
+// ---- cycle: the scheduled 3-day retrospective + mastery pass ---------------
+//
+// One run does: (1) retrospective analysis + performance metrics over recent
+// terminal tasks; (2) a mastery pass on the next role in the rotation, always,
+// even when nothing failed; (3) synthesize proposals; (4) for whitelisted
+// categories, open an auto-merge-candidate PR (capped); everything else stays an
+// open finding for the founder. Governed by factory.config.json -> learning.autonomy.
+// See docs/software-factory/DECISIONS.md SFD-2026-008.
+
+function readJsonSafe(path) {
+  try {
+    return existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : null;
+  } catch {
+    return null;
+  }
+}
+
+function appendJsonl(path, obj) {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${JSON.stringify(obj)}\n`, { flag: "a" });
+}
+
+// Synthesized proposals are always knowledge-file appends today (including the
+// mastery pass's PROCESS_IMPROVEMENTS entries). prompt-wording / new-skill are
+// reserved for future emitters and never auto-eligible until one exists.
+function categorizeProposal() {
+  return "knowledge-append";
+}
+
+async function cycle(request, deps = {}) {
+  const stateRoot = stateRootFor(request);
+  const learningRoot = learningRootFor(stateRoot);
+  const now = nowFor(request);
+  const cfg = config();
+  const autonomy = cfg.learning?.autonomy || {};
+  const maxAttemptsPerStage = cfg.openclawIntegration?.maxAttemptsPerStage || 3;
+  const lookbackDays = Number(request.lookbackDays) || autonomy.lookbackDays || 30;
+  const since = request.since || new Date(Date.parse(now) - lookbackDays * 86400000).toISOString();
+
+  // (1) retrospective ------------------------------------------------------
+  const { records, skipped } = collectTaskRecords({ factoryStateRoot: stateRoot, since });
+  const analysis = analyzeTasks(records, { now, maxAttemptsPerStage });
+  const metrics = computeFactoryMetrics(records, { now });
+  const prev = readJsonSafe(join(learningRoot, "metrics.json"));
+  const metricsDelta = diffMetrics(prev?.metrics, metrics);
+
+  // (2) mastery pass (always runs) --------------------------------------
+  const masteryState = readMasteryState(learningRoot);
+  const rotation = Array.isArray(autonomy.mastery?.rotation) && autonomy.mastery.rotation.length
+    ? autonomy.mastery.rotation
+    : DEFAULT_ROTATION;
+  const deepDiveCount = autonomy.mastery?.deepDiveRolesPerCycle || 1;
+  const { roles: deepDiveRoles, nextCursor } = pickDeepDiveRoles(masteryState, { rotation, count: deepDiveCount });
+  const researchBudget = Number(request.researchCalls ?? autonomy.research?.maxCallsPerRun ?? 10);
+  const learningAgentId = cfg.openclawIntegration?.agentIds?.learning || "learning";
+
+  const masteryResults = [];
+  let researchUsed = 0;
+  for (const role of deepDiveRoles) {
+    if (researchUsed >= researchBudget) break;
+    const res = await runMasteryPass({
+      role, records, hqRoot, now, agentId: learningAgentId, execute: deps.executeResearch,
+    });
+    if (res.note) researchUsed += 1;
+    masteryResults.push(res);
+  }
+
+  // (3) reconcile all findings --------------------------------------------
+  const roleMetricsFor = (role) => metrics.perRole?.[role] || metrics.perRole?.[ROLE_TARGET[role]] || null;
+  const incoming = [
+    ...analysis.failures, ...analysis.successes, ...analysis.patterns, ...analysis.agentImprovements,
+  ];
+  for (const mr of masteryResults) {
+    if (!mr.note) continue;
+    incoming.push(...masteryFindings({ role: mr.role, note: mr.note, roleMetrics: roleMetricsFor(mr.role), now }));
+  }
+  let { store, added, updated, recurred } = reconcile(readQueue(learningRoot), incoming, { now });
+  writeQueue(learningRoot, store);
+
+  // dossier append per deep-dive role (a knowledge-append style write)
+  const dossierWrites = [];
+  for (const mr of masteryResults) {
+    const rel = `${KNOWLEDGE_DIR}/agents/${mr.role}.md`;
+    const abs = join(hqRoot, rel);
+    const body = existsSync(abs) ? readFileSync(abs, "utf8") : dossierHeader(mr.role);
+    const findingIds = added.filter((id) => (findById(store, id)?.title || "").startsWith(`Mastery (${mr.role})`));
+    const entry = renderMasteryLogEntry({
+      role: mr.role, date: now.slice(0, 10), roleMetrics: roleMetricsFor(mr.role),
+      note: mr.note, error: mr.error, findingIds,
+    });
+    dossierWrites.push({ path: rel, content: insertMasteryLogEntry(body, entry, mr.role) });
+  }
+
+  // (4) synthesize + gated implement -----------------------------------
+  const { proposals, digest: baseDigest } = synthesize({
+    store, analysis: { analyzedTasks: analysis.analyzedTasks }, now,
+  });
+  const digestText = `${baseDigest}\n\n${renderMetricsDigest(metrics, metricsDelta)}`;
+
+  const whitelist = new Set(autonomy.whitelist || []);
+  const autonomyEnabled = autonomy.enabled === true;
+  const maxAuto = Number(autonomy.maxAutoMergesPerRun ?? 2);
+
+  const decisions = [];
+  const autoProposals = [];
+  for (const p of proposals) {
+    const category = categorizeProposal(p);
+    const eligible = autonomyEnabled && whitelist.has(category) && autoProposals.length < maxAuto;
+    decisions.push({ findingId: p.findingId, file: p.file, category, action: eligible ? "auto" : "propose" });
+    if (eligible) autoProposals.push(p);
+  }
+
+  const autoFiles = [
+    ...mergedKnowledgeFiles(autoProposals.map((p) => ({ fileKey: p.fileKey, entry: p.entry })), { now }),
+    ...dossierWrites,
+  ];
+
+  let publication = { published: false, reason: autonomyEnabled ? "no whitelisted proposals this cycle" : "autonomy disabled — proposal-only" };
+  if (autonomyEnabled && autoFiles.length) {
+    const publishImpl = deps.publishProposals || publishProposals;
+    try {
+      publication = publishImpl({
+        hqRoot,
+        branch: request.branch || branchName(now, "mastery-cycle"),
+        files: autoFiles.map((f) => ({ path: f.path, content: f.content })),
+        commitTitle: `learning(cycle): ${now.slice(0, 10)} — ${autoProposals.length} knowledge, ${dossierWrites.length} dossier`,
+        commitBody: [
+          renderProposalsCommitBody(autoProposals, { now }),
+          "",
+          `Autonomous learning cycle per SFD-2026-008. Whitelisted categories only: ${[...whitelist].join(", ") || "none"}.`,
+          `Deep-dive role(s): ${deepDiveRoles.join(", ")}. Auto cap: ${maxAuto}/run. Non-whitelisted findings stay open for founder review.`,
+          "Every entry is Status: proposed — the factory pipeline gates this PR before merge.",
+        ].join("\n"),
+        prTitle: `Learning cycle — ${now.slice(0, 10)}`,
+        prBody: `Autonomous learning + mastery cycle.\n\n${digestText}`,
+        now,
+      });
+    } catch (error) {
+      publication = { published: false, reason: `publish failed: ${error.message || error}` };
+    }
+    if (publication.published || publication.pushed || publication.committed) {
+      for (const p of autoProposals) {
+        ({ store } = setStatus(store, p.findingId, "promoted", { reason: "autonomous cycle", actor: "learning", now }));
+      }
+      writeQueue(learningRoot, store);
+    }
+  }
+
+  // (5) persist run artifacts -----------------------------------------
+  mkdirSync(learningRoot, { recursive: true });
+  writeFileSync(join(learningRoot, "digest.md"), `${digestText}\n`, "utf8");
+  writeFileSync(join(learningRoot, "metrics.json"), `${JSON.stringify({ version: 1, generatedAt: now, metrics, metricsDelta }, null, 2)}\n`, "utf8");
+  writeFileSync(join(learningRoot, "mastery-state.json"), `${JSON.stringify({
+    version: 1, cursor: nextCursor,
+    history: [...(masteryState.history || []), { at: now, roles: deepDiveRoles }].slice(-50),
+  }, null, 2)}\n`, "utf8");
+
+  const publicationSummary = {
+    published: !!(publication.published || publication.pushed || publication.committed),
+    branch: publication.branch || null,
+    prUrl: publication.prUrl || null,
+    reason: publication.reason || null,
+    notes: publication.notes || [],
+  };
+  appendJsonl(join(learningRoot, "autonomy-log.jsonl"), {
+    at: now, since, analyzedTasks: analysis.analyzedTasks,
+    deepDiveRoles, researchUsed, researchBudget,
+    queue: { added: added.length, updated: updated.length, recurred: recurred.length },
+    autoProposals: autoProposals.map((p) => p.findingId), maxAuto,
+    decisions, publication: publicationSummary,
+  });
+
+  const runsDir = join(learningRoot, "runs");
+  mkdirSync(runsDir, { recursive: true });
+  const runPath = join(runsDir, `${now.replace(/[:.]/g, "-")}.json`);
+  writeFileSync(runPath, `${JSON.stringify({
+    version: 1, kind: "cycle", generatedAt: now, since,
+    analysis, metrics, metricsDelta,
+    mastery: masteryResults.map((m) => ({ role: m.role, topic: m.topic, hasNote: !!m.note, error: m.error, recentCount: m.recentCount })),
+    decisions, publication: publicationSummary, skipped,
+  }, null, 2)}\n`, "utf8");
+
+  return {
+    version: 1,
+    status: "ok",
+    analyzedTasks: analysis.analyzedTasks,
+    metrics: { cycleP50Ms: metrics.cycle.p50Ms, firstPassRate: metrics.firstPassRate, blockedRate: metrics.blockedRate },
+    deepDiveRoles,
+    researchUsed,
+    queue: { added, updated, recurred, open: selectFindings(store, { status: "open" }).length },
+    autonomy: { enabled: autonomyEnabled, cap: maxAuto, autoProposals: autoProposals.map((p) => p.findingId), decisions },
+    publication: publicationSummary,
+    digestPath: join(learningRoot, "digest.md"),
+    runPath,
+  };
 }
 
 // ---- request parsing (mirrors scripts/project-intel.mjs) --------------------

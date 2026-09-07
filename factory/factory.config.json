@@ -29,7 +29,24 @@
   "learning": {
     "injectIntoHandoff": false,
     "evidenceRetentionDays": 90,
-    "patternThreshold": 2
+    "patternThreshold": 2,
+    "autonomy": {
+      "_doc": "Governs `factory-learn.mjs cycle`, the scheduled 3-day retrospective + mastery pass. See docs/software-factory/DECISIONS.md SFD-2026-008 and decision-cards/DC-2026-002.",
+      "enabled": true,
+      "cadenceDays": 3,
+      "lookbackDays": 30,
+      "whitelist": ["knowledge-append"],
+      "maxAutoMergesPerRun": 2,
+      "research": {
+        "allowlist": ["docs.openclaw.ai", "github.com/openclaw", "modelcontextprotocol.io", "www.anthropic.com", "platform.openai.com"],
+        "maxCallsPerRun": 10
+      },
+      "mastery": {
+        "rotation": ["product", "architect", "backend-builder", "frontend-builder", "reviewer", "qa", "security", "release"],
+        "deepDiveRolesPerCycle": 1,
+        "dossierDir": "factory/knowledge/agents"
+      }
+    }
   },
   "pipeline": [
     "product",
