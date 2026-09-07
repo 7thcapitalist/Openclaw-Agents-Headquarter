@@ -215,8 +215,12 @@
     const inboxActionable = inbox.filter((i) => i.action && i.action !== "none").length;
     const jobs = fc.jobs || [];
     const allTasks = fc.tasks || [];
+    const autoRecovering = fc.autoRecovering || [];
     const finishedTasks = allTasks.filter((t) => t.completionReport || t.status === "merge-ready" || t.status === "merged");
     const runningRows = buildRunningNow(objectives, allTasks, agents);
+    // Founder jobs that are live (not yet decomposed into visible nodes) — the
+    // "your request was received, agents are on it" confirmation.
+    const liveJobs = jobs.filter((j) => j.status === "starting" || j.status === "running" || j.status === "decomposing");
 
     app.innerHTML = `
       <section class="hq-layout">
@@ -306,8 +310,9 @@
 
           <section class="activity-panel">
             <div class="panel-heading"><div><span class="eyebrow">Live</span><h2>Running now</h2></div><button class="btn secondary" id="ask-agent">Ask an agent</button></div>
-            ${jobs.filter((j) => j.status === "decomposing").map((j) => `<div class="run-row"><span class="activity-pulse"></span><div class="run-main"><strong>${esc(j.objective || j.id)}</strong><span class="muted small">${esc(j.projectId || "")} · Chief of Staff is decomposing this into a task graph…</span></div></div>`).join("")}
-            ${runningRows.length ? runningRows.map((r) => runningNowRow(r)).join("") : (jobs.some((j) => j.status === "decomposing") ? "" : `<div class="empty-state">Nothing is executing right now. Give the factory an objective above, or check "Autonomy" below for what runs on a schedule.</div>`)}
+            ${liveJobs.map((j) => founderAckRow(j)).join("")}
+            ${autoRecovering.map((r) => autoRecoverRow(r)).join("")}
+            ${runningRows.length ? runningRows.map((r) => runningNowRow(r)).join("") : (liveJobs.length || autoRecovering.length ? "" : `<div class="empty-state">Nothing is executing right now. Give the factory an objective above, or check "Autonomy" below for what runs on a schedule.</div>`)}
           </section>
 
           <section class="activity-panel">
@@ -388,6 +393,8 @@
     for (const t of tasks) {
       if (objTaskIds.has(t.id)) continue;
       if (t.status !== "active" && t.status !== "blocked") continue;
+      // Infra-blocked tasks are shown in the "recovering" strip, not here.
+      if (t.status === "blocked" && t.blockerClass === "infra") continue;
       const a = agentById[t.agent] || Object.values(agentById).find((x) => x.runtimeAgentId === t.agent);
       rows.push({
         kind: "task", title: t.objective || t.id, sub: t.project || t.id,
@@ -418,6 +425,38 @@
         ${blocked ? `<span class="danger-text small">blocked: ${esc(r.blocker?.summary || r.blocker?.outcome || "needs attention — see Founder inbox")}</span>` : (r.next ? `<span class="muted small">next: ${esc(r.next)}</span>` : "")}
       </div>
       <div class="run-meta">${pill(r.status, blocked ? "health-failed" : "badge-type")}${r.reportId ? `<button class="btn secondary tiny" data-report-task="${esc(r.reportId)}">report</button>` : ""}</div>
+    </div>`;
+  }
+
+  // "Your request landed and the team is on it." Shown until the work becomes
+  // visible as its own run rows / objective nodes.
+  function founderAckRow(j) {
+    const phase = j.status === "decomposing"
+      ? "Chief of Staff is breaking this into a task graph…"
+      : j.status === "running"
+        ? "Agents are working through it — watch the stages below."
+        : "Received. Spinning up the team…";
+    return `<div class="founder-ack">
+      <span class="activity-pulse"></span>
+      <div class="run-main">
+        <strong>Your request: ${esc((j.objective || j.id || "").slice(0, 140))}</strong>
+        <span class="muted small">${esc(j.projectId || "")} · ${esc(j.kind || "work")} · ${esc(phase)}</span>
+      </div>
+      <div class="run-meta">${pill(j.status, "badge-type")}</div>
+    </div>`;
+  }
+
+  // An infra hiccup the system is recovering from on its own — informational,
+  // never in the Founder Inbox. One-click "retry now" if the founder is impatient.
+  function autoRecoverRow(r) {
+    return `<div class="run-row run-retrying">
+      <span class="activity-pulse"></span>
+      <div class="run-main">
+        <strong>${esc(r.taskId)}</strong>
+        <span class="muted small">${esc(r.project || "")} · ${esc(r.stage || "a stage")} hit an infrastructure hiccup</span>
+        <span class="retry-note">Recovering automatically${r.autoRetries ? ` — attempt ${r.autoRetries}` : ""}. No action needed.</span>
+      </div>
+      <div class="run-meta"><button class="btn secondary tiny" data-retry-task="${esc(r.taskId)}">Retry now</button></div>
     </div>`;
   }
 
@@ -489,15 +528,20 @@
 
   function decisionCard(x) {
     const actionable = Boolean(x.statePath);
+    // Free-text-ish placeholder options ("Provide direction", "Keep paused") are
+    // not real one-click answers — only offer buttons for substantive choices.
+    const choices = (x.options || []).filter((o) => !/^(provide direction|keep paused|approve and resume|submit signed approval)$/i.test(String(o).trim()));
     return `<article class="decision-card">
       <div class="decision-top"><span class="decision-icon">!</span><div><strong>${esc(x.question)}</strong><span>${esc(x.project || "company")}${x.taskId ? ` · ${esc(x.taskId)}` : ""}</span></div></div>
       <p>${esc(x.why || "")}</p>
-      ${(x.options || []).length ? `<div class="decision-options">${x.options.map((option) => `<span>${esc(option)}</span>`).join("")}</div>` : ""}
       ${x.recommendation ? `<div class="decision-rec"><small>Recommendation</small>${esc(x.recommendation)}</div>` : ""}
       ${actionable
         ? (x.risk === "high"
             ? `<p class="muted small">The private signing key stays outside OpenClaw and this dashboard.</p><button class="btn" data-approve-decision="${esc(x.statePath)}">Submit signed approval</button>`
-            : `<button class="btn" data-resolve-decision="${esc(x.statePath)}">Respond & resume</button>`)
+            : `<div class="decision-choices">
+                ${choices.map((c) => `<button class="btn" data-resolve-choice="${esc(x.statePath)}" data-choice="${esc(c)}">${esc(c)}</button>`).join("")}
+                <button class="btn secondary" data-resolve-decision="${esc(x.statePath)}">Answer in my own words…</button>
+              </div>`)
         : `<p class="muted small">Strategic decision tracked in ${esc(x.project || "the project")}'s ownership.json — not resolvable from here yet; update the file directly.</p>`}
     </article>`;
   }
@@ -521,7 +565,7 @@
         <div><strong>${esc(x.title)}</strong><span>${pill(INBOX_KIND_LABEL[x.kind] || x.kind, INBOX_KIND_CLASS[x.kind] || "badge-type")} ${esc(x.project || "company")}${x.taskId ? ` · ${esc(x.taskId)}` : ""}</span></div>
       </div>
       <p>${esc(x.detail || "")}</p>
-      ${x.kind === "blocked" && x.taskId ? `<button class="btn secondary" data-report-task="${esc(x.taskId)}">View report</button>` : ""}
+      ${x.kind === "blocked" && x.taskId ? `<div class="decision-choices"><button class="btn" data-retry-task="${esc(x.taskId)}">Retry this task</button><button class="btn secondary" data-report-task="${esc(x.taskId)}">View report</button></div>` : ""}
       ${x.kind === "question" ? `<p class="muted small">Answered synchronously — see the Ask an agent history.</p>` : ""}
     </article>`;
   }
@@ -594,13 +638,33 @@
       const decompose = document.getElementById("founder-decompose")?.checked;
       const endpoint = decompose ? "/api/founder/objectives" : "/api/founder/tasks";
       const repo = document.getElementById("founder-repo").value.trim();
+      const objective = document.getElementById("founder-objective").value.trim();
+      if (!objective) { showToast("Describe the outcome you want first.", true); return; }
+      if (!project.value) { showToast("Pick a project.", true); return; }
       try {
-        const j = await apiJson(endpoint, { method: "POST", body: JSON.stringify({ objective: document.getElementById("founder-objective").value, projectId: project.value, ...(repo ? { repo } : {}) }) });
-        showToast(decompose ? `Objective started: ${j.job.id} — decomposing…` : `Work started: ${j.job.id}`);
-        setTimeout(route, 1500);
+        await apiJson(endpoint, { method: "POST", body: JSON.stringify({ objective, projectId: project.value, ...(repo ? { repo } : {}) }) });
+        showToast("Created. Your team is on it — follow it in “Running now” below.");
+        document.getElementById("founder-objective").value = "";
+        setTimeout(route, 800);
       } catch (err) { showToast(err.message, true); }
     };
-    app.querySelectorAll("[data-resolve-decision]").forEach((btn) => btn.onclick = () => { openModal("Founder decision", `<label class="field-label">Direction for the team</label><textarea class="editor" id="decision-direction" placeholder="Approve the recommended option because…"></textarea><button class="btn" id="submit-decision">Send decision & resume</button>`); document.getElementById("submit-decision").onclick = async () => { try { await apiJson("/api/founder/decisions/resolve", { method: "POST", body: JSON.stringify({ statePath: btn.dataset.resolveDecision, direction: document.getElementById("decision-direction").value }) }); closeModal(); showToast("Decision recorded. Work resumed."); route(); } catch (e) { showToast(e.message, true); } }; });
+    app.querySelectorAll("[data-retry-task]").forEach((btn) => btn.onclick = async () => {
+      btn.disabled = true; btn.textContent = "Retrying…";
+      try {
+        await apiJson(`/api/founder/tasks/${btn.dataset.retryTask}/retry`, { method: "POST" });
+        showToast("Retrying now.");
+        setTimeout(route, 800);
+      } catch (e) { showToast(e.message, true); btn.disabled = false; btn.textContent = "Retry now"; }
+    });
+    app.querySelectorAll("[data-resolve-choice]").forEach((btn) => btn.onclick = async () => {
+      btn.disabled = true;
+      try {
+        await apiJson("/api/founder/decisions/resolve", { method: "POST", body: JSON.stringify({ statePath: btn.dataset.resolveChoice, direction: btn.dataset.choice }) });
+        showToast(`Answered: “${btn.dataset.choice}”. Work resumed.`);
+        route();
+      } catch (e) { showToast(e.message, true); btn.disabled = false; }
+    });
+    app.querySelectorAll("[data-resolve-decision]").forEach((btn) => btn.onclick = () => { openModal("Answer in your own words", `<label class="field-label">Your direction for the team</label><textarea class="editor" id="decision-direction" placeholder="Go with option A because…"></textarea><button class="btn" id="submit-decision">Send &amp; resume</button>`); document.getElementById("submit-decision").onclick = async () => { const dir = document.getElementById("decision-direction").value.trim(); if (!dir) { showToast("Type a direction first.", true); return; } try { await apiJson("/api/founder/decisions/resolve", { method: "POST", body: JSON.stringify({ statePath: btn.dataset.resolveDecision, direction: dir }) }); closeModal(); showToast("Decision recorded. Work resumed."); route(); } catch (e) { showToast(e.message, true); } }; });
     app.querySelectorAll("[data-approve-decision]").forEach((btn) => btn.onclick = () => { openModal("Signed founder approval", `<p class="muted small">Create the assertion with <code>factory-sign-approval.mjs</code>, then submit its path and the matching evidence path inside the task worktree.</p><label class="field-label">Approval assertion path</label><input class="modal-input" id="approval-assertion" placeholder="/private/operator/approval.json"/><label class="field-label">Evidence path (relative to worktree)</label><input class="modal-input" id="approval-evidence" placeholder="evidence/founder-approval.md"/><button class="btn" id="submit-approval">Verify & approve</button>`); document.getElementById("submit-approval").onclick = async () => { try { await apiJson("/api/founder/decisions/approve", { method: "POST", body: JSON.stringify({ statePath: btn.dataset.approveDecision, approvalAssertionPath: document.getElementById("approval-assertion").value, evidence: document.getElementById("approval-evidence").value }) }); closeModal(); showToast("Signature verified. Work resumed."); route(); } catch (e) { showToast(e.message, true); } }; });
     document.getElementById("ask-agent").onclick = () => { openModal("Ask an agent", `<label class="field-label">Agent</label><input class="modal-input" id="question-agent" value="main"/><label class="field-label">Question</label><textarea class="editor" id="question-text" placeholder="What is blocking this project?"></textarea><button class="btn" id="send-question">Ask</button><div id="question-answer"></div>`); document.getElementById("send-question").onclick = async () => { const out = document.getElementById("question-answer"); out.innerHTML = `<p class="muted">Agent is thinking…</p>`; try { const j = await apiJson("/api/founder/questions", { method: "POST", body: JSON.stringify({ agentId: document.getElementById("question-agent").value, question: document.getElementById("question-text").value }) }); out.innerHTML = `<div class="card">${esc(j.question.answer)}</div>`; } catch (e) { out.innerHTML = `<p class="danger-text">${esc(e.message)}</p>`; } }; };
     app.querySelectorAll("[data-report-task]").forEach((btn) => btn.onclick = () => openReportDrilldown("task", btn.dataset.reportTask));

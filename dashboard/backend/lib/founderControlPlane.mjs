@@ -6,6 +6,7 @@ import { writeHandoff } from "../../../factory/lib/handoff.mjs";
 import { listProjectBriefs } from "../../../factory/lib/intel/project-brief.mjs";
 import { buildCompanyBriefing } from "../../../factory/lib/intel/founder-briefing.mjs";
 import { toTaskRecord } from "../../../factory/lib/learning/evidence.mjs";
+import { classifyBlocker } from "../../../factory/lib/hq/blocker-class.mjs";
 
 const CONTROL_FILE = "control-plane.json";
 
@@ -30,6 +31,17 @@ export function resolveRepoInput(root, repoInput) {
   const repo = expandHome(String(repoInput ?? "").trim());
   if (!repo) return null;
   return repo === "." ? resolve(root) : resolve(root, repo);
+}
+
+// Absolute path to a factory task's state.json by task id, or null. Used by the
+// manual "retry this stuck task" action.
+export function findTaskStatePath(root, taskId) {
+  for (const statePath of walkStateFiles(factoryRoot(root))) {
+    try {
+      if (readState(statePath)?.task?.id === taskId) return statePath;
+    } catch { /* skip unreadable */ }
+  }
+  return null;
 }
 
 // Absolute repo path for a registered project (factory/projects.json), or null.
@@ -155,6 +167,8 @@ function taskView(path) {
     agent: dispatch?.actor || (state.currentStage ? state.assignments?.[state.currentStage] : null),
     agentStatus: dispatch?.status || (state.status === "active" ? "waiting" : state.status),
     blocker: state.blocker || null,
+    blockerClass: classifyBlocker(state.blocker),
+    autoRetries: state.autoRetries || 0,
     updatedAt,
     createdAt: state.createdAt,
     branch: state.branch,
@@ -412,6 +426,20 @@ export function buildFounderOverview(root, hqProjects = []) {
 
   const inbox = buildFounderInbox({ tasks, decisions, questions: control.questions });
 
+  // Tasks the system is (or should be) recovering from on its own — shown to
+  // the founder as progress, NOT as something that needs them.
+  const autoRecovering = tasks
+    .filter((task) => task.status === "blocked" && (task.blockerClass || classifyBlocker(task.blocker)) === "infra")
+    .map((task) => ({
+      taskId: task.id,
+      project: task.project || null,
+      stage: task.blocker?.stage || null,
+      detail: task.blocker?.summary || "",
+      statePath: task.statePath || null,
+      autoRetries: task.autoRetries || 0,
+      since: task.blocker?.at || null,
+    }));
+
   const intel = attachProjectIntelligence(root, projects, decisions);
   return {
     projects: intel.projects,
@@ -419,6 +447,7 @@ export function buildFounderOverview(root, hqProjects = []) {
     decisions,
     openDecisions: intel.company?.openDecisions || decisions,
     inbox,
+    autoRecovering,
     company: intel.company,
     questions: control.questions.slice(-20).reverse(),
     activity,
@@ -453,17 +482,20 @@ function buildFounderInbox({ tasks, decisions, questions }) {
   }
 
   // `routeStageFailure` keeps a still-retriable task `active`; a task found
-  // `blocked` with a `fail` outcome has exhausted its retry budget and is
-  // genuinely stuck.
+  // `blocked` with a `fail` outcome has exhausted its retry budget. Only a
+  // HARD failure (a real FAIL reason) belongs here — an INFRA failure (no
+  // result file, timeout, provider 5xx) is handled by the auto-retry sweep and
+  // must never page the founder.
   for (const task of tasks) {
     if (task.status !== "blocked" || task.blocker?.outcome !== "fail") continue;
+    if ((task.blockerClass || classifyBlocker(task.blocker)) === "infra") continue;
     items.push({
       kind: "blocked",
       id: `${task.id}:${task.blocker.stage || "stage"}`,
       taskId: task.id,
       project: task.project || null,
       statePath: task.statePath || null,
-      title: `${task.blocker.stage || "A stage"} failed — retry budget exhausted`,
+      title: `${task.blocker.stage || "A stage"} failed — needs a look`,
       detail: task.blocker.summary || "The task cannot proceed without founder attention.",
       risk: task.risk || null,
       requestedAt: task.blocker.at || null,
