@@ -200,11 +200,12 @@
   // ── Today: the founder observability surface ───────────────────
 
   async function renderToday() {
-    const [state, fc, learning, objectivesResp] = await Promise.all([
+    const [state, fc, learning, objectivesResp, autonomy] = await Promise.all([
       loadCompany(),
       apiJson("/api/founder/overview").catch(() => ({ jobs: [] })),
       loadLearning().catch(() => null),
       apiJson("/api/founder/objectives").catch(() => ({ objectives: [], summary: {} })),
+      apiJson("/api/hq/autonomy").catch(() => null),
     ]);
     const objectives = objectivesResp.objectives || [];
     const projects = state.projects || [];
@@ -213,7 +214,9 @@
     const inbox = fc.inbox || [];
     const inboxActionable = inbox.filter((i) => i.action && i.action !== "none").length;
     const jobs = fc.jobs || [];
-    const finishedTasks = (fc.tasks || []).filter((t) => t.completionReport || t.status === "merge-ready" || t.status === "merged");
+    const allTasks = fc.tasks || [];
+    const finishedTasks = allTasks.filter((t) => t.completionReport || t.status === "merge-ready" || t.status === "merged");
+    const runningRows = buildRunningNow(objectives, allTasks, agents);
 
     app.innerHTML = `
       <section class="hq-layout">
@@ -235,6 +238,13 @@
                 <button class="btn founder-launch" type="submit">Start work →</button>
               </div>
               <label class="founder-decompose"><input type="checkbox" id="founder-decompose" /> Decompose into a dependency-aware graph and run independent parts in parallel</label>
+              <div id="founder-self-note" class="founder-self-note" hidden>Runs the factory on its own codebase — same worktrees, review, QA, security, and evidence. Delivered as a PR you review; never pushed to <code>main</code>.</div>
+              <div class="founder-presets">
+                <span class="muted small">Run on the factory itself:</span>
+                <button type="button" class="chip" data-preset="Improve Headquarters observability: make it easier for the founder to see what each agent is doing, what it produced, and what needs a decision.">Improve HQ observability</button>
+                <button type="button" class="chip" data-preset="Review how the factory has been operating, find the single biggest bottleneck in the objective/orchestration path, and fix it.">Find &amp; fix the biggest bottleneck</button>
+                <button type="button" class="chip" data-preset="Make the Headquarters dashboard easier for a founder to understand at a glance, without adding new systems.">Make the dashboard clearer</button>
+              </div>
             </form>
           </div>
 
@@ -295,14 +305,19 @@
           </section>
 
           <section class="activity-panel">
-            <div class="panel-heading"><div><span class="eyebrow">Live company</span><h2>Agent activity</h2></div><button class="btn secondary" id="ask-agent">Ask an agent</button></div>
+            <div class="panel-heading"><div><span class="eyebrow">Live</span><h2>Running now</h2></div><button class="btn secondary" id="ask-agent">Ask an agent</button></div>
+            ${jobs.filter((j) => j.status === "decomposing").map((j) => `<div class="run-row"><span class="activity-pulse"></span><div class="run-main"><strong>${esc(j.objective || j.id)}</strong><span class="muted small">${esc(j.projectId || "")} · Chief of Staff is decomposing this into a task graph…</span></div></div>`).join("")}
+            ${runningRows.length ? runningRows.map((r) => runningNowRow(r)).join("") : (jobs.some((j) => j.status === "decomposing") ? "" : `<div class="empty-state">Nothing is executing right now. Give the factory an objective above, or check "Autonomy" below for what runs on a schedule.</div>`)}
+          </section>
+
+          <section class="activity-panel">
+            <div class="panel-heading"><div><span class="eyebrow">Machine events</span><h2>Recent activity</h2></div><span class="muted small">raw workflow events</span></div>
             <div class="company-feed">
-              ${jobs.filter((job) => job.status === "starting" || job.status === "error").slice(0, 5).map((job) => `<div class="company-agent"><span class="activity-pulse ${job.status === "error" ? "pulse-error" : ""}"></span><div><strong>${esc(job.projectId)}</strong><span>${esc(job.objective)}</span></div><em class="${job.status === "error" ? "danger-text" : ""}">${esc(job.status)}</em></div>`).join("")}
-              ${agents.filter((a) => a.status === "working").map((a) => `<div class="company-agent"><span class="activity-pulse"></span><div><strong>${esc(a.name)}</strong><span>${esc(stageVerb(a.currentTask?.stage))} ${esc(a.currentTask?.objective || "")}</span></div><em>${esc(a.status)}</em></div>`).join("")}
-              ${(state.activityFeed || []).slice(0, 8).map((e) => `<div class="company-event"><span>${esc(String(e.type || "event").replaceAll("-", " "))}</span><strong>${esc(e.taskId)}</strong><time>${esc(fmtTime(e.at))}</time></div>`).join("") || `<div class="empty-state">No active factory tasks. No factory task has run in this environment yet.</div>`}
+              ${(state.activityFeed || []).slice(0, 10).map((e) => `<div class="company-event"><span>${esc(String(e.type || "event").replaceAll("-", " "))}</span><strong>${esc(e.taskId)}</strong>${e.stage ? ` <span class="muted small">${esc(e.stage)}</span>` : ""}<time>${esc(fmtTime(e.at))}</time></div>`).join("") || `<div class="empty-state">No factory task has run in this environment yet.</div>`}
             </div>
           </section>
 
+          ${autonomySection(autonomy)}
           ${learningPanel(learning)}
           ${blindSpotsPanel(state)}
         </main>
@@ -347,6 +362,90 @@
   }
 
   function stageVerb(stage) { return ({ product: "shaping", architect: "analyzing", builder: "implementing", reviewer: "reviewing", qa: "testing", security: "checking", release: "preparing" })[stage] || "working on"; }
+
+  const PIPELINE = ["product", "architect", "builder", "reviewer", "qa", "security", "release"];
+
+  // "Running now" — one row per unit of work actually executing or blocked, keyed
+  // to stage / who / last output / next / blocker. Real fields only.
+  function buildRunningNow(objectives, tasks, agents) {
+    const agentById = byId(agents);
+    const rows = [];
+    const objTaskIds = new Set();
+    for (const o of objectives) {
+      for (const n of [...(o.nodes || []), o.integration].filter(Boolean)) objTaskIds.add(n.id);
+      if (o.status !== "active") continue;
+      for (const n of [...(o.nodes || []), o.integration].filter(Boolean)) {
+        if (!["running", "blocked", "blocked-by-dep"].includes(n.status)) continue;
+        rows.push({
+          kind: "objective-node", title: `${o.objective}`, sub: n.id.replace(`${o.objectiveId}-`, ""),
+          role: n.role, agent: n.role, model: n.model, stage: n.stage, status: n.status,
+          elapsedMs: n.elapsedMs, lastResult: n.lastResult, blocker: n.blocker,
+          next: n.status === "running" && n.stage ? nextStage(n.stage) : null,
+          reportId: n.hasReport ? n.id : null,
+        });
+      }
+    }
+    for (const t of tasks) {
+      if (objTaskIds.has(t.id)) continue;
+      if (t.status !== "active" && t.status !== "blocked") continue;
+      const a = agentById[t.agent] || Object.values(agentById).find((x) => x.runtimeAgentId === t.agent);
+      rows.push({
+        kind: "task", title: t.objective || t.id, sub: t.project || t.id,
+        role: t.agent, agent: a?.name || t.agent, stage: t.stage, status: t.status,
+        elapsedMs: t.elapsedMs, lastResult: t.lastResult, blocker: t.blocker,
+        next: t.status === "active" && t.stage ? nextStage(t.stage) : null,
+        reportId: t.completionReport ? t.id : null,
+      });
+    }
+    return rows;
+  }
+
+  function nextStage(stage) {
+    const i = PIPELINE.indexOf(stage);
+    return i >= 0 && i < PIPELINE.length - 1 ? PIPELINE[i + 1] : (i === PIPELINE.length - 1 ? "merge-ready" : null);
+  }
+
+  function runningNowRow(r) {
+    const stageNum = PIPELINE.indexOf(r.stage);
+    const stageLabel = stageNum >= 0 ? `stage ${stageNum + 1}/7 · ${r.stage}` : (r.stage ? esc(r.stage) : "—");
+    const blocked = r.status === "blocked" || r.status === "blocked-by-dep" || r.blocker;
+    return `<div class="run-row ${blocked ? "run-blocked" : ""}">
+      <span class="activity-pulse ${blocked ? "pulse-error" : ""}"></span>
+      <div class="run-main">
+        <strong>${esc(r.title)}</strong>
+        <span class="muted small">${esc(r.sub)} · ${esc(r.agent || r.role || "?")}${r.model ? ` (${esc(r.model)})` : ""} · ${stageLabel}${r.elapsedMs != null ? ` · ${esc(fmtDuration(r.elapsedMs))}` : ""}</span>
+        ${r.lastResult?.summary ? `<span class="run-produced">just produced: ${esc(String(r.lastResult.summary).slice(0, 160))}</span>` : ""}
+        ${blocked ? `<span class="danger-text small">blocked: ${esc(r.blocker?.summary || r.blocker?.outcome || "needs attention — see Founder inbox")}</span>` : (r.next ? `<span class="muted small">next: ${esc(r.next)}</span>` : "")}
+      </div>
+      <div class="run-meta">${pill(r.status, blocked ? "health-failed" : "badge-type")}${r.reportId ? `<button class="btn secondary tiny" data-report-task="${esc(r.reportId)}">report</button>` : ""}</div>
+    </div>`;
+  }
+
+  // Honest autonomy statement: what runs on a schedule, what's live, what's
+  // configured but not actually running.
+  function autonomySection(a) {
+    if (!a) return "";
+    const live = a.running || {};
+    const sched = (a.scheduled || []).filter((s) => s.enabled);
+    // collapse the per-agent "Skill collection review" fan-out
+    const skillReviews = sched.filter((s) => /skill.collection.review/i.test(s.key));
+    const other = sched.filter((s) => !/skill.collection.review/i.test(s.key));
+    const schedLines = [
+      ...other.map((s) => `<li><strong>${esc(s.displayName)}</strong> — ${esc(s.schedule)}${s.lastStatus ? ` · last ${esc(s.lastStatus)}` : ""}${s.nextRunAt ? ` · next ${esc(fmtTime(s.nextRunAt))}` : ""}</li>`),
+      skillReviews.length ? `<li><strong>Skill collection review</strong> — ${esc(skillReviews[0].schedule)} · ${skillReviews.length} agents</li>` : "",
+    ].filter(Boolean).join("");
+    const notRunning = (a.configuredNotRunning || []).map((c) => `<li class="danger-text"><strong>${esc(c.feature)}</strong> — ${esc(c.why)}</li>`).join("");
+    return `
+      <section class="activity-panel">
+        <div class="panel-heading"><div><span class="eyebrow">Honesty</span><h2>Autonomy</h2></div>${pill(live.anythingLive ? "active" : "idle", live.anythingLive ? "health-healthy" : "badge-type")}</div>
+        <p class="small">${live.anythingLive
+          ? `Working now: ${live.objectives} objective${live.objectives === 1 ? "" : "s"}, ${live.tasks} task${live.tasks === 1 ? "" : "s"}, ${live.jobs} founder job${live.jobs === 1 ? "" : "s"}.`
+          : `Nothing is executing right now — the factory only acts when you give it work or a scheduled job fires.`}</p>
+        <h4>Scheduled</h4>
+        ${schedLines ? `<ul class="autonomy-list">${schedLines}</ul>` : `<p class="muted small">${esc(a.scheduleError || "no scheduled jobs")}</p>`}
+        ${notRunning ? `<h4>Configured but NOT running</h4><ul class="autonomy-list">${notRunning}</ul>` : ""}
+      </section>`;
+  }
   function healthPill(health) {
     if (!health) return "";
     const cls = health.level === "healthy" ? "health-healthy" : health.level === "at-risk" ? "health-failed" : "badge-warn";
@@ -466,13 +565,30 @@
         ${(o.nodes || []).map((n) => objectiveNodeRow(n, o.objectiveId)).join("")}
         ${o.integration ? objectiveNodeRow({ ...o.integration, id: "integration" }, o.objectiveId) : ""}
       </div>
-      <div class="obj-card-foot">${pr}</div>
+      <div class="obj-card-foot">
+        <button class="btn secondary tiny" data-report-objective="${esc(o.objectiveId)}">Objective report</button>
+        ${o.nextUp && o.nextUp.length ? `<span class="muted small">next: ${o.nextUp.map((id) => esc(id.replace(`${o.objectiveId}-`, ""))).join(", ")}</span>` : ""}
+        ${pr}
+      </div>
     </article>`;
   }
 
   function bindFounderControls() {
     const project = document.getElementById("founder-project");
-    project.onchange = () => { const repo = project.selectedOptions[0]?.dataset.repo; if (repo) document.getElementById("founder-repo").value = repo; };
+    const selfNote = document.getElementById("founder-self-note");
+    const syncSelfNote = () => {
+      const v = project.value;
+      if (selfNote) selfNote.hidden = !(v === "openclaw-factory" || /headquarter/i.test(project.selectedOptions[0]?.textContent || ""));
+    };
+    project.onchange = () => { const repo = project.selectedOptions[0]?.dataset.repo; if (repo) document.getElementById("founder-repo").value = repo; syncSelfNote(); };
+    syncSelfNote();
+    app.querySelectorAll(".founder-presets .chip").forEach((chip) => chip.onclick = () => {
+      document.getElementById("founder-objective").value = chip.dataset.preset;
+      document.getElementById("founder-decompose").checked = true;
+      const hq = [...project.options].find((o) => o.value === "openclaw-factory" || /headquarter/i.test(o.textContent));
+      if (hq) { project.value = hq.value; project.dispatchEvent(new Event("change")); }
+      document.getElementById("founder-objective").focus();
+    });
     document.getElementById("founder-command").onsubmit = async (e) => {
       e.preventDefault();
       const decompose = document.getElementById("founder-decompose")?.checked;
@@ -487,15 +603,51 @@
     app.querySelectorAll("[data-resolve-decision]").forEach((btn) => btn.onclick = () => { openModal("Founder decision", `<label class="field-label">Direction for the team</label><textarea class="editor" id="decision-direction" placeholder="Approve the recommended option because…"></textarea><button class="btn" id="submit-decision">Send decision & resume</button>`); document.getElementById("submit-decision").onclick = async () => { try { await apiJson("/api/founder/decisions/resolve", { method: "POST", body: JSON.stringify({ statePath: btn.dataset.resolveDecision, direction: document.getElementById("decision-direction").value }) }); closeModal(); showToast("Decision recorded. Work resumed."); route(); } catch (e) { showToast(e.message, true); } }; });
     app.querySelectorAll("[data-approve-decision]").forEach((btn) => btn.onclick = () => { openModal("Signed founder approval", `<p class="muted small">Create the assertion with <code>factory-sign-approval.mjs</code>, then submit its path and the matching evidence path inside the task worktree.</p><label class="field-label">Approval assertion path</label><input class="modal-input" id="approval-assertion" placeholder="/private/operator/approval.json"/><label class="field-label">Evidence path (relative to worktree)</label><input class="modal-input" id="approval-evidence" placeholder="evidence/founder-approval.md"/><button class="btn" id="submit-approval">Verify & approve</button>`); document.getElementById("submit-approval").onclick = async () => { try { await apiJson("/api/founder/decisions/approve", { method: "POST", body: JSON.stringify({ statePath: btn.dataset.approveDecision, approvalAssertionPath: document.getElementById("approval-assertion").value, evidence: document.getElementById("approval-evidence").value }) }); closeModal(); showToast("Signature verified. Work resumed."); route(); } catch (e) { showToast(e.message, true); } }; });
     document.getElementById("ask-agent").onclick = () => { openModal("Ask an agent", `<label class="field-label">Agent</label><input class="modal-input" id="question-agent" value="main"/><label class="field-label">Question</label><textarea class="editor" id="question-text" placeholder="What is blocking this project?"></textarea><button class="btn" id="send-question">Ask</button><div id="question-answer"></div>`); document.getElementById("send-question").onclick = async () => { const out = document.getElementById("question-answer"); out.innerHTML = `<p class="muted">Agent is thinking…</p>`; try { const j = await apiJson("/api/founder/questions", { method: "POST", body: JSON.stringify({ agentId: document.getElementById("question-agent").value, question: document.getElementById("question-text").value }) }); out.innerHTML = `<div class="card">${esc(j.question.answer)}</div>`; } catch (e) { out.innerHTML = `<p class="danger-text">${esc(e.message)}</p>`; } }; };
-    app.querySelectorAll("[data-report-task]").forEach((btn) => btn.onclick = async () => {
-      openModal(`Completion report — ${btn.dataset.reportTask}`, `<p class="muted">Loading…</p>`);
-      try {
-        const r = await apiJson(`/api/founder/tasks/${btn.dataset.reportTask}/report`);
-        modalBody.innerHTML = r.markdown
-          ? `<pre class="report-md">${esc(r.markdown)}</pre>`
-          : `<p class="muted">No report has been generated for this task yet.</p>`;
-      } catch (e) { modalBody.innerHTML = `<p class="danger-text">${esc(e.message)}</p>`; }
-    });
+    app.querySelectorAll("[data-report-task]").forEach((btn) => btn.onclick = () => openReportDrilldown("task", btn.dataset.reportTask));
+    app.querySelectorAll("[data-report-objective]").forEach((btn) => btn.onclick = () => openReportDrilldown("objective", btn.dataset.reportObjective));
+  }
+
+  // Read the report, then drill into timeline / evidence / GitHub — no terminal.
+  async function openReportDrilldown(kind, id) {
+    openModal(`${kind === "objective" ? "Objective" : "Task"} report — ${id}`, `<p class="muted">Loading…</p>`);
+    const reportUrl = kind === "objective" ? `/api/founder/objectives/${id}/report` : `/api/founder/tasks/${id}/report`;
+    try {
+      const r = await apiJson(reportUrl);
+      const reportHtml = r.html
+        ? `<div class="report-rendered">${r.html}</div>`
+        : `<p class="muted">No report has been generated yet${r.status ? ` (status: ${esc(r.status)})` : ""}.</p>`;
+      let evidenceHtml = "";
+      if (kind === "task") {
+        try {
+          const ev = await apiJson(`/api/founder/tasks/${id}/evidence`);
+          evidenceHtml = renderEvidence(ev);
+        } catch { evidenceHtml = ""; }
+      }
+      modalBody.innerHTML = reportHtml + evidenceHtml;
+    } catch (e) {
+      modalBody.innerHTML = `<p class="danger-text">${esc(e.message)}</p>`;
+    }
+  }
+
+  function renderEvidence(ev) {
+    const gp = ev.githubPublish;
+    const github = gp
+      ? `<p class="small">${gp.published ? (gp.prUrl ? `PR: <a href="${esc(gp.prUrl)}" target="_blank" rel="noreferrer">${esc(gp.prUrl)}</a>` : "branch pushed") : `not published — ${esc(gp.reason || "?")}`}${gp.commitSha ? ` · commit <code>${esc(String(gp.commitSha).slice(0, 10))}</code>` : ""}${ev.branch ? ` · branch <code>${esc(ev.branch)}</code>` : ""}</p>`
+      : (ev.branch ? `<p class="small">branch <code>${esc(ev.branch)}</code></p>` : "");
+    const stages = Object.entries(ev.evidenceByStage || {});
+    const evBlocks = stages.length
+      ? stages.map(([stage, items]) => `
+          <details class="drill">
+            <summary>${esc(stage)} — ${items.length} artifact${items.length === 1 ? "" : "s"}${items.flatMap((i) => i.verdicts || []).length ? ` · ${esc([...new Set(items.flatMap((i) => i.verdicts || []))].join(", "))}` : ""}</summary>
+            ${items.map((i) => `<div class="ev-item"><div class="muted small">${esc(i.path)}</div><pre class="report-md">${esc(i.excerpt || "")}</pre></div>`).join("")}
+          </details>`).join("")
+      : `<p class="muted small">No evidence excerpts recorded (the worktree may have been cleaned up).</p>`;
+    const timeline = (ev.events || []).slice(0, 40).map((e) => `<li><time>${esc(fmtTime(e.at))}</time> <strong>${esc(String(e.type || "").replaceAll("-", " "))}</strong>${e.stage ? ` · ${esc(e.stage)}` : ""}${e.actor ? ` · ${esc(e.actor)}` : ""}${e.outcome ? ` → ${esc(e.outcome)}` : ""}</li>`).join("");
+    return `
+      <hr/>
+      <h4>GitHub</h4>${github || `<p class="muted small">not published from this task</p>`}
+      <h4>Evidence by stage</h4>${evBlocks}
+      <details class="drill"><summary>Full timeline (${(ev.events || []).length} events)</summary><ul class="timeline">${timeline}</ul></details>`;
   }
 
   function renderAgentRail(agents, runtime) {
