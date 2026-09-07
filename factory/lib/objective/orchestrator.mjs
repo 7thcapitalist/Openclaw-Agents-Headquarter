@@ -12,7 +12,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { dirname, join } from "path";
 import { initializeTask } from "../task-initializer.mjs";
 import { readState, validateTaskContract } from "../task-workflow.mjs";
-import { runToTerminal } from "../openclaw-runner.mjs";
+import { executeOpenClaw, runToTerminal } from "../openclaw-runner.mjs";
 import { ensureBranchHasCommit } from "../hq/github-publish.mjs";
 import { assertAcyclic, buildNodesComplete, descendants, isDeadlocked, readyNodes, GATE_SATISFIED } from "./graph.mjs";
 
@@ -21,6 +21,10 @@ const INTEGRATION_SYNTHETIC_STAGES = new Set(["product", "architect", "builder"]
 class MergeConflict extends Error {
   constructor(nodeId, detail) { super(`merge conflict integrating ${nodeId}`); this.nodeId = nodeId; this.detail = detail; }
 }
+
+const INFRA_FAILURE_RE = /could not start the cli|rate.?limit|cooldown|all models failed|did not write its result file|429|quota|usage limit|provider .* unavailable|ECONNREFUSED|ETIMEDOUT/i;
+const isInfrastructureFailure = (text) => INFRA_FAILURE_RE.test(String(text || ""));
+const firstLine = (text) => String(text || "").split("\n").map((s) => s.trim()).filter(Boolean)[0] || "no detail";
 
 // ── objective-state.json IO (the file is the source of truth; every mutation is
 // a fresh read+write so concurrent node runs never clobber each other) ─────────
@@ -97,7 +101,18 @@ async function runNode({ hqRoot, objectivePath, nodeId, execute, agentIds, maxAt
     return { nodeId, status: GATE_SATISFIED };
   }
 
-  const blocker = state.blocker || { stage: state.currentStage, outcome: "fail", summary: resp.blocker?.summary || "blocked" };
+  let blocker = state.blocker || { stage: state.currentStage, outcome: "fail", summary: resp.blocker?.summary || "blocked" };
+  // An infrastructure failure (agent CLI could not start / rate-limited / never
+  // wrote a result) is not a code problem the builder can fix by retrying — it
+  // needs the founder to retry later or adjust routing. Surface it as an
+  // actionable decision, not a dead `failed`.
+  if (blocker.outcome === "fail" && isInfrastructureFailure(blocker.summary)) {
+    blocker = {
+      ...blocker,
+      outcome: "decision-required",
+      summary: `The ${blocker.stage || "agent"} for this task could not run (${firstLine(blocker.summary)}). Retry the objective later, or adjust model routing for that role.`,
+    };
+  }
   const status = blocker.outcome === "decision-required" ? "blocked" : "failed";
   patchNode(objectivePath, nodeId, { status, finishedAt: new Date().toISOString(), attempts, blocker },
     { type: `node-${status}`, detail: blocker.summary });
@@ -212,6 +227,34 @@ function sessionModelsByTaskId() {
   } catch { return {}; }
 }
 
+// A founder-readable objective summary, composed from what already happened —
+// no model call, no new report engine.
+function buildObjectiveReport(obj, metrics) {
+  const fmt = (ms) => (ms == null ? "—" : ms < 60000 ? `${Math.round(ms / 1000)}s` : `${Math.floor(ms / 60000)}m${Math.round((ms % 60000) / 1000)}s`);
+  const L = [];
+  L.push(`# Objective report — ${obj.objectiveId}`, "", obj.objective, "");
+  L.push(`**Status:** ${obj.status}  ·  **Wall time:** ${fmt(metrics.totalDurationMs)}  ·  **Max parallel nodes:** ${metrics.maxParallelNodes}`, "");
+  L.push("## Build nodes", "");
+  for (const n of metrics.nodes || []) {
+    const failed = n.failedStages || [];
+    const models = n.modelsUsed || [];
+    L.push(`- **${n.id.replace(/^obj-[0-9a-f]{8}-/, "")}** (${n.role || "?"}) — ${n.status} · ${fmt(n.durationMs)} · ${n.attempts ?? 0} dispatch(es)`
+      + (failed.length ? ` · retried: ${failed.join(", ")}` : "")
+      + (models.length ? ` · models: ${models.join(", ")}` : ""));
+    const node = obj.nodes[n.id];
+    if (node?.blocker) L.push(`  - BLOCKED: ${node.blocker.summary}`);
+  }
+  L.push("", "## Integration", "");
+  const im = metrics.integration || { status: obj.integration?.status || "pending" };
+  L.push(`- ${im.status} · ${fmt(im.durationMs)}`);
+  for (const m of obj.integration?.mergeLog || []) L.push(`  - merge ${m.branch}: ${m.ok ? "ok" : "CONFLICT"}`);
+  if (obj.integration.blocker) L.push(`  - BLOCKED: ${obj.integration.blocker.summary}`);
+  const gp = obj.integration.githubPublish;
+  if (gp) L.push(`  - GitHub: ${gp.published ? (gp.prUrl || "branch pushed, open PR manually") : `not published (${gp.reason || "?"})`}`);
+  L.push("", "_Composed from objective-state.json + metrics.json. Per-node detail is in each task's completion-report.md._", "");
+  return L.join("\n");
+}
+
 function collectMetrics(objectivePath) {
   const obj = readObjState(objectivePath);
   const models = sessionModelsByTaskId();
@@ -263,7 +306,7 @@ function collectMetrics(objectivePath) {
 
 // ── the loop ─────────────────────────────────────────────────────────────────
 
-export async function runObjective({ hqRoot, objectivePath, maxConcurrent = 3, execute, agentIds = {}, maxAttemptsPerStage = 3, concurrentGroups, publish, stateRoot }) {
+export async function runObjective({ hqRoot, objectivePath, maxConcurrent = 3, execute = executeOpenClaw, agentIds = {}, maxAttemptsPerStage = 3, concurrentGroups, publish, stateRoot }) {
   let obj = readObjState(objectivePath);
   assertAcyclic(obj.nodes);
   const nodeStateRoot = stateRoot || join(dirname(objectivePath), "..", "..");
@@ -327,6 +370,7 @@ export async function runObjective({ hqRoot, objectivePath, maxConcurrent = 3, e
 
   const metrics = collectMetrics(objectivePath);
   writeFileSync(join(dirname(objectivePath), "metrics.json"), `${JSON.stringify(metrics, null, 2)}\n`, "utf8");
+  writeFileSync(join(dirname(objectivePath), "report.md"), buildObjectiveReport(readObjState(objectivePath), metrics), "utf8");
 
   return { status: finalStatus, objective: readObjState(objectivePath), metrics, integrationResp };
 }

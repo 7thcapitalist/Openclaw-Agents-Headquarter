@@ -1,6 +1,6 @@
 import { execFile } from "child_process";
 import { promisify } from "util";
-import { existsSync, unlinkSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { PROTOCOL_VERSION, computeDispatchPaths, failDispatch, ingestResult, markDispatchRunning, prepareDispatch, readResultFile } from "./openclaw-protocol.mjs";
 import { readState, writeState } from "./task-workflow.mjs";
@@ -122,10 +122,12 @@ export async function runConcurrentGroupIfReady({ hqRoot, statePath, agentIds = 
     return { stage, actor, dispatchId, resultPath, promptPath, agentId };
   });
 
-  // The expensive part, concurrent. `allSettled`: a member whose agent throws
-  // simply leaves no result file — the engine then routes it as a normal
-  // failure when we apply results below.
-  await Promise.allSettled(members.map((m) => execute({
+  // The expensive part, concurrent. If a member's agent throws OR leaves no
+  // result file, synthesize a `fail` result carrying the real reason so the
+  // engine routes it as a normal retry with a legible message — parity with the
+  // single-stage `failDispatch` path, instead of an opaque "did not write its
+  // result file".
+  const settled = await Promise.allSettled(members.map((m) => execute({
     agentId: m.agentId,
     messageFile: m.promptPath,
     sessionKey: `agent:${m.agentId}:factory-${m.dispatchId}`,
@@ -142,6 +144,16 @@ export async function runConcurrentGroupIfReady({ hqRoot, statePath, agentIds = 
       resultPath: m.resultPath,
     },
   })));
+  for (let i = 0; i < members.length; i += 1) {
+    const m = members[i];
+    const rejected = settled[i].status === "rejected";
+    if (rejected || !existsSync(m.resultPath)) {
+      const reason = rejected
+        ? summarizeError(settled[i].reason)
+        : `the ${m.stage} agent (${m.agentId}) produced no result file`;
+      synthesizeFailResult({ worktree: state.worktree, member: m, reason });
+    }
+  }
 
   // Apply through the real engine, one stage at a time, with a no-op execute so
   // `runOneStage` consumes the result file each member already wrote.
@@ -175,6 +187,27 @@ function selectAgentId(dispatch, agentIds) {
     || agentIds[dispatch.stage]
     || agentIds[dispatch.actor]
     || dispatch.actor;
+}
+
+// Write a schema-valid `fail` result (+ its evidence file) for a concurrent
+// group member whose agent threw or produced nothing, so the engine's normal
+// retry routing applies with a clear reason.
+function synthesizeFailResult({ worktree, member, reason }) {
+  try {
+    const evDir = join(worktree, "evidence");
+    mkdirSync(evDir, { recursive: true });
+    const rel = `evidence/${member.stage}-infra-failure.md`;
+    writeFileSync(join(worktree, rel), `# ${member.stage} could not run\n\n${reason}\n`, "utf8");
+    writeFileSync(member.resultPath, JSON.stringify({
+      version: PROTOCOL_VERSION,
+      dispatchId: member.dispatchId,
+      stage: member.stage,
+      actor: member.actor,
+      outcome: "fail",
+      summary: `${member.stage} agent could not run: ${String(reason).split("\n")[0].slice(0, 240)}`,
+      evidence: [rel],
+    }), "utf8");
+  } catch { /* best effort — a missing file still routes as a failure downstream */ }
 }
 
 function summarizeError(error) {

@@ -131,3 +131,19 @@ test("runConcurrentGroupIfReady returns null when not parked at a group head", a
   const out = await runConcurrentGroupIfReady({ hqRoot, statePath, execute: makeExecute() });
   assert.equal(out, null);
 });
+
+test("a review member whose agent throws is routed with a legible reason, not an opaque missing-file error", async () => {
+  const { statePath } = makeFixture();
+  await advanceToStage(statePath, makeExecute(), "reviewer");
+
+  const flaky = async ({ dispatch }) => {
+    if (dispatch.stage === "qa") throw new Error("[openclaw] Could not start the CLI. Reason: All models failed");
+    return makeExecute()({ dispatch });
+  };
+  const response = await runConcurrentGroupIfReady({ hqRoot, statePath, execute: flaky });
+  assert.equal(response.status, "active");
+  const state = readState(statePath);
+  assert.equal(state.currentStage, "builder", "the thrown qa member routed the task back to builder");
+  const qaDispatch = state.dispatches.filter((d) => d.stage === "qa").at(-1);
+  assert.match(qaDispatch.summary || "", /could not run|Could not start the CLI/i, "the failure reason is carried, not swallowed");
+});

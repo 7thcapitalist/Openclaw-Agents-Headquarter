@@ -1224,3 +1224,18 @@ pre,
   padding: 12px 14px;
   margin: 0;
 }
+
+/* Objectives panel (Today view) */
+.founder-decompose { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted, #667); margin-top: 8px; cursor: pointer; }
+.founder-decompose input { margin: 0; }
+.obj-card { border: 1px solid var(--border, #ddd); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; background: var(--panel, #fbfbfa); }
+.obj-card-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+.obj-card-head strong { display: block; }
+.obj-blocked { margin: 8px 0; padding: 6px 10px; border-radius: 6px; background: var(--warn-bg, #fff4e0); font-size: 13px; }
+.obj-nodes { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+.obj-node { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 6px; background: var(--bg, #fff); border: 1px solid var(--border, #eee); }
+.obj-node-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.obj-node-main strong { font-size: 13px; }
+.obj-node-meta { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+.obj-card-foot { margin-top: 8px; font-size: 13px; }
+.btn.tiny { padding: 2px 8px; font-size: 11px; }

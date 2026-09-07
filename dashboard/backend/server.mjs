@@ -61,18 +61,23 @@ import { buildReadinessReport } from "./lib/readiness.mjs";
 import {
   buildFounderOverview,
   buildObjectivesView,
+  buildRolePolicy,
   discoverFactoryTasks,
   isProjectPaused,
   listFounderJobs,
   readTaskCompletionReport,
   recordQuestion,
   resolveFounderDecision,
+  resolveProjectRepo,
   saveFounderJob,
   setProjectPaused,
 } from "./lib/founderControlPlane.mjs";
 import { buildCompanyState } from "../../factory/lib/hq/company-state.mjs";
 import { readLearningFindings } from "../../factory/lib/hq/chief-of-staff.mjs";
 import { handleRequest as handleFactoryRequest } from "../../scripts/openclaw-factory.mjs";
+import { decomposeObjective } from "../../factory/lib/objective/decompose.mjs";
+import { runObjective } from "../../factory/lib/objective/orchestrator.mjs";
+import { defaultStateRoot } from "../../factory/lib/natural-language-intake.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const execFileAsync = promisify(execFile);
@@ -281,20 +286,76 @@ app.post("/api/founder/projects/:id/:action", (req, res) => {
   }
 });
 
+// Resolve the repo path: explicit body value, else the registered project's
+// path (factory/projects.json) — so the founder can launch work by project name.
+function resolveLaunchRepo(req, projectId) {
+  if (req.body?.repo) return resolve(String(req.body.repo));
+  return resolveProjectRepo(ROOT, projectId);
+}
+
 app.post("/api/founder/tasks", (req, res) => {
   const objective = String(req.body?.objective || "").trim();
-  const repo = req.body?.repo ? resolve(String(req.body.repo)) : "";
   const projectId = String(req.body?.projectId || "").trim();
-  if (!objective || !repo || !projectId) return res.status(400).json({ error: "objective, repo, and projectId are required." });
+  const repo = resolveLaunchRepo(req, projectId) || "";
+  if (!objective || !repo || !projectId) return res.status(400).json({ error: "objective and projectId are required (repo is auto-resolved for registered projects)." });
   if (isProjectPaused(ROOT, projectId)) return res.status(409).json({ error: "Resume this project before starting a task." });
-  if (!existsSync(join(repo, ".git"))) return res.status(400).json({ error: "Repository path must point to a Git working tree." });
+  if (!existsSync(join(repo, ".git"))) return res.status(400).json({ error: `Not a git working tree: ${repo}` });
   const jobId = `founder-${Date.now().toString(36)}`;
-  const job = { id: jobId, projectId, objective, repo, status: "starting", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+  const job = { id: jobId, kind: "task", projectId, objective, repo, status: "starting", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
   saveFounderJob(ROOT, job);
   handleFactoryRequest({ version: 1, action: "start", repo, objective, project: projectId, issue: req.body?.issue || undefined })
     .then((result) => saveFounderJob(ROOT, Object.assign(job, { status: result.status, result, updatedAt: new Date().toISOString() })))
     .catch((error) => saveFounderJob(ROOT, Object.assign(job, { status: "error", error: error.message || String(error), updatedAt: new Date().toISOString() })));
   res.status(202).json({ job });
+});
+
+// Decompose one founder objective into a dependency-aware task graph and run the
+// independent parts concurrently. Detached, tracked as a founder job — same
+// pattern as /api/founder/tasks. Reuses factory/lib/objective/.
+app.post("/api/founder/objectives", async (req, res) => {
+  const objective = String(req.body?.objective || "").trim();
+  const projectId = String(req.body?.projectId || "").trim();
+  const repo = resolveLaunchRepo(req, projectId) || "";
+  if (!objective || !projectId || !repo) return res.status(400).json({ error: "objective and projectId are required (repo is auto-resolved for registered projects)." });
+  if (isProjectPaused(ROOT, projectId)) return res.status(409).json({ error: "Resume this project before starting an objective." });
+  if (!existsSync(join(repo, ".git"))) return res.status(400).json({ error: `Not a git working tree: ${repo}` });
+
+  const jobId = `founder-${Date.now().toString(36)}`;
+  const job = { id: jobId, kind: "objective", projectId, objective, repo, status: "decomposing", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+  saveFounderJob(ROOT, job);
+
+  let cfg = {};
+  try { cfg = JSON.parse(readFileSync(join(ROOT, "factory", "factory.config.json"), "utf8")); } catch { /* defaults */ }
+
+  (async () => {
+    try {
+      const graph = await decomposeObjective({ hqRoot: ROOT, objective, project: projectId, repo });
+      const dir = join(defaultStateRoot(ROOT, repo), "objectives", graph.objectiveId);
+      mkdirSync(dir, { recursive: true });
+      const objectivePath = join(dir, "objective-state.json");
+      writeFileSync(objectivePath, `${JSON.stringify(graph, null, 2)}\n`, "utf8");
+      saveFounderJob(ROOT, Object.assign(job, { status: "running", objectiveId: graph.objectiveId, nodeCount: Object.keys(graph.nodes).length, updatedAt: new Date().toISOString() }));
+      const result = await runObjective({
+        hqRoot: ROOT, objectivePath,
+        maxConcurrent: Number(process.env.FACTORY_MAX_CONCURRENT) || 3,
+        agentIds: cfg.openclawIntegration?.agentIds || {},
+        maxAttemptsPerStage: cfg.openclawIntegration?.maxAttemptsPerStage || 3,
+        concurrentGroups: cfg.openclawIntegration?.concurrentGroups,
+        stateRoot: defaultStateRoot(ROOT, repo),
+      });
+      saveFounderJob(ROOT, Object.assign(job, { status: result.status, objectiveId: graph.objectiveId, updatedAt: new Date().toISOString() }));
+    } catch (error) {
+      saveFounderJob(ROOT, Object.assign(job, { status: "error", error: error.message || String(error), updatedAt: new Date().toISOString() }));
+    }
+  })();
+
+  res.status(202).json({ job });
+});
+
+// role -> harness / model policy (the honest "what runs each role" table).
+app.get("/api/hq/role-policy", (_req, res) => {
+  try { res.json({ roles: buildRolePolicy(ROOT) }); }
+  catch (e) { res.status(500).json({ error: String(e.message || e) }); }
 });
 
 app.post("/api/founder/questions", async (req, res) => {

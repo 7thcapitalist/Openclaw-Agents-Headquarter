@@ -23,6 +23,7 @@
     "factory:objective": "node scripts/factory-objective.mjs",
     "objective:smoke": "node scripts/objective-smoke.mjs",
     "factory:probe-cursor": "node scripts/probe-cursor-harness.mjs",
-    "factory:model-policy": "node scripts/apply-model-policy.mjs"
+    "factory:model-policy": "node scripts/apply-model-policy.mjs",
+    "hq:status": "node scripts/hq-status.mjs"
   }
 }

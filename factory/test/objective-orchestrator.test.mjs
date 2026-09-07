@@ -139,3 +139,43 @@ test("runObjective: a failed node blocks its dependents but not its siblings", a
   assert.notEqual(res.status, "complete");
   assert.equal(obj.integration.status, "pending", "integration never ran");
 });
+
+test("runObjective: an infrastructure failure becomes an actionable decision, not a dead `failed`", async () => {
+  const root = mkdtempSync(join(tmpdir(), "objective-infra-"));
+  const { repo } = makeRepo(root);
+  const { objectivePath } = writeObjective(root, repo, NODES.slice(0, 1)); // one node, no deps
+  const stateRoot = join(root, "factory-state");
+  const base = makeExecute();
+
+  const rateLimited = async (args) => {
+    if (args.dispatch.stage === "builder") {
+      mkdirSync(join(args.dispatch.cwd, "evidence"), { recursive: true });
+      writeFileSync(join(args.dispatch.cwd, "evidence", "builder.md"), "rl\n");
+      writeFileSync(args.dispatch.resultPath, JSON.stringify({
+        version: 1, dispatchId: args.dispatch.dispatchId, stage: "builder", actor: args.dispatch.actor,
+        outcome: "fail", summary: "[openclaw] Could not start the CLI. Reason: All models failed (rate_limit)", evidence: ["evidence/builder.md"],
+      }));
+      return;
+    }
+    return base(args);
+  };
+
+  const res = await runObjective({ hqRoot: HQ, objectivePath, maxConcurrent: 2, stateRoot, execute: rateLimited, publish: () => ({ published: false }) });
+  const obj = readObjState(objectivePath);
+  const node = Object.values(obj.nodes)[0];
+  assert.equal(node.status, "blocked", "an infra failure blocks (needs the founder), it does not just die");
+  assert.equal(node.blocker.outcome, "decision-required");
+  assert.match(node.blocker.summary, /could not run|Retry the objective later|adjust model routing/i);
+  assert.notEqual(res.status, "complete");
+});
+
+test("runObjective: report.md is written next to metrics.json", async () => {
+  const root = mkdtempSync(join(tmpdir(), "objective-report-"));
+  const { repo } = makeRepo(root);
+  const { objectivePath, objDir } = writeObjective(root, repo, NODES.slice(0, 2));
+  await runObjective({ hqRoot: HQ, objectivePath, maxConcurrent: 2, stateRoot: join(root, "factory-state"), execute: makeExecute(), publish: () => ({ published: false }) });
+  const report = readFileSync(join(objDir, "report.md"), "utf8");
+  assert.match(report, /# Objective report/);
+  assert.match(report, /## Build nodes/);
+  assert.match(report, /## Integration/);
+});
