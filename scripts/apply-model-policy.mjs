@@ -10,11 +10,15 @@
 //
 //   default (main / builders inherit)  openai/gpt-5.6-sol  -> gpt-5.4-mini -> gpt-4.1
 //     cheap, fast orchestration/routing — never Opus, never a big model for glue.
-//   product, release                   openai/gpt-5.4-mini -> gpt-4.1
+//   product                            openai/gpt-5.4-mini -> gpt-4.1
 //   qa                                 github-copilot/gpt-4.1 -> gpt-5.4-mini
 //     (kept a different harness from the builder for independence + load spread)
 //   architect, reviewer, security,     anthropic/claude-sonnet-5 -> gpt-4.1
-//   research, learning
+//   release, research, learning
+//     release moved off the shared OpenAI CLI seat (2026-09-07): it kept
+//     failing "did not write its result file" and stranding otherwise-green
+//     tasks. It also needs the acpx `runtime` block (set on the agent entry
+//     directly; this script only manages `model`/`models`).
 //     design / codebase understanding / independent review / security / research
 //     — where the Claude subscription earns its cost. Sonnet, not Opus:
 //     Opus stays opt-in per-task.
@@ -44,7 +48,7 @@ const ROUTES = {
   learning: { primary: CLAUDE, fallbacks: [COPILOT] },
   qa: { primary: COPILOT, fallbacks: [MINI] },
   product: { primary: MINI, fallbacks: [COPILOT] },
-  release: { primary: MINI, fallbacks: [COPILOT] },
+  release: { primary: CLAUDE, fallbacks: [COPILOT] },
 };
 
 function withModels(entry, refs) {

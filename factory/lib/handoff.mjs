@@ -26,7 +26,7 @@ export function writeHandoff({ hqRoot, statePath, state, resultPath = null, disp
   const resultInstructions = resultPath
     ? `\n## Machine result contract\n\nBefore ending, write exactly one JSON object to:\n\n${resultPath}\n\n` +
       `Schema: {"version":1,"dispatchId":"${dispatchId}","stage":"${stage}","actor":"${state.assignments[stage]}","outcome":"pass|fail|decision-required","summary":"...","evidence":["relative/path"]}\n\n` +
-    "Evidence paths must be relative, non-empty files inside the assigned worktree. Do not report PASS unless the evidence exists. You must write this result file even when returning FAIL or decision-required.\n"
+    "Evidence paths must be relative, non-empty files inside the assigned worktree, written under `evidence/` (e.g. `evidence/qa-test-output.log`). `evidence/` is git-ignored — it holds your gate proof, not product files, so never place code, tests, or docs there. Do not report PASS unless the evidence exists. You must write this result file even when returning FAIL or decision-required.\n"
     : "";
   let contextBlock;
   try {

@@ -7,6 +7,15 @@ node_modules/
 dashboard/backend/data/
 .openclaw-factory/
 .openclaw-worktrees/
+
+# Factory process artifacts — gate evidence, agent scratch, synthetic
+# infra-failure notes. These belong to a task's run, never to the product,
+# and must not be swept into a task branch by `git add -A` at publish time.
+evidence/
+/*-qa.test.log
+/*-qa.exitcode
+/*-qa.summary.md
+/*.exitcode
 agents/**/logs/*
 agents/**/outputs/*
 !agents/**/logs/.gitkeep
