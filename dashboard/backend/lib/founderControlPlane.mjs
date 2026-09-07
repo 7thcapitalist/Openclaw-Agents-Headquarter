@@ -1,11 +1,62 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "fs";
 import { basename, dirname, join, resolve } from "path";
+import { homedir } from "os";
 import { readState, resumeState, writeState } from "../../../factory/lib/task-workflow.mjs";
 import { writeHandoff } from "../../../factory/lib/handoff.mjs";
 import { listProjectBriefs } from "../../../factory/lib/intel/project-brief.mjs";
 import { buildCompanyBriefing } from "../../../factory/lib/intel/founder-briefing.mjs";
 
 const CONTROL_FILE = "control-plane.json";
+
+// ── project + model-policy readers (read-only, guarded) ───────────────────────
+
+function readJsonSafe(path) {
+  try { return JSON.parse(readFileSync(path, "utf8")); } catch { return null; }
+}
+
+function expandHome(p) {
+  if (!p) return p;
+  if (p === "~") return homedir();
+  if (p.startsWith("~/")) return join(homedir(), p.slice(2));
+  return p;
+}
+
+// Absolute repo path for a registered project (factory/projects.json), or null.
+// Lets the founder launch work by project name without typing a path.
+export function resolveProjectRepo(root, projectId) {
+  const reg = readJsonSafe(join(root, "factory", "projects.json"));
+  const project = (reg?.projects || []).find((p) => p.key === projectId);
+  if (!project?.repo) return null;
+  const repo = expandHome(project.repo);
+  return repo === "." || repo === "" ? resolve(root) : resolve(root, repo);
+}
+
+// role -> { runtimeAgentId, harness, harnessAvailable, harnessFallback, model:{primary,fallbacks} }
+// The single honest answer to "which harness/model actually runs each role."
+export function buildRolePolicy(root) {
+  const registry = readJsonSafe(join(root, "factory", "agents.json"));
+  const oc = readJsonSafe(join(homedir(), ".openclaw", "openclaw.json"));
+  const defaultModel = oc?.agents?.defaults?.model || null;
+  const norm = (m) => {
+    if (!m) return null;
+    if (typeof m === "string") return { primary: m.split("@")[0], fallbacks: [] };
+    return { primary: String(m.primary || "").split("@")[0], fallbacks: (m.fallbacks || []).map((f) => String(f).split("@")[0]) };
+  };
+  const out = {};
+  for (const a of registry?.agents || []) {
+    const rid = a.runtimeAgentId || a.id;
+    const entry = oc?.agents?.entries?.[rid];
+    out[a.id] = {
+      name: a.name,
+      runtimeAgentId: rid,
+      harness: a.harness || null,
+      harnessAvailable: a.harnessAvailable !== false,
+      harnessFallback: a.harnessFallback || null,
+      model: norm(entry?.model) || (norm(defaultModel) && { ...norm(defaultModel), inherited: true }) || null,
+    };
+  }
+  return out;
+}
 
 function factoryRoot(root) {
   return join(root, "dashboard", "backend", "data", "factory");
@@ -183,18 +234,45 @@ export function buildObjectivesView(root) {
     }
   }
   const tasksById = new Map(discoverFactoryTasks(root).map((t) => [t.id, t]));
+  const rolePolicy = buildRolePolicy(root);
+  const modelForRole = (role) => {
+    const entry = rolePolicy[role] || rolePolicy[`${role.replace(/-builder$/, "")}-builder`] || null;
+    return entry?.model?.primary || null;
+  };
   for (const obj of objectives) {
-    for (const node of obj.nodes || []) {
+    const allNodes = [...(obj.nodes || []), obj.integration].filter(Boolean);
+    for (const node of allNodes) {
       const task = tasksById.get(node.id);
+      node.model = modelForRole(node.role || "integration");
       if (task) Object.assign(node, {
         stage: task.stage, taskStatus: task.status, elapsedMs: task.elapsedMs,
-        lastResult: task.lastResult, blocker: task.blocker, decisionRequired: task.blocker?.outcome === "decision-required",
+        lastResult: task.lastResult, blocker: node.blocker || task.blocker,
+        decisionRequired: (node.blocker || task.blocker)?.outcome === "decision-required",
         retries: (task.events || []).filter((e) => e.type === "failure-routed").length,
         statePath: task.statePath,
+        hasReport: Boolean(task.completionReport),
       });
+      node.completedStages = task
+        ? (task.events || []).filter((e) => e.type === "stage-pass").map((e) => e.stage)
+        : [];
     }
+    obj.prUrl = obj.integration?.githubPublish?.prUrl || null;
+    obj.blockedOn = allNodes.find((n) => n.decisionRequired || n.status === "blocked")?.id || null;
+    obj.nextUp = (obj.nodes || [])
+      .filter((n) => n.status === "pending" && (n.dependsOn || []).every((d) => (obj.nodes || []).find((x) => x.id === d)?.status === "gate-satisfied"))
+      .map((n) => n.id);
   }
-  return { objectives, summary: { total: objectives.length, running: objectives.filter((o) => o.status === "active").length, complete: objectives.filter((o) => o.status === "complete").length, blocked: objectives.filter((o) => ["blocked", "integration-blocked"].includes(o.status)).length } };
+  return {
+    objectives: objectives.sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""))),
+    rolePolicy,
+    summary: {
+      total: objectives.length,
+      running: objectives.filter((o) => o.status === "active").length,
+      complete: objectives.filter((o) => o.status === "complete").length,
+      blocked: objectives.filter((o) => ["blocked", "integration-blocked"].includes(o.status)).length,
+      needsFounder: objectives.filter((o) => o.blockedOn).length,
+    },
+  };
 }
 
 function shapeObjective(root, obj, dir) {
@@ -205,6 +283,8 @@ function shapeObjective(root, obj, dir) {
     status: n.status, branch: n.branch || null, worktree: n.worktree || null,
     startedAt: n.startedAt || null, finishedAt: n.finishedAt || null, attempts: n.attempts || 0,
     blocker: n.blocker || null,
+    githubPublish: n.githubPublish || null,
+    mergeLog: Array.isArray(n.mergeLog) ? n.mergeLog.map((m) => ({ branch: m.branch, ok: m.ok })) : null,
   });
   return {
     objectiveId: obj.objectiveId,

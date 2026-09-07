@@ -200,11 +200,13 @@
   // ── Today: the founder observability surface ───────────────────
 
   async function renderToday() {
-    const [state, fc, learning] = await Promise.all([
+    const [state, fc, learning, objectivesResp] = await Promise.all([
       loadCompany(),
       apiJson("/api/founder/overview").catch(() => ({ jobs: [] })),
       loadLearning().catch(() => null),
+      apiJson("/api/founder/objectives").catch(() => ({ objectives: [], summary: {} })),
     ]);
+    const objectives = objectivesResp.objectives || [];
     const projects = state.projects || [];
     const agents = state.agents?.agents || [];
     const decisions = state.decisions || [];
@@ -222,16 +224,17 @@
             <h1>What should the company build next?</h1>
             <p>Give your team an outcome. OpenClaw will turn it into bounded work and route the right agents.</p>
             <form id="founder-command" class="founder-command">
-              <textarea id="founder-objective" rows="2" placeholder="Build Fitbit integration for LifeMaxing" required></textarea>
+              <textarea id="founder-objective" rows="2" placeholder="Build the onboarding system for LifeMaxing" required></textarea>
               <div class="founder-command-row">
                 <select id="founder-project" required>
                   <option value="">Choose project</option>
                   ${projects.map((p) => `<option value="${esc(p.key)}" data-repo="${esc(p.repo || "")}">${esc(p.name)}</option>`).join("")}
                   ${state.headquarters ? `<option value="${esc(state.headquarters.key)}" data-repo="${esc(state.headquarters.repo || "")}">${esc(state.headquarters.name)} (infrastructure)</option>` : ""}
                 </select>
-                <input id="founder-repo" placeholder="Repository path" required />
+                <input id="founder-repo" placeholder="Repository path (auto for registered projects)" />
                 <button class="btn founder-launch" type="submit">Start work →</button>
               </div>
+              <label class="founder-decompose"><input type="checkbox" id="founder-decompose" /> Decompose into a dependency-aware graph and run independent parts in parallel</label>
             </form>
           </div>
 
@@ -271,6 +274,11 @@
               ${recommendedActions(state.company)}
             </section>
           </div>
+
+          <section class="activity-panel">
+            <div class="panel-heading"><div><span class="eyebrow">In flight</span><h2>Objectives</h2></div>${objectives.length ? pill(`${objectives.filter((o) => o.status === "active").length} running`, "badge-type") : ""}</div>
+            ${objectives.length ? objectives.slice(0, 6).map((o) => objectiveCard(o)).join("") : `<div class="empty-state">No objectives yet. Use the box above with "Decompose into parallel tasks" checked to split a goal into concurrent work.</div>`}
+          </section>
 
           <section class="activity-panel">
             <div class="panel-heading"><div><span class="eyebrow">Delivered</span><h2>Completed work</h2></div>${finishedTasks.length ? pill(finishedTasks.length, "health-healthy") : ""}</div>
@@ -419,10 +427,63 @@
     </article>`;
   }
 
+  const OBJ_STATUS_CLASS = { active: "badge-type", complete: "health-healthy", blocked: "health-failed", "integration-blocked": "badge-warn", incomplete: "badge-warn" };
+  const NODE_STATUS_CLASS = { "gate-satisfied": "health-healthy", running: "badge-type", pending: "badge-type", failed: "health-failed", blocked: "badge-warn", "blocked-by-dep": "badge-type" };
+
+  function objectiveNodeRow(n, objId) {
+    const short = (id) => String(id || "").replace(new RegExp(`^${objId}-`), "");
+    const deps = (n.dependsOn || []).map(short).join(", ");
+    const stage = n.stage || (n.status === "gate-satisfied" ? "done" : "—");
+    const pulse = n.status === "running" ? `<span class="activity-pulse"></span>` : "";
+    return `<div class="obj-node">
+      ${pulse}
+      <div class="obj-node-main">
+        <strong>${esc(short(n.id))}</strong>
+        <span class="muted small">${esc(n.role || "—")} · ${esc(n.model || "model?")}${deps ? ` · needs ${esc(deps)}` : ""}</span>
+        ${n.blocker ? `<span class="danger-text small">${esc(n.blocker.summary || n.blocker.outcome || "blocked")}</span>` : ""}
+      </div>
+      <div class="obj-node-meta">
+        ${pill(n.status, NODE_STATUS_CLASS[n.status] || "badge-type")}
+        <span class="muted small">${esc(stage)}${n.elapsedMs != null ? ` · ${esc(fmtDuration(n.elapsedMs))}` : ""}${n.retries ? ` · ${n.retries} retr${n.retries === 1 ? "y" : "ies"}` : ""}</span>
+        ${n.status === "gate-satisfied" && n.hasReport ? `<button class="btn secondary tiny" data-report-task="${esc(n.id)}">report</button>` : ""}
+      </div>
+    </div>`;
+  }
+
+  function objectiveCard(o) {
+    if (o.status === "invalid") return `<article class="obj-card"><strong>${esc(o.objectiveId)}</strong><p class="danger-text small">${esc(o.error || "invalid objective state")}</p></article>`;
+    const m = o.metrics || {};
+    const pr = o.prUrl ? `<a href="${esc(o.prUrl)}" target="_blank" rel="noreferrer">PR ↗</a>` : (o.integration?.githubPublish?.reason ? `<span class="muted small">${esc(o.integration.githubPublish.reason)}</span>` : "");
+    return `<article class="obj-card">
+      <div class="obj-card-head">
+        <div><strong>${esc(o.objective || o.objectiveId)}</strong>
+          <span class="muted small">${esc(o.project || "")} · ${esc(o.objectiveId)}${m.totalDurationMs != null ? ` · ${esc(fmtDuration(m.totalDurationMs))}` : ""}${m.maxParallelNodes ? ` · ${m.maxParallelNodes}× parallel` : ""}</span>
+        </div>
+        ${pill(o.status, OBJ_STATUS_CLASS[o.status] || "badge-type")}
+      </div>
+      ${o.blockedOn ? `<div class="obj-blocked">Waiting on you — see the Founder inbox above.</div>` : ""}
+      <div class="obj-nodes">
+        ${(o.nodes || []).map((n) => objectiveNodeRow(n, o.objectiveId)).join("")}
+        ${o.integration ? objectiveNodeRow({ ...o.integration, id: "integration" }, o.objectiveId) : ""}
+      </div>
+      <div class="obj-card-foot">${pr}</div>
+    </article>`;
+  }
+
   function bindFounderControls() {
     const project = document.getElementById("founder-project");
     project.onchange = () => { const repo = project.selectedOptions[0]?.dataset.repo; if (repo) document.getElementById("founder-repo").value = repo; };
-    document.getElementById("founder-command").onsubmit = async (e) => { e.preventDefault(); try { const j = await apiJson("/api/founder/tasks", { method: "POST", body: JSON.stringify({ objective: document.getElementById("founder-objective").value, projectId: project.value, repo: document.getElementById("founder-repo").value }) }); showToast(`Work started: ${j.job.id}`); setTimeout(route, 1200); } catch (err) { showToast(err.message, true); } };
+    document.getElementById("founder-command").onsubmit = async (e) => {
+      e.preventDefault();
+      const decompose = document.getElementById("founder-decompose")?.checked;
+      const endpoint = decompose ? "/api/founder/objectives" : "/api/founder/tasks";
+      const repo = document.getElementById("founder-repo").value.trim();
+      try {
+        const j = await apiJson(endpoint, { method: "POST", body: JSON.stringify({ objective: document.getElementById("founder-objective").value, projectId: project.value, ...(repo ? { repo } : {}) }) });
+        showToast(decompose ? `Objective started: ${j.job.id} — decomposing…` : `Work started: ${j.job.id}`);
+        setTimeout(route, 1500);
+      } catch (err) { showToast(err.message, true); }
+    };
     app.querySelectorAll("[data-resolve-decision]").forEach((btn) => btn.onclick = () => { openModal("Founder decision", `<label class="field-label">Direction for the team</label><textarea class="editor" id="decision-direction" placeholder="Approve the recommended option because…"></textarea><button class="btn" id="submit-decision">Send decision & resume</button>`); document.getElementById("submit-decision").onclick = async () => { try { await apiJson("/api/founder/decisions/resolve", { method: "POST", body: JSON.stringify({ statePath: btn.dataset.resolveDecision, direction: document.getElementById("decision-direction").value }) }); closeModal(); showToast("Decision recorded. Work resumed."); route(); } catch (e) { showToast(e.message, true); } }; });
     app.querySelectorAll("[data-approve-decision]").forEach((btn) => btn.onclick = () => { openModal("Signed founder approval", `<p class="muted small">Create the assertion with <code>factory-sign-approval.mjs</code>, then submit its path and the matching evidence path inside the task worktree.</p><label class="field-label">Approval assertion path</label><input class="modal-input" id="approval-assertion" placeholder="/private/operator/approval.json"/><label class="field-label">Evidence path (relative to worktree)</label><input class="modal-input" id="approval-evidence" placeholder="evidence/founder-approval.md"/><button class="btn" id="submit-approval">Verify & approve</button>`); document.getElementById("submit-approval").onclick = async () => { try { await apiJson("/api/founder/decisions/approve", { method: "POST", body: JSON.stringify({ statePath: btn.dataset.approveDecision, approvalAssertionPath: document.getElementById("approval-assertion").value, evidence: document.getElementById("approval-evidence").value }) }); closeModal(); showToast("Signature verified. Work resumed."); route(); } catch (e) { showToast(e.message, true); } }; });
     document.getElementById("ask-agent").onclick = () => { openModal("Ask an agent", `<label class="field-label">Agent</label><input class="modal-input" id="question-agent" value="main"/><label class="field-label">Question</label><textarea class="editor" id="question-text" placeholder="What is blocking this project?"></textarea><button class="btn" id="send-question">Ask</button><div id="question-answer"></div>`); document.getElementById("send-question").onclick = async () => { const out = document.getElementById("question-answer"); out.innerHTML = `<p class="muted">Agent is thinking…</p>`; try { const j = await apiJson("/api/founder/questions", { method: "POST", body: JSON.stringify({ agentId: document.getElementById("question-agent").value, question: document.getElementById("question-text").value }) }); out.innerHTML = `<div class="card">${esc(j.question.answer)}</div>`; } catch (e) { out.innerHTML = `<p class="danger-text">${esc(e.message)}</p>`; } }; };
@@ -465,13 +526,16 @@
   // ── Agents: organizational roles vs. the real OpenClaw runtime ─
 
   async function renderAgents() {
-    const [state, labAgents] = await Promise.all([
+    const [state, labAgents, policyResp] = await Promise.all([
       loadCompany(),
       apiJson("/api/agents").catch(() => ({ agents: [] })),
+      apiJson("/api/hq/role-policy").catch(() => ({ roles: {} })),
     ]);
     const agents = state.agents?.agents || [];
     const runtime = state.runtime;
     const reconciliation = state.rosterReconciliation;
+    const policy = policyResp.roles || {};
+    for (const a of agents) a.policy = policy[a.id] || null;
 
     app.innerHTML = `
       <h1 class="page-title">Agents</h1>
@@ -530,6 +594,7 @@
         ${a.harnessAvailable === false ? `<div class="gap-banner">Intended harness "${esc(a.harness)}" is currently unavailable — running on "${esc(a.harnessFallback || "an unspecified fallback")}" instead.</div>` : ""}
         <dl class="meta-grid">
           <dt>Harness</dt><dd>${harnessLine(a)}</dd>
+          <dt>Model</dt><dd>${a.policy?.model ? `${esc(a.policy.model.primary)}${a.policy.model.inherited ? " (default)" : ""}${(a.policy.model.fallbacks || []).length ? ` <span class="muted small">→ ${esc((a.policy.model.fallbacks || []).join(", "))}</span>` : ""}` : "—"}</dd>
           <dt>Runtime agent id</dt><dd>${esc(a.runtimeAgentId || "—")}</dd>
           <dt>Runtime</dt><dd>${esc(runtimeNoteFor(a, runtime))}</dd>
           <dt>Current project</dt><dd>${esc(a.currentProject || "—")}</dd>

@@ -114,6 +114,39 @@ systemctl --user daemon-reload
 systemctl --user enable --now pm2-hq.service
 ```
 
+## Stable URL — switch the quick tunnel for a named tunnel
+
+The quick tunnel's URL changes every time `hq-tunnel` restarts. For a permanent
+address (`hq.yourdomain.com`) you need a domain on Cloudflare and one interactive
+login. **Founder action** — not scripted here because it needs a browser auth.
+
+```bash
+export PATH="$HOME/.npm-global/bin:$PATH"
+cloudflared tunnel login                      # opens a browser; pick the zone
+cloudflared tunnel create hq                  # writes ~/.cloudflared/<UUID>.json
+cloudflared tunnel route dns hq hq.yourdomain.com
+```
+
+Then point `hq-tunnel` at the named tunnel instead of the `--url` quick tunnel —
+in `dashboard/backend/ecosystem.config.cjs`, change the `hq-tunnel` app's `args`
+from the `tunnel --url http://127.0.0.1:$PORT ...` form to:
+
+```
+args: "tunnel run hq"
+```
+
+(the credentials file and the `hq.yourdomain.com` route are already on disk from
+the three commands above), then:
+
+```bash
+pm2 restart hq-tunnel && pm2 save
+```
+
+`https://hq.yourdomain.com` is now stable across reboots. Add **Cloudflare
+Access** on that hostname for a real second factor in front of the app password.
+`node scripts/hq-status.mjs` (`npm run hq:status`) reports the live URL and health
+either way.
+
 ## Full teardown (undo this deployment)
 ```bash
 export PATH="$HOME/.npm-global/bin:$PATH"
