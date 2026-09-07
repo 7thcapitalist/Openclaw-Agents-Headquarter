@@ -63,6 +63,7 @@ import {
   buildObjectivesView,
   buildRolePolicy,
   discoverFactoryTasks,
+  findTaskStatePath,
   isProjectPaused,
   listFounderJobs,
   readObjectiveReport,
@@ -76,6 +77,9 @@ import {
   setProjectPaused,
 } from "./lib/founderControlPlane.mjs";
 import { readAutonomy } from "../../factory/lib/hq/autonomy.mjs";
+import { retryStuckTasks } from "../../factory/lib/hq/auto-retry.mjs";
+import { resumeState as resumeTaskState, readState as readTaskState, writeState as writeTaskState } from "../../factory/lib/task-workflow.mjs";
+import { runToTerminal as runTaskToTerminal } from "../../factory/lib/openclaw-runner.mjs";
 import { buildCompanyState } from "../../factory/lib/hq/company-state.mjs";
 import { readLearningFindings } from "../../factory/lib/hq/chief-of-staff.mjs";
 import { handleRequest as handleFactoryRequest } from "../../scripts/openclaw-factory.mjs";
@@ -434,6 +438,37 @@ app.get("/api/founder/tasks/:id/evidence", (req, res) => {
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
   }
+});
+
+// Manually kick a stuck task back into motion — one click, no free-text. Resets
+// the failed stage and drives the task to its next terminal state in the
+// background. For infra failures the auto-retry sweep normally does this on its
+// own; this is the founder's "just try again now" button.
+app.post("/api/founder/tasks/:id/retry", (req, res) => {
+  let statePath;
+  try {
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(req.params.id)) return res.status(400).json({ error: "Invalid task id." });
+    statePath = findTaskStatePath(ROOT, req.params.id);
+    if (!statePath) return res.status(404).json({ error: "No such factory task." });
+    const state = readTaskState(statePath);
+    if (state.status !== "blocked") return res.status(409).json({ error: `Task is ${state.status}, not blocked — nothing to retry.` });
+    const at = new Date().toISOString();
+    const resumed = resumeTaskState(state, at);
+    resumed.autoRetries = state.autoRetries || 0; // manual retries don't consume the auto budget
+    resumed.events.push({ at, type: "manual-retry", stage: resumed.currentStage, actor: "founder" });
+    writeTaskState(statePath, resumed);
+  } catch (e) {
+    return res.status(400).json({ error: String(e.message || e) });
+  }
+  let cfg = {};
+  try { cfg = JSON.parse(readFileSync(join(ROOT, "factory", "factory.config.json"), "utf8")); } catch { /* defaults */ }
+  runTaskToTerminal({
+    hqRoot: ROOT, statePath,
+    agentIds: cfg.openclawIntegration?.agentIds || {},
+    maxAttemptsPerStage: cfg.openclawIntegration?.maxAttemptsPerStage || 3,
+    concurrentGroups: cfg.openclawIntegration?.concurrentGroups,
+  }).catch((error) => console.error("[hq] manual retry failed:", error?.message || error));
+  res.status(202).json({ taskId: req.params.id, status: "retrying" });
 });
 
 // The founder-readable summary for a whole decomposed objective.
@@ -1088,3 +1123,30 @@ checkBootConfig();
 app.listen(PORT, HOST, () => {
   console.log(`[agent-lab] dashboard http://${HOST}:${PORT} (root=${ROOT})`);
 });
+
+// ── Auto-retry sweep ─────────────────────────────────────────────────────────
+// Infra failures (no result file, timeout, provider 5xx) should recover on
+// their own, not sit in the Founder Inbox. Every few minutes, resume tasks
+// blocked on an infra-class failure and drive them again — bounded per task.
+// Disable with HQ_AUTO_RETRY=0.
+if (process.env.HQ_AUTO_RETRY !== "0") {
+  const FACTORY_STATE_ROOT = join(ROOT, "dashboard", "backend", "data", "factory");
+  const intervalMs = Math.max(60_000, Number(process.env.HQ_AUTO_RETRY_INTERVAL_MS) || 180_000);
+  const maxPerTask = Math.max(1, Number(process.env.HQ_AUTO_RETRY_MAX) || 3);
+  let sweeping = false;
+  const sweep = async () => {
+    if (sweeping) return;
+    sweeping = true;
+    try {
+      const out = await retryStuckTasks({ hqRoot: ROOT, stateRoot: FACTORY_STATE_ROOT, max: maxPerTask, log: (m) => console.log(m) });
+      if (out.retried.length) console.log(`[auto-retry] swept ${out.scanned} state files, retried ${out.retried.length}`);
+    } catch (error) {
+      console.error("[auto-retry] sweep failed:", error?.message || error);
+    } finally {
+      sweeping = false;
+    }
+  };
+  setTimeout(sweep, 20_000).unref();
+  setInterval(sweep, intervalMs).unref();
+  console.log(`[auto-retry] enabled — every ${Math.round(intervalMs / 1000)}s, up to ${maxPerTask} attempts per task`);
+}
