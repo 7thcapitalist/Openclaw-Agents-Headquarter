@@ -1,0 +1,174 @@
+// Turn one founder objective into a dependency-aware task graph.
+//
+// Chief of Staff (the `main` OpenClaw agent) is asked, in ONE call, to split the
+// objective into build sub-tasks with explicit dependencies. Every sub-task is
+// validated as a real factory task contract; the graph is validated as a DAG.
+// The orchestrator then runs it. An integration node that depends on all build
+// nodes is added automatically — the model does not design it.
+
+import { execFile } from "child_process";
+import { promisify } from "util";
+import { resolve } from "path";
+import { randomUUID } from "crypto";
+import { validateTaskContract } from "../task-workflow.mjs";
+import { assertAcyclic } from "./graph.mjs";
+
+const execFileAsync = promisify(execFile);
+
+// MVP: nodes are build tasks. Integration + independent review/QA/security are
+// added by the orchestrator, not the model.
+const BUILD_ROLES = new Set(["backend-builder", "frontend-builder"]);
+const WORK_TYPES = new Set(["ui", "backend", "architecture", "bugfix", "research", "ops"]);
+const RISKS = new Set(["low", "medium", "high"]);
+
+const HARNESS_FOR_ROLE = { "backend-builder": "codex", "frontend-builder": "cursor" };
+
+export async function executeDecomposition({ prompt, repo, objectiveId }) {
+  const { stdout } = await execFileAsync("openclaw", [
+    "agent", "--agent", "main", "--session-key", `agent:main:factory-decompose-${objectiveId}`,
+    "--message", prompt, "--json", "--timeout", "900",
+  ], { cwd: resolve(repo), timeout: 15 * 60 * 1000, maxBuffer: 8 * 1024 * 1024 });
+  const envelope = JSON.parse(stdout);
+  if (envelope.status !== "ok") throw new Error(`decomposition call failed: ${envelope.summary || envelope.status}`);
+  const text = envelope.result?.payloads?.map((p) => p.text).filter(Boolean).join("\n");
+  if (!text) throw new Error("decomposition returned no text");
+  return text;
+}
+
+function buildPrompt({ objective, project, repo, objectiveId }) {
+  return [
+    "You are the Chief of Staff for a software factory. Split ONE founder objective into",
+    "the SMALLEST set of build sub-tasks that can be implemented in parallel where safe.",
+    "",
+    "Rules:",
+    "- 1 to 4 nodes. Prefer 2 (e.g. one backend, one frontend) when the objective spans both.",
+    "- Only these roles: backend-builder, frontend-builder.",
+    "- `dependsOn` lists node ids that must fully finish (pass review/QA/security) before this one starts. Independent nodes have [].",
+    "- Do NOT create review/qa/security/integration/release nodes — those run automatically after your build nodes.",
+    "- acceptanceCriteria must be observable and include the relevant automated check.",
+    "- risk: low | medium | high per the repository operating rules.",
+    "",
+    "Return ONLY a JSON object, no prose, no code fence:",
+    '{ "nodes": [ { "id": "<lowercase-slug>", "role": "backend-builder|frontend-builder",',
+    '  "objective": "<one sentence>", "acceptanceCriteria": ["..."], "workType": "backend|ui|bugfix|ops",',
+    '  "risk": "low|medium|high", "dependsOn": ["<id>"],',
+    '  "expectedOutputs": ["..."], "constraints": ["..."] } ] }',
+    "",
+    `Objective id: ${objectiveId}`,
+    `Project: ${project}`,
+    `Repository: ${repo}`,
+    "",
+    "Founder objective:",
+    objective.trim(),
+  ].join("\n");
+}
+
+function extractJsonObject(text) {
+  const cleaned = String(text).trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+  try { return JSON.parse(cleaned); } catch { /* fall through */ }
+  const start = cleaned.indexOf("{");
+  const end = cleaned.lastIndexOf("}");
+  if (start < 0 || end <= start) throw new Error("decomposition did not return a JSON object");
+  try { return JSON.parse(cleaned.slice(start, end + 1)); }
+  catch (error) { throw new Error(`decomposition returned invalid JSON: ${error.message}`); }
+}
+
+const SLUG = /^[a-z0-9][a-z0-9-]*$/;
+
+function normalise({ parsed, objective, project, repo, objectiveId, now }) {
+  if (!parsed || !Array.isArray(parsed.nodes) || parsed.nodes.length === 0) {
+    throw new Error("decomposition must contain a non-empty `nodes` array");
+  }
+  if (parsed.nodes.length > 4) throw new Error(`decomposition produced ${parsed.nodes.length} nodes; the MVP cap is 4`);
+
+  const rawIds = parsed.nodes.map((n) => String(n?.id || ""));
+  if (new Set(rawIds).size !== rawIds.length) throw new Error("duplicate node ids in decomposition");
+
+  const nodeId = (raw) => `${objectiveId}-${raw}`;
+  const nodes = {};
+  for (const raw of parsed.nodes) {
+    const rid = String(raw.id || "");
+    if (!SLUG.test(rid)) throw new Error(`node id "${rid}" is not a lowercase slug`);
+    if (!BUILD_ROLES.has(raw.role)) throw new Error(`node "${rid}" role "${raw.role}" not supported (backend-builder | frontend-builder)`);
+    if (!WORK_TYPES.has(raw.workType)) throw new Error(`node "${rid}" workType "${raw.workType}" invalid`);
+    if (!RISKS.has(raw.risk)) throw new Error(`node "${rid}" risk "${raw.risk}" invalid`);
+
+    const id = nodeId(rid);
+    const contract = validateTaskContract({
+      id,
+      issue: `local:${id}`,
+      outcome: String(raw.objective || "").trim(),
+      acceptanceCriteria: Array.isArray(raw.acceptanceCriteria) ? raw.acceptanceCriteria : [],
+      project,
+      workType: raw.workType,
+      risk: raw.risk,
+      preferredBuilder: HARNESS_FOR_ROLE[raw.role] || "auto",
+      constraints: Array.isArray(raw.constraints) ? raw.constraints : [],
+    });
+
+    nodes[id] = {
+      id,
+      role: raw.role,
+      harness: HARNESS_FOR_ROLE[raw.role] || "auto",
+      dependsOn: (raw.dependsOn || []).map((d) => nodeId(String(d))),
+      expectedOutputs: Array.isArray(raw.expectedOutputs) ? raw.expectedOutputs : [],
+      contract,
+      status: "pending",
+      statePath: null,
+      branch: `factory/${id}`,
+      worktree: null,
+      startedAt: null,
+      finishedAt: null,
+      attempts: 0,
+      blocker: null,
+    };
+  }
+
+  assertAcyclic(nodes);
+  if (!Object.values(nodes).some((n) => BUILD_ROLES.has(n.role))) {
+    throw new Error("decomposition has no build node");
+  }
+
+  const integrationId = `${objectiveId}-integration`;
+  return {
+    version: 1,
+    objectiveId,
+    objective: objective.trim(),
+    project,
+    repo,
+    status: "active",
+    createdAt: now(),
+    updatedAt: now(),
+    nodes,
+    integration: {
+      id: integrationId,
+      dependsOn: Object.keys(nodes),
+      status: "pending",
+      statePath: null,
+      branch: `factory/integration-${objectiveId}`,
+      worktree: null,
+      startedAt: null,
+      finishedAt: null,
+      mergeLog: [],
+      githubPublish: null,
+      blocker: null,
+    },
+    events: [{ at: now(), type: "objective-decomposed", detail: `${Object.keys(nodes).length} build node(s)` }],
+  };
+}
+
+export async function decomposeObjective({ hqRoot, objective, project, repo, execute = executeDecomposition, now = () => new Date().toISOString() }) {
+  if (!objective || !String(objective).trim()) throw new Error("decompose requires an objective");
+  if (!project || !String(project).trim()) throw new Error("decompose requires a project key");
+  if (!repo) throw new Error("decompose requires a repo path");
+  const objectiveId = `obj-${randomUUID().slice(0, 8)}`;
+  const resolvedRepo = resolve(repo);
+  const prompt = buildPrompt({ objective, project, repo: resolvedRepo, objectiveId });
+  const raw = await execute({ prompt, repo: resolvedRepo, objectiveId });
+  return normalise({ parsed: extractJsonObject(raw), objective, project, repo: resolvedRepo, objectiveId, now });
+}
+
+// Exposed for tests that want to validate a graph without a model call.
+export function buildObjectiveStateFromNodes({ objective, project, repo, nodes, objectiveId = `obj-${randomUUID().slice(0, 8)}`, now = () => new Date().toISOString() }) {
+  return normalise({ parsed: { nodes }, objective, project, repo: resolve(repo), objectiveId, now });
+}

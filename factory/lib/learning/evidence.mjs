@@ -185,3 +185,25 @@ export function collectTaskRecords({ factoryStateRoot, project = null, since = n
 export function defaultFactoryStateRoot(hqRoot) {
   return join(resolve(hqRoot), "dashboard", "backend", "data", "factory");
 }
+
+// Structured records for decomposed objectives (factory/lib/objective/). Each
+// build node is ALSO a normal task picked up by `collectTaskRecords`; this adds
+// the objective-level aggregate the orchestrator writes (per-node duration,
+// retries, failed stages, models used, parallelism achieved). Read-only.
+export function collectObjectiveMetrics({ factoryStateRoot } = {}) {
+  const root = factoryStateRoot;
+  const out = [];
+  if (!root || !existsSync(root)) return out;
+  for (const project of readdirSync(root, { withFileTypes: true })) {
+    if (!project.isDirectory()) continue;
+    const objDir = join(root, project.name, "objectives");
+    if (!existsSync(objDir)) continue;
+    for (const entry of readdirSync(objDir, { withFileTypes: true })) {
+      const path = join(objDir, entry.name, "metrics.json");
+      if (!existsSync(path)) continue;
+      try { out.push({ ...JSON.parse(readFileSync(path, "utf8")), project: project.name }); }
+      catch { /* skip malformed */ }
+    }
+  }
+  return out;
+}

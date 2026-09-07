@@ -48,10 +48,12 @@
       "role": "Implementation — UI & product",
       "responsibility": "Implements UI/product changes with visual iteration and responsive checks; also the founder's interactive development surface.",
       "stages": ["builder"],
-      "harness": "openclaw",
+      "harness": "cursor",
+      "harnessAvailable": false,
+      "harnessFallback": "codex",
       "runtimeAgentId": "frontend-builder",
       "reportsTo": "chief-of-staff",
-      "notes": "UI/product implementation runs on the dedicated `frontend-builder` OpenClaw agent in a real isolated worktree (acpx ACP backend), using the OpenClaw gateway model (currently openai/gpt-5.6-sol). factory.config.json's `builder:cursor` routing token maps here — `cursor` is the historical name for the UI-builder slot, not a live Cursor session. There is no Cursor dependency."
+      "notes": "Frontend Builder is the organizational role; Cursor is its intended harness for visual/UI iteration. Status: UNAVAILABLE — `cursor-agent` (authed as of 2026-09-06) exposes no ACP server mode, so OpenClaw's acpx backend cannot drive it (`cursor-agent acp` is a no-op, `--help` lists no ACP/stdio mode). Dispatches run on the fallback harness (codex) in a real isolated worktree. factory.config.json's `builder:cursor` token maps to this agent. Re-run scripts/probe-cursor-harness.mjs if Cursor ships an ACP mode."
     },
     {
       "id": "reviewer",

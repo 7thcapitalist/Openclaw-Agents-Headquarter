@@ -162,6 +162,65 @@ function readDecisionCard(state) {
   return null;
 }
 
+// Read-only view of every decomposed objective (factory/lib/objective/) and its
+// live task graph, for the Headquarters dashboard/API. Joins each node to its
+// underlying factory task (already discovered above) so stage / status /
+// elapsed / blocker / retries / last result come for free.
+export function buildObjectivesView(root) {
+  const factoryDir = factoryRoot(root);
+  const objectives = [];
+  if (existsSync(factoryDir)) {
+    for (const project of readdirSync(factoryDir, { withFileTypes: true })) {
+      if (!project.isDirectory()) continue;
+      const objDir = join(factoryDir, project.name, "objectives");
+      if (!existsSync(objDir)) continue;
+      for (const entry of readdirSync(objDir, { withFileTypes: true })) {
+        const path = join(objDir, entry.name, "objective-state.json");
+        if (!existsSync(path)) continue;
+        try { objectives.push(shapeObjective(root, JSON.parse(readFileSync(path, "utf8")), join(objDir, entry.name))); }
+        catch (error) { objectives.push({ objectiveId: entry.name, status: "invalid", error: error.message }); }
+      }
+    }
+  }
+  const tasksById = new Map(discoverFactoryTasks(root).map((t) => [t.id, t]));
+  for (const obj of objectives) {
+    for (const node of obj.nodes || []) {
+      const task = tasksById.get(node.id);
+      if (task) Object.assign(node, {
+        stage: task.stage, taskStatus: task.status, elapsedMs: task.elapsedMs,
+        lastResult: task.lastResult, blocker: task.blocker, decisionRequired: task.blocker?.outcome === "decision-required",
+        retries: (task.events || []).filter((e) => e.type === "failure-routed").length,
+        statePath: task.statePath,
+      });
+    }
+  }
+  return { objectives, summary: { total: objectives.length, running: objectives.filter((o) => o.status === "active").length, complete: objectives.filter((o) => o.status === "complete").length, blocked: objectives.filter((o) => ["blocked", "integration-blocked"].includes(o.status)).length } };
+}
+
+function shapeObjective(root, obj, dir) {
+  let metrics = null;
+  try { metrics = JSON.parse(readFileSync(join(dir, "metrics.json"), "utf8")); } catch { /* not finished yet */ }
+  const nodeRow = (n) => ({
+    id: n.id, role: n.role || "integration", harness: n.harness || null, dependsOn: n.dependsOn || [],
+    status: n.status, branch: n.branch || null, worktree: n.worktree || null,
+    startedAt: n.startedAt || null, finishedAt: n.finishedAt || null, attempts: n.attempts || 0,
+    blocker: n.blocker || null,
+  });
+  return {
+    objectiveId: obj.objectiveId,
+    objective: obj.objective,
+    project: obj.project,
+    repo: obj.repo,
+    status: obj.status,
+    createdAt: obj.createdAt,
+    updatedAt: obj.updatedAt,
+    nodes: Object.values(obj.nodes || {}).map(nodeRow),
+    integration: nodeRow(obj.integration || {}),
+    events: (obj.events || []).slice(-40),
+    metrics,
+  };
+}
+
 export function discoverFactoryTasks(root) {
   return walkStateFiles(factoryRoot(root))
     .map((path) => {
