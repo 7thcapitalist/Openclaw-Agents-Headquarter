@@ -60,6 +60,7 @@ import { enrichHqAgentsWithLifecycle } from "./lib/agentLifecycle.mjs";
 import { buildReadinessReport } from "./lib/readiness.mjs";
 import {
   buildFounderOverview,
+  buildObjectivesView,
   discoverFactoryTasks,
   isProjectPaused,
   listFounderJobs,
@@ -199,6 +200,16 @@ app.get("/api/founder/overview", (_req, res) => {
   try {
     const overview = buildFounderOverview(ROOT, readProjects(ROOT));
     res.json({ ...overview, jobs: listFounderJobs(ROOT) });
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+// Decomposed objectives + their live task graphs (factory/lib/objective/).
+// Read-only, machine-readable.
+app.get("/api/founder/objectives", (_req, res) => {
+  try {
+    res.json(buildObjectivesView(ROOT));
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
   }
