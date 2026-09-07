@@ -174,11 +174,15 @@ export async function runConcurrentGroupIfReady({ hqRoot, statePath, agentIds = 
   return response;
 }
 
-export async function executeOpenClaw({ agentId, messageFile, sessionKey }) {
+export async function executeOpenClaw({ agentId, messageFile, sessionKey, cwd }) {
+  // Run the agent inside its assigned worktree. Both callers already pass
+  // `cwd: state.worktree`; without forwarding it here the `openclaw agent`
+  // process inherited the dashboard's cwd, so a relative-path edit could land
+  // in the source checkout instead of the isolated worktree.
   return execFileAsync(
     "openclaw",
     ["agent", "--agent", agentId, "--session-key", sessionKey, "--message-file", messageFile, "--json", "--timeout", "3600"],
-    { timeout: 60 * 60 * 1000, maxBuffer: 8 * 1024 * 1024 }
+    { cwd: cwd || undefined, timeout: 60 * 60 * 1000, maxBuffer: 8 * 1024 * 1024 }
   );
 }
 

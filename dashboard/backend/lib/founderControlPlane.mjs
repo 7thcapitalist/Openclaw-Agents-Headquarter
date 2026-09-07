@@ -22,6 +22,16 @@ function expandHome(p) {
   return p;
 }
 
+// Normalize a repo path the founder supplied explicitly (e.g. request body
+// `repo` / `repoPath`) into an absolute path: "~" expansion, then "." / "" and
+// any relative value resolved against `root` (the HQ root) — NOT the process
+// cwd — so it matches resolveProjectRepo. Returns null for an empty input.
+export function resolveRepoInput(root, repoInput) {
+  const repo = expandHome(String(repoInput ?? "").trim());
+  if (!repo) return null;
+  return repo === "." ? resolve(root) : resolve(root, repo);
+}
+
 // Absolute repo path for a registered project (factory/projects.json), or null.
 // Lets the founder launch work by project name without typing a path.
 export function resolveProjectRepo(root, projectId) {
