@@ -19,6 +19,10 @@ test("transient agent/process failures classify as infra (never paged to the fou
     "socket hang up",
     "ECONNRESET",
     "model gpt-5 unavailable, provider capacity",
+    "reviewer agent could not run: [openclaw] Could not start the CLI.",
+    "release agent could not run: failed to start",
+    "dispatch orphaned by a host restart",
+    "the agent process was killed",
   ]) {
     assert.equal(classifyBlocker({ outcome: "fail", summary }), "infra", summary);
     assert.equal(isInfraFailure({ outcome: "fail", summary }), true, summary);

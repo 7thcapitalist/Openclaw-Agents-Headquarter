@@ -390,11 +390,14 @@
         });
       }
     }
+    const STALE_ACTIVE_MS = 90 * 60 * 1000;
     for (const t of tasks) {
       if (objTaskIds.has(t.id)) continue;
       if (t.status !== "active" && t.status !== "blocked") continue;
-      // Infra-blocked tasks are shown in the "recovering" strip, not here.
+      // Infra-blocked and restart-orphaned tasks are shown in the "recovering"
+      // strip, not here.
       if (t.status === "blocked" && t.blockerClass === "infra") continue;
+      if (t.status === "active" && Date.now() - (Date.parse(t.updatedAt) || Date.now()) > STALE_ACTIVE_MS) continue;
       const a = agentById[t.agent] || Object.values(agentById).find((x) => x.runtimeAgentId === t.agent);
       rows.push({
         kind: "task", title: t.objective || t.id, sub: t.project || t.id,

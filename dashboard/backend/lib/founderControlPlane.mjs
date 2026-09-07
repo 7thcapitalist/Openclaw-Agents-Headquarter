@@ -427,17 +427,24 @@ export function buildFounderOverview(root, hqProjects = []) {
   const inbox = buildFounderInbox({ tasks, decisions, questions: control.questions });
 
   // Tasks the system is (or should be) recovering from on its own — shown to
-  // the founder as progress, NOT as something that needs them.
+  // the founder as progress, NOT as something that needs them. Two cases:
+  // infra-blocked, and "active" but untouched long enough that its in-process
+  // runner clearly died with a restart (the auto-retry sweep revives both).
+  const STALE_ACTIVE_MS = 90 * 60 * 1000;
   const autoRecovering = tasks
-    .filter((task) => task.status === "blocked" && (task.blockerClass || classifyBlocker(task.blocker)) === "infra")
+    .filter((task) => {
+      if (task.status === "blocked") return (task.blockerClass || classifyBlocker(task.blocker)) === "infra";
+      if (task.status === "active") return Date.now() - (Date.parse(task.updatedAt) || Date.now()) > STALE_ACTIVE_MS;
+      return false;
+    })
     .map((task) => ({
       taskId: task.id,
       project: task.project || null,
-      stage: task.blocker?.stage || null,
-      detail: task.blocker?.summary || "",
+      stage: task.status === "blocked" ? (task.blocker?.stage || null) : (task.stage || null),
+      detail: task.status === "blocked" ? (task.blocker?.summary || "") : "in-progress work interrupted by a restart — resuming",
       statePath: task.statePath || null,
       autoRetries: task.autoRetries || 0,
-      since: task.blocker?.at || null,
+      since: task.status === "blocked" ? (task.blocker?.at || null) : (task.updatedAt || null),
     }));
 
   const intel = attachProjectIntelligence(root, projects, decisions);
