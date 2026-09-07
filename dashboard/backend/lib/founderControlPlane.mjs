@@ -5,6 +5,7 @@ import { readState, resumeState, writeState } from "../../../factory/lib/task-wo
 import { writeHandoff } from "../../../factory/lib/handoff.mjs";
 import { listProjectBriefs } from "../../../factory/lib/intel/project-brief.mjs";
 import { buildCompanyBriefing } from "../../../factory/lib/intel/founder-briefing.mjs";
+import { toTaskRecord } from "../../../factory/lib/learning/evidence.mjs";
 
 const CONTROL_FILE = "control-plane.json";
 
@@ -177,6 +178,52 @@ export function readTaskCompletionReport(root, taskId) {
       markdown: readFileSync(reportPath, "utf8"),
       generatedAt: state.completionReport?.generatedAt || null,
       status: state.completionReport?.status || state.status,
+    };
+  }
+  return null;
+}
+
+// The founder-readable objective summary the orchestrator writes to
+// objectives/<id>/report.md. Path-guarded to the factory state tree.
+export function readObjectiveReport(root, objectiveId) {
+  const factoryDir = factoryRoot(root);
+  const allowedRoot = resolve(factoryDir);
+  if (!existsSync(factoryDir) || !/^obj-[a-z0-9-]+$/i.test(objectiveId)) return null;
+  for (const project of readdirSync(factoryDir, { withFileTypes: true })) {
+    if (!project.isDirectory()) continue;
+    const dir = join(factoryDir, project.name, "objectives", objectiveId);
+    const reportPath = resolve(dir, "report.md");
+    if (!reportPath.startsWith(`${allowedRoot}/`)) continue;
+    if (existsSync(reportPath)) return { objectiveId, markdown: readFileSync(reportPath, "utf8") };
+    if (existsSync(join(dir, "objective-state.json"))) {
+      let status = "active";
+      try { status = JSON.parse(readFileSync(join(dir, "objective-state.json"), "utf8")).status; } catch { /* ignore */ }
+      return { objectiveId, markdown: null, status };
+    }
+  }
+  return null;
+}
+
+// One task's evidence + timeline, for the report drill-down. Reuses the Learning
+// system's already-redacted, verdict-tagged extractor — read-only, never a path
+// outside the worktree (that guard is inside toTaskRecord's evidence reader).
+export function readTaskEvidence(root, taskId) {
+  for (const statePath of walkStateFiles(factoryRoot(root))) {
+    let state;
+    try { state = readState(statePath); } catch { continue; }
+    if (state?.task?.id !== taskId) continue;
+    const record = toTaskRecord(state, statePath, { attachEvidence: true });
+    return {
+      taskId,
+      status: state.status,
+      branch: state.branch || null,
+      blocker: record.blocker,
+      githubPublish: state.githubPublish || null,
+      stageOutcomes: record.stageOutcomes,
+      failedDispatches: record.failedDispatches,
+      retryByStage: record.retryByStage,
+      evidenceByStage: record.evidenceByStage,
+      events: (state.events || []).map((e) => ({ at: e.at, type: e.type, stage: e.stage || null, actor: e.actor || null, outcome: e.outcome || null })).reverse(),
     };
   }
   return null;
