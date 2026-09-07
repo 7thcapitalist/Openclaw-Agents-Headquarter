@@ -1,12 +1,13 @@
 import { execFile } from "child_process";
 import { promisify } from "util";
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "fs";
-import { dirname, join } from "path";
+import { basename, dirname, join } from "path";
 import { PROTOCOL_VERSION, computeDispatchPaths, failDispatch, ingestResult, markDispatchRunning, prepareDispatch, readResultFile } from "./openclaw-protocol.mjs";
 import { readState, writeState } from "./task-workflow.mjs";
 import { writeHandoff } from "./handoff.mjs";
 import { publishMergeReadyTask } from "./hq/github-publish.mjs";
 import { buildCompletionReport } from "./hq/completion-report.mjs";
+import { sanitizeExcerpt } from "./common/redact.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -20,21 +21,49 @@ export async function runOneStage({ hqRoot, statePath, agentIds = {}, maxAttempt
   if (prepared.status !== "dispatch") return prepared;
   markDispatchRunning({ statePath, dispatchId: prepared.dispatchId });
   const agentId = selectAgentId(prepared, agentIds);
+  const sessionKey = `agent:${agentId}:factory-${prepared.dispatchId}`;
   let response;
   try {
-    await execute({
+    const executed = await execute({
       agentId,
       messageFile: prepared.promptPath,
-      sessionKey: `agent:${agentId}:factory-${prepared.dispatchId}`,
+      sessionKey,
       cwd: prepared.cwd,
       dispatch: prepared,
     });
-    response = ingestResult({ statePath, result: readResultFile(prepared.resultPath), maxAttemptsPerStage });
-    if (response.status === "merge-ready") {
-      response.githubPublish = publishAndRecord({ hqRoot, statePath, publish });
+    if (!existsSync(prepared.resultPath)) {
+      const diagnostic = writeMissingResultDiagnostic({
+        worktree: prepared.cwd,
+        dispatchId: prepared.dispatchId,
+        stage: prepared.stage,
+        actor: prepared.actor,
+        sessionKey,
+        resultPath: prepared.resultPath,
+        stdout: executed?.stdout,
+        stderr: executed?.stderr,
+      });
+      response = failDispatch({ statePath, dispatchId: prepared.dispatchId, error: diagnostic.summary, maxAttemptsPerStage });
+    } else {
+      response = ingestResult({ statePath, result: readResultFile(prepared.resultPath), maxAttemptsPerStage });
+      if (response.status === "merge-ready") {
+        response.githubPublish = publishAndRecord({ hqRoot, statePath, publish });
+      }
     }
   } catch (error) {
-    response = failDispatch({ statePath, dispatchId: prepared.dispatchId, error: summarizeError(error), maxAttemptsPerStage });
+    const failure = existsSync(prepared.resultPath)
+      ? summarizeError(error)
+      : writeMissingResultDiagnostic({
+        worktree: prepared.cwd,
+        dispatchId: prepared.dispatchId,
+        stage: prepared.stage,
+        actor: prepared.actor,
+        sessionKey,
+        resultPath: prepared.resultPath,
+        stdout: error?.stdout,
+        stderr: error?.stderr,
+        reason: summarizeError(error),
+      }).summary;
+    response = failDispatch({ statePath, dispatchId: prepared.dispatchId, error: failure, maxAttemptsPerStage });
   }
   // A founder-readable completion report for every terminal or paused outcome —
   // successes and blockers alike. Rewritten (idempotent) each time the task
@@ -212,6 +241,58 @@ function synthesizeFailResult({ worktree, member, reason }) {
       evidence: [rel],
     }), "utf8");
   } catch { /* best effort — a missing file still routes as a failure downstream */ }
+}
+
+// Preserve the useful executor signal when a single-stage dispatch exits
+// without satisfying the result-file protocol. Like synthesizeFailResult(),
+// this is best effort: diagnostic persistence must never alter retry routing.
+function writeMissingResultDiagnostic({ worktree, dispatchId, stage, actor, sessionKey, resultPath, stdout, stderr, reason }) {
+  const rel = `evidence/${dispatchId}-missing-result.md`;
+  const out = redactTail(stdout);
+  const err = redactTail(stderr);
+  const cleanReason = reason ? sanitizeExcerpt(reason, { maxLength: 240 }).text : "";
+  const summary = `${stage} dispatch wrote no result file (session ${sessionKey}); redacted executor output captured at ${rel}.${cleanReason ? ` Reason: ${cleanReason}` : ""}`;
+  try {
+    mkdirSync(join(worktree, "evidence"), { recursive: true });
+    const lines = [
+      `# ${stage} dispatch wrote no result file`,
+      "",
+      `- dispatchId: ${dispatchId}`,
+      `- stage: ${stage}`,
+      `- actor: ${actor}`,
+      `- sessionKey: ${sessionKey}`,
+      `- expectedResultFile: ${basename(resultPath)}`,
+      cleanReason ? `- reason: ${cleanReason}` : null,
+      "",
+      "## Executor stdout (redacted, truncated)",
+      "",
+      "```",
+      out.text || "(empty)",
+      "```",
+      "",
+      "## Executor stderr (redacted, truncated)",
+      "",
+      "```",
+      err.text || "(empty)",
+      "```",
+      "",
+    ].filter((line) => line !== null);
+    writeFileSync(join(worktree, rel), lines.join("\n"), "utf8");
+    return { rel, summary };
+  } catch {
+    return { rel: null, summary: `${summary} (diagnostic artifact could not be written)` };
+  }
+}
+
+function redactTail(value) {
+  const raw = String(value ?? "");
+  const truncated = raw.length > 4000;
+  const clean = sanitizeExcerpt(raw.slice(-4000), { maxLength: 4000 });
+  return {
+    ...clean,
+    text: truncated ? `… ${clean.text}` : clean.text,
+    truncated: truncated || clean.truncated,
+  };
 }
 
 function summarizeError(error) {
