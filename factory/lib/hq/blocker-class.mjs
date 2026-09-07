@@ -25,6 +25,11 @@ const INFRA_FAIL_RE = new RegExp(
     "quota", "overloaded", "temporarily unavailable", "capacity",
     "model .*unavailable", "provider", "upstream",
     "spawn .*ENOENT", "killed", "SIGTERM", "SIGKILL",
+    // agent process never got off the ground / was lost with the host
+    "could not run", "could not start", "cannot start", "failed to start",
+    "start the cli", "unable to launch", "launch the cli",
+    "orphaned", "host restart", "no longer running",
+    "process (exited|died|was killed)",
   ].join("|"),
   "i",
 );

@@ -12,17 +12,20 @@ function hqRoot() {
   return root;
 }
 
-function writeTask(stateRoot, id, { status, blocker, autoRetries }) {
+function writeTask(stateRoot, id, { status, blocker, autoRetries, updatedAt, currentStage, currentDispatch }) {
   const dir = join(stateRoot, "proj", "tasks", id);
   mkdirSync(dir, { recursive: true });
+  const stage = currentStage || blocker?.stage || "release";
   const state = {
     version: 1, status,
     task: { id, project: "proj", risk: "low" },
     repo: "/tmp/proj", branch: `factory/${id}`, worktree: `/tmp/wt/${id}`,
-    currentStage: blocker?.stage || "release",
+    currentStage: stage,
     assignments: { product: "openclaw", architect: "claude", builder: "codex", reviewer: "claude", qa: "claude", security: "claude", release: "openclaw" },
-    stages: { release: { status: status === "blocked" ? "pending" : "pass" } },
+    stages: { [stage]: { status: status === "blocked" ? "pending" : "pass" } },
     dispatches: [], events: [],
+    ...(updatedAt ? { updatedAt } : {}),
+    ...(currentDispatch ? { currentDispatch } : {}),
     ...(blocker ? { blocker } : {}),
     ...(autoRetries != null ? { autoRetries } : {}),
   };
@@ -81,4 +84,40 @@ test("a second sweep bumps to 2; a fourth is refused", async () => {
   const second = await retryStuckTasks({ hqRoot: root, stateRoot, max: 3, runTask, execute: async () => {} });
   assert.equal(second.retried.length, 0);
   assert.ok(second.skipped.some((s) => s.taskId === "task-x"));
+});
+
+test("an `active` task orphaned by a host restart is revived; a fresh `active` task is left alone", async () => {
+  const root = hqRoot();
+  const stateRoot = join(root, "state");
+  const iso = (msAgo) => new Date(Date.now() - msAgo).toISOString();
+
+  const staleWithDispatch = writeTask(stateRoot, "task-stale-dispatch", {
+    status: "active", currentStage: "release", updatedAt: iso(120 * 60 * 1000),
+    currentDispatch: { id: "task-stale-dispatch-release-4", stage: "release", status: "running", startedAt: iso(120 * 60 * 1000) },
+  });
+  const stalePlain = writeTask(stateRoot, "task-stale-plain", {
+    status: "active", currentStage: "reviewer", updatedAt: iso(100 * 60 * 1000),
+  });
+  writeTask(stateRoot, "task-fresh", { status: "active", currentStage: "builder", updatedAt: iso(5 * 60 * 1000) });
+  writeTask(stateRoot, "task-notime", { status: "active", currentStage: "builder" }); // no updatedAt -> untouched
+
+  const driven = [];
+  const runTask = async ({ statePath }) => { driven.push(statePath); return { status: "merge-ready" }; };
+
+  const out = await retryStuckTasks({ hqRoot: root, stateRoot, max: 3, runTask, execute: async () => {} });
+
+  assert.deepEqual(driven.sort(), [stalePlain, staleWithDispatch].sort());
+  assert.equal(out.retried.length, 2);
+  assert.ok(out.retried.every((r) => /orphaned/.test(r.reason)));
+
+  // the stuck dispatch was cleared and the stage re-armed
+  const revived = JSON.parse(readFileSync(staleWithDispatch, "utf8"));
+  assert.equal(revived.currentDispatch, undefined);
+  assert.equal(revived.stages.release.status, "pending");
+  assert.equal(revived.autoRetries, 1);
+  assert.ok(revived.events.some((e) => e.type === "auto-retry" && /orphaned/.test(e.reason)));
+
+  // fresh + timestamp-less tasks were not touched
+  assert.ok(!driven.includes(join(stateRoot, "proj", "tasks", "task-fresh", "state.json")));
+  assert.equal(JSON.parse(readFileSync(join(stateRoot, "proj", "tasks", "task-notime", "state.json"), "utf8")).autoRetries, undefined);
 });

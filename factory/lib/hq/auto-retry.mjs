@@ -36,6 +36,7 @@ function readConfig(hqRoot) {
  * @param {string}   input.hqRoot        HQ root (for factory.config.json + runner)
  * @param {string}   input.stateRoot     directory to scan for state.json files
  * @param {number}  [input.max=3]        automatic attempts per task before it is left for the founder
+ * @param {number}  [input.staleActiveMs] an `active` task untouched this long is treated as orphaned by a host restart (default 90 min — longer than the 60 min dispatch hard-timeout, so a genuinely-running dispatch is never disturbed)
  * @param {Function}[input.execute]      injected agent executor (tests)
  * @param {Function}[input.runTask]      injected `runToTerminal` (tests)
  * @param {Function}[input.now]
@@ -46,6 +47,7 @@ export async function retryStuckTasks({
   hqRoot,
   stateRoot,
   max = 3,
+  staleActiveMs = 90 * 60 * 1000,
   execute = executeOpenClaw,
   runTask = runToTerminal,
   now = () => new Date().toISOString(),
@@ -62,34 +64,61 @@ export async function retryStuckTasks({
   const retried = [];
   const skipped = [];
 
+  const nowMs = () => Date.parse(now()) || Date.now();
+
   for (const statePath of files) {
     let state;
     try { state = readState(statePath); } catch { continue; }
-    if (state.status !== "blocked") continue;
-    if (classifyBlocker(state.blocker) !== "infra") continue;
+
+    // Two recoverable situations, both "no live runner owns this task":
+    //   1. blocked on an INFRA-class failure (transient agent/process error)
+    //   2. active but untouched for > staleActiveMs — its in-process runner
+    //      died with a host/dashboard restart, leaving a stuck dispatch.
+    let reason;
+    if (state.status === "blocked" && classifyBlocker(state.blocker) === "infra") {
+      reason = `infra failure at ${state.blocker?.stage}`;
+    } else if (state.status === "active") {
+      const updMs = Date.parse(state.updatedAt);
+      if (!updMs) continue; // no timestamp — can't judge staleness, leave it alone
+      const ageMs = nowMs() - updMs;
+      if (ageMs > staleActiveMs) reason = `orphaned ${Math.round(ageMs / 60000)}m ago (host restart)`;
+      else continue;
+    } else {
+      continue;
+    }
 
     const attempts = state.autoRetries || 0;
     if (attempts >= max) { skipped.push({ taskId: state.task?.id, statePath, reason: "auto-retry budget exhausted", attempts }); continue; }
 
     const at = now();
-    let resumed;
+    let revived;
     try {
-      resumed = resumeState(state, at);
+      if (state.status === "blocked") {
+        revived = resumeState(state, at);
+      } else {
+        // Orphaned active task: drop the stuck dispatch and re-arm the current
+        // stage so the runner issues a fresh one.
+        revived = structuredClone(state);
+        delete revived.currentDispatch;
+        if (revived.currentStage) revived.stages[revived.currentStage] = { status: "pending" };
+        revived.updatedAt = at;
+        revived.events.push({ at, type: "task-resumed", stage: revived.currentStage, actor: "system" });
+      }
     } catch (error) {
       skipped.push({ taskId: state.task?.id, statePath, reason: `cannot resume: ${error.message || error}` });
       continue;
     }
-    resumed.autoRetries = attempts + 1;
-    resumed.events.push({ at, type: "auto-retry", stage: resumed.currentStage, actor: "system", attempt: resumed.autoRetries, of: max });
-    writeState(statePath, resumed);
-    log(`[auto-retry] ${state.task?.id}: infra failure at ${state.blocker?.stage}, attempt ${resumed.autoRetries}/${max}`);
+    revived.autoRetries = attempts + 1;
+    revived.events.push({ at, type: "auto-retry", stage: revived.currentStage, actor: "system", attempt: revived.autoRetries, of: max, reason });
+    writeState(statePath, revived);
+    log(`[auto-retry] ${state.task?.id}: ${reason}, attempt ${revived.autoRetries}/${max}`);
 
     try {
       const res = await runTask({ hqRoot, statePath, execute, ...runnerOpts });
-      retried.push({ taskId: state.task?.id, stage: state.blocker?.stage, attempt: resumed.autoRetries, status: res.status });
+      retried.push({ taskId: state.task?.id, stage: revived.currentStage, attempt: revived.autoRetries, status: res.status, reason });
       log(`[auto-retry] ${state.task?.id}: now ${res.status}`);
     } catch (error) {
-      retried.push({ taskId: state.task?.id, stage: state.blocker?.stage, attempt: resumed.autoRetries, error: String(error.message || error) });
+      retried.push({ taskId: state.task?.id, stage: revived.currentStage, attempt: revived.autoRetries, error: String(error.message || error), reason });
       log(`[auto-retry] ${state.task?.id}: threw ${error.message || error}`);
     }
   }
