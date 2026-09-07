@@ -71,6 +71,7 @@ import {
   recordQuestion,
   resolveFounderDecision,
   resolveProjectRepo,
+  resolveRepoInput,
   saveFounderJob,
   setProjectPaused,
 } from "./lib/founderControlPlane.mjs";
@@ -268,7 +269,7 @@ app.post("/api/founder/projects", (req, res) => {
       currentGoals: [], keyMetrics: [], mainWorkflows: [], existingAssets: [], currentBlockers: [],
       relatedAgents: [], approvalRules: [], nextRecommendedActions: [], projectCEO: "chief-of-staff",
       mainMetric: "Founder-defined outcome", bottleneck: "None recorded", latestReport: "No report yet",
-      repoPath: req.body?.repoPath ? resolve(String(req.body.repoPath)) : null,
+      repoPath: resolveRepoInput(ROOT, req.body?.repoPath),
     });
     res.status(201).json({ project: writeProject(ROOT, id, project) });
   } catch (e) {
@@ -289,24 +290,30 @@ app.post("/api/founder/projects/:id/:action", (req, res) => {
   }
 });
 
-// Resolve the repo path: explicit body value, else the registered project's
-// path (factory/projects.json) — so the founder can launch work by project name.
+// Resolve the repo path: an explicit body value (normalized against the HQ root,
+// so "." / a relative path / "~" all behave like a registered project's `repo`),
+// else the registered project's path (factory/projects.json) — so the founder
+// can launch work by project name.
 function resolveLaunchRepo(req, projectId) {
-  if (req.body?.repo) return resolve(String(req.body.repo));
-  return resolveProjectRepo(ROOT, projectId);
+  return resolveRepoInput(ROOT, req.body?.repo) || resolveProjectRepo(ROOT, projectId);
 }
 
 app.post("/api/founder/tasks", (req, res) => {
-  const objective = String(req.body?.objective || "").trim();
-  const projectId = String(req.body?.projectId || "").trim();
-  const repo = resolveLaunchRepo(req, projectId) || "";
-  if (!objective || !repo || !projectId) return res.status(400).json({ error: "objective and projectId are required (repo is auto-resolved for registered projects)." });
-  if (isProjectPaused(ROOT, projectId)) return res.status(409).json({ error: "Resume this project before starting a task." });
-  if (!existsSync(join(repo, ".git"))) return res.status(400).json({ error: `Not a git working tree: ${repo}` });
-  const jobId = `founder-${Date.now().toString(36)}`;
-  const job = { id: jobId, kind: "task", projectId, objective, repo, status: "starting", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
-  saveFounderJob(ROOT, job);
-  handleFactoryRequest({ version: 1, action: "start", repo, objective, project: projectId, issue: req.body?.issue || undefined })
+  let job;
+  try {
+    const objective = String(req.body?.objective || "").trim();
+    const projectId = String(req.body?.projectId || "").trim();
+    const repo = resolveLaunchRepo(req, projectId) || "";
+    if (!objective || !repo || !projectId) return res.status(400).json({ error: "objective and projectId are required (repo is auto-resolved for registered projects)." });
+    if (isProjectPaused(ROOT, projectId)) return res.status(409).json({ error: "Resume this project before starting a task." });
+    if (!existsSync(join(repo, ".git"))) return res.status(400).json({ error: `Not a git working tree: ${repo}` });
+    const jobId = `founder-${Date.now().toString(36)}`;
+    job = { id: jobId, kind: "task", projectId, objective, repo, status: "starting", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+    saveFounderJob(ROOT, job);
+  } catch (e) {
+    return res.status(500).json({ error: String(e.message || e) });
+  }
+  handleFactoryRequest({ version: 1, action: "start", repo: job.repo, objective: job.objective, project: job.projectId, issue: req.body?.issue || undefined })
     .then((result) => saveFounderJob(ROOT, Object.assign(job, { status: result.status, result, updatedAt: new Date().toISOString() })))
     .catch((error) => saveFounderJob(ROOT, Object.assign(job, { status: "error", error: error.message || String(error), updatedAt: new Date().toISOString() })));
   res.status(202).json({ job });
@@ -316,19 +323,25 @@ app.post("/api/founder/tasks", (req, res) => {
 // independent parts concurrently. Detached, tracked as a founder job — same
 // pattern as /api/founder/tasks. Reuses factory/lib/objective/.
 app.post("/api/founder/objectives", async (req, res) => {
-  const objective = String(req.body?.objective || "").trim();
-  const projectId = String(req.body?.projectId || "").trim();
-  const repo = resolveLaunchRepo(req, projectId) || "";
-  if (!objective || !projectId || !repo) return res.status(400).json({ error: "objective and projectId are required (repo is auto-resolved for registered projects)." });
-  if (isProjectPaused(ROOT, projectId)) return res.status(409).json({ error: "Resume this project before starting an objective." });
-  if (!existsSync(join(repo, ".git"))) return res.status(400).json({ error: `Not a git working tree: ${repo}` });
-
-  const jobId = `founder-${Date.now().toString(36)}`;
-  const job = { id: jobId, kind: "objective", projectId, objective, repo, status: "decomposing", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
-  saveFounderJob(ROOT, job);
-
+  let job;
   let cfg = {};
-  try { cfg = JSON.parse(readFileSync(join(ROOT, "factory", "factory.config.json"), "utf8")); } catch { /* defaults */ }
+  try {
+    const objective = String(req.body?.objective || "").trim();
+    const projectId = String(req.body?.projectId || "").trim();
+    const repo = resolveLaunchRepo(req, projectId) || "";
+    if (!objective || !projectId || !repo) return res.status(400).json({ error: "objective and projectId are required (repo is auto-resolved for registered projects)." });
+    if (isProjectPaused(ROOT, projectId)) return res.status(409).json({ error: "Resume this project before starting an objective." });
+    if (!existsSync(join(repo, ".git"))) return res.status(400).json({ error: `Not a git working tree: ${repo}` });
+
+    const jobId = `founder-${Date.now().toString(36)}`;
+    job = { id: jobId, kind: "objective", projectId, objective, repo, status: "decomposing", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+    saveFounderJob(ROOT, job);
+
+    try { cfg = JSON.parse(readFileSync(join(ROOT, "factory", "factory.config.json"), "utf8")); } catch { /* defaults */ }
+  } catch (e) {
+    return res.status(500).json({ error: String(e.message || e) });
+  }
+  const { objective, projectId, repo } = job;
 
   (async () => {
     try {
