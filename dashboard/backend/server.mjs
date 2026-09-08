@@ -76,6 +76,7 @@ import {
   resolveProjectRepo,
   resolveRepoInput,
   saveFounderJob,
+  setInboxItemDismissed,
   setObjectiveArchived,
   setProjectPaused,
 } from "./lib/founderControlPlane.mjs";
@@ -486,6 +487,21 @@ app.post("/api/founder/objectives/:id/:action", (req, res) => {
     if (!/^obj-[a-z0-9-]+$/i.test(req.params.id)) return res.status(400).json({ error: "Invalid objective id." });
     if (!findObjectiveStatePath(ROOT, req.params.id)) return res.status(404).json({ error: "No such objective." });
     res.json(setObjectiveArchived(ROOT, req.params.id, action === "archive", { reason: req.body?.reason }));
+  } catch (e) {
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+// Founder presentation control: dismiss a single Founder Inbox entry from
+// "Needs you" (it moves to the "Dismissed" fold), or restore it. Writes only
+// the dismissedInbox flag in control-plane.json — the underlying decision,
+// approval, or blocked task is never resolved, and the action is reversible.
+app.post("/api/founder/inbox/dismiss", (req, res) => {
+  try {
+    const id = String(req.body?.id || "").trim();
+    if (!/^[A-Za-z0-9][A-Za-z0-9:_.-]{0,200}$/.test(id)) return res.status(400).json({ error: "Invalid inbox item id." });
+    const restore = req.body?.restore === true;
+    res.json(setInboxItemDismissed(ROOT, id, !restore, { reason: req.body?.reason }));
   } catch (e) {
     res.status(400).json({ error: String(e.message || e) });
   }

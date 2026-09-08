@@ -11,10 +11,12 @@ import {
   discoverFactoryTasks,
   findObjectiveStatePath,
   listArchivedObjectives,
+  listDismissedInboxItems,
   listFounderJobs,
   objectiveLifecycle,
   resolveFounderDecision,
   saveFounderJob,
+  setInboxItemDismissed,
   setObjectiveArchived,
   setProjectPaused,
 } from "../../dashboard/backend/lib/founderControlPlane.mjs";
@@ -234,6 +236,43 @@ test("founder inbox: a terminally failed task is a 'blocked' item, not a decisio
   assert.equal(overview.inbox[0].action, "review-blocked-task");
   assert.match(overview.inbox[0].title, /qa failed/);
   assert.equal(overview.decisions.length, 0, "a fail is not a decision");
+});
+
+test("founder inbox: dismissing an entry moves it to dismissedInbox and is reversible", () => {
+  const { root, statePath } = fixture();
+  registerIntelligence(root);
+  const state = JSON.parse(readFileSync(statePath, "utf8"));
+  state.status = "blocked";
+  state.currentStage = "qa";
+  state.blocker = { stage: "qa", outcome: "fail", summary: "acceptance criterion 2 cannot pass", actor: "qa", at: "2026-09-05T12:00:00.000Z" };
+  state.dispatches = [
+    { stage: "qa", status: "failed" }, { stage: "qa", status: "failed" }, { stage: "qa", status: "failed" },
+  ];
+  writeState(statePath, state);
+
+  const before = buildFounderOverview(root, [{ id: "startup-ops", name: "Startup Ops" }]);
+  assert.equal(before.inbox.length, 1);
+  const itemId = before.inbox[0].id;
+  assert.deepEqual(before.dismissedInbox, []);
+
+  const res = setInboxItemDismissed(root, itemId, true, { reason: "known — tracked elsewhere" });
+  assert.equal(res.dismissed, true);
+  assert.ok(res.dismissedAt);
+  assert.ok(listDismissedInboxItems(root)[itemId], "flag persisted to control-plane.json");
+
+  const dismissed = buildFounderOverview(root, [{ id: "startup-ops", name: "Startup Ops" }]);
+  assert.equal(dismissed.inbox.length, 0, "the entry left Needs you");
+  assert.equal(dismissed.dismissedInbox.length, 1);
+  assert.equal(dismissed.dismissedInbox[0].id, itemId);
+  assert.equal(dismissed.dismissedInbox[0].dismissed, true);
+  assert.ok(dismissed.dismissedInbox[0].dismissedAt);
+  assert.equal(JSON.parse(readFileSync(statePath, "utf8")).status, "blocked", "dismissing does not unblock the task");
+
+  setInboxItemDismissed(root, itemId, false);
+  const restored = buildFounderOverview(root, [{ id: "startup-ops", name: "Startup Ops" }]);
+  assert.equal(restored.inbox.length, 1, "restored to Needs you");
+  assert.deepEqual(restored.dismissedInbox, []);
+  assert.equal(listDismissedInboxItems(root)[itemId], undefined);
 });
 
 test("task view carries derived elapsed / last-handoff / last-result", () => {
