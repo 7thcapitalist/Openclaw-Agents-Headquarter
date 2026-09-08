@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "fs";
 import { dirname, join, resolve } from "path";
 import { createHash, randomUUID, verify as verifySignature } from "crypto";
+import { classifyBlocker } from "./hq/blocker-class.mjs";
 
 export const STAGES = [
   "product",
@@ -160,11 +161,21 @@ export function resumeState(state, now = new Date().toISOString()) {
   return next;
 }
 
+const REVIEW_STAGES = new Set(["reviewer", "qa", "security"]);
+
 export function routeStageFailure(state, { failedStage, targetStage, maxAttemptsPerStage = 3, now = new Date().toISOString() }) {
   if (state.blocker?.outcome !== "fail") return state;
   const attempts = (state.dispatches || []).filter((item) => item.stage === failedStage).length;
   if (attempts >= maxAttemptsPerStage) return state;
-  const target = targetStage || (new Set(["reviewer", "qa", "security"]).has(failedStage) ? "builder" : failedStage);
+  // A review-stage FAIL normally routes back to the builder so a real defect
+  // gets fixed. But when the failure is infrastructural (the agent could not
+  // run, produced no result file, timed out) there is nothing for the builder
+  // to fix — re-running builder + the whole review group for a dropped model
+  // call is pure waste. Retry the failed review stage in place instead. A real
+  // FAIL verdict still routes to the builder.
+  const infra = REVIEW_STAGES.has(failedStage) && classifyBlocker(state.blocker) === "infra";
+  const target = targetStage
+    || (REVIEW_STAGES.has(failedStage) && !infra ? "builder" : failedStage);
   const next = structuredClone(state);
   const targetIndex = STAGES.indexOf(target);
   for (const stage of STAGES.slice(targetIndex)) next.stages[stage] = { status: "pending" };
@@ -172,7 +183,7 @@ export function routeStageFailure(state, { failedStage, targetStage, maxAttempts
   next.currentStage = target;
   delete next.blocker;
   next.updatedAt = now;
-  next.events.push({ at: now, type: "failure-routed", fromStage: failedStage, stage: target, actor: next.assignments[target], attempt: attempts + 1 });
+  next.events.push({ at: now, type: "failure-routed", fromStage: failedStage, stage: target, actor: next.assignments[target], attempt: attempts + 1, ...(infra ? { infra: true } : {}) });
   return next;
 }
 

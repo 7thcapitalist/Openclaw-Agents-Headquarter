@@ -132,7 +132,7 @@ test("runConcurrentGroupIfReady returns null when not parked at a group head", a
   assert.equal(out, null);
 });
 
-test("a review member whose agent throws is routed with a legible reason, not an opaque missing-file error", async () => {
+test("a review member whose agent fails on infra retries in place with a legible reason, no rebuild", async () => {
   const { statePath } = makeFixture();
   await advanceToStage(statePath, makeExecute(), "reviewer");
 
@@ -143,7 +143,11 @@ test("a review member whose agent throws is routed with a legible reason, not an
   const response = await runConcurrentGroupIfReady({ hqRoot, statePath, execute: flaky });
   assert.equal(response.status, "active");
   const state = readState(statePath);
-  assert.equal(state.currentStage, "builder", "the thrown qa member routed the task back to builder");
+  // Infra failure ("Could not start the CLI") retries the review stage in
+  // place — there is nothing for the builder to fix, so no rebuild.
+  assert.equal(state.currentStage, "qa", "an infra failure retries qa in place, not a full rebuild");
+  const routed = state.events.filter((e) => e.type === "failure-routed").at(-1);
+  assert.equal(routed.infra, true, "the routing is marked infra");
   const qaDispatch = state.dispatches.filter((d) => d.stage === "qa").at(-1);
   assert.match(qaDispatch.summary || "", /could not run|Could not start the CLI/i, "the failure reason is carried, not swallowed");
 });
