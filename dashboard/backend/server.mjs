@@ -349,7 +349,7 @@ app.post("/api/founder/objectives", async (req, res) => {
 
   (async () => {
     try {
-      const graph = await decomposeObjective({ hqRoot: ROOT, objective, project: projectId, repo });
+      const graph = await decomposeObjective({ hqRoot: ROOT, objective, project: projectId, repo, decomposeAgentId: cfg.openclawIntegration?.agentIds?.decompose });
       const dir = join(defaultStateRoot(ROOT, repo), "objectives", graph.objectiveId);
       mkdirSync(dir, { recursive: true });
       const objectivePath = join(dir, "objective-state.json");

@@ -1,6 +1,6 @@
 // Turn one founder objective into a dependency-aware task graph.
 //
-// Chief of Staff (the `main` OpenClaw agent) is asked, in ONE call, to split the
+// A configured planning agent is asked, in ONE call, to split the
 // objective into build sub-tasks with explicit dependencies. Every sub-task is
 // validated as a real factory task contract; the graph is validated as a DAG.
 // The orchestrator then runs it. An integration node that depends on all build
@@ -21,13 +21,21 @@ const BUILD_ROLES = new Set(["backend-builder", "frontend-builder"]);
 const WORK_TYPES = new Set(["ui", "backend", "architecture", "bugfix", "research", "ops"]);
 const RISKS = new Set(["low", "medium", "high"]);
 
-const HARNESS_FOR_ROLE = { "backend-builder": "codex", "frontend-builder": "cursor" };
+const HARNESS_FOR_ROLE = { "backend-builder": "codex", "frontend-builder": "frontend" };
 
-export async function executeDecomposition({ prompt, repo, objectiveId }) {
-  const { stdout } = await execFileAsync("openclaw", [
-    "agent", "--agent", "main", "--session-key", `agent:main:factory-decompose-${objectiveId}`,
-    "--message", prompt, "--json", "--timeout", "900",
-  ], { cwd: resolve(repo), timeout: 15 * 60 * 1000, maxBuffer: 8 * 1024 * 1024 });
+export function buildDecomposeInvocation({ agentId = "main", objectiveId, prompt }) {
+  const sessionKey = `agent:${agentId}:factory-decompose-${objectiveId}`;
+  return {
+    bin: "openclaw",
+    sessionKey,
+    args: ["agent", "--agent", agentId, "--session-key", sessionKey, "--message", prompt, "--json", "--timeout", "900"],
+  };
+}
+
+export async function executeDecomposition({ prompt, repo, objectiveId, agentId = "main" }) {
+  const invocation = buildDecomposeInvocation({ agentId, objectiveId, prompt });
+  const { stdout } = await execFileAsync(invocation.bin, invocation.args,
+    { cwd: resolve(repo), timeout: 15 * 60 * 1000, maxBuffer: 8 * 1024 * 1024 });
   const envelope = JSON.parse(stdout);
   if (envelope.status !== "ok") throw new Error(`decomposition call failed: ${envelope.summary || envelope.status}`);
   const text = envelope.result?.payloads?.map((p) => p.text).filter(Boolean).join("\n");
@@ -163,14 +171,14 @@ function normalise({ parsed, objective, project, repo, objectiveId, now }) {
   };
 }
 
-export async function decomposeObjective({ hqRoot, objective, project, repo, execute = executeDecomposition, now = () => new Date().toISOString() }) {
+export async function decomposeObjective({ hqRoot, objective, project, repo, decomposeAgentId = "main", execute = executeDecomposition, now = () => new Date().toISOString() }) {
   if (!objective || !String(objective).trim()) throw new Error("decompose requires an objective");
   if (!project || !String(project).trim()) throw new Error("decompose requires a project key");
   if (!repo) throw new Error("decompose requires a repo path");
   const objectiveId = `obj-${randomUUID().slice(0, 8)}`;
   const resolvedRepo = resolve(repo);
   const prompt = buildPrompt({ objective, project, repo: resolvedRepo, objectiveId });
-  const raw = await execute({ prompt, repo: resolvedRepo, objectiveId });
+  const raw = await execute({ prompt, repo: resolvedRepo, objectiveId, agentId: decomposeAgentId });
   return normalise({ parsed: extractJsonObject(raw), objective, project, repo: resolvedRepo, objectiveId, now });
 }
 

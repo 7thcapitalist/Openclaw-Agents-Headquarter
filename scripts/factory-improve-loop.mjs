@@ -95,14 +95,14 @@ export function assessRound(result) {
 
 async function runRound({ project, repo, dryRun }) {
   const objective = readFileSync(DIRECTIVE_PATH, "utf8").trim();
-  const obj = await decomposeObjective({ hqRoot: HQ_ROOT, objective, project, repo });
+  const cfg = JSON.parse(readFileSync(join(HQ_ROOT, "factory", "factory.config.json"), "utf8"));
+  const obj = await decomposeObjective({ hqRoot: HQ_ROOT, objective, project, repo, decomposeAgentId: cfg.openclawIntegration?.agentIds?.decompose });
   const dir = join(defaultStateRoot(HQ_ROOT, repo), "objectives", obj.objectiveId);
   mkdirSync(dir, { recursive: true });
   const objectivePath = join(dir, "objective-state.json");
   writeFileSync(objectivePath, `${JSON.stringify(obj, null, 2)}\n`);
   if (dryRun) return { objectiveId: obj.objectiveId, status: "dry-run", nodeCount: Object.keys(obj.nodes).length };
 
-  const cfg = JSON.parse(readFileSync(join(HQ_ROOT, "factory", "factory.config.json"), "utf8"));
   const result = await runObjective({
     hqRoot: HQ_ROOT,
     objectivePath,

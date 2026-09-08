@@ -388,7 +388,7 @@ reality have already diverged once.
 
 ## PART 3 — Agent reality (roles, not models)
 
-Claude, Codex, Cursor, and OpenClaw are **harnesses** — the model/tool that
+Claude, Codex, and OpenClaw are active **harnesses** — the model/tool that
 executes a role. The organizational roles below are what actually exists in
 `factory/agents.json` (uncommitted version, described in §1.15 — this is the
 version currently on disk and is more accurate than what's in `main`).
@@ -399,7 +399,7 @@ version currently on disk and is more accurate than what's in `main`).
 | Product | OpenClaw (`product`) | Normalize outcome + acceptance criteria | per-task | idle | Chief of Staff | task contract draft | normalized outcome | `factory/prompts/product.md` | **Yes** — real OpenClaw agent id `product` exists on this machine (verified) and is dispatched by the pipeline | Only via task-state events, once a task runs |
 | Architect | Claude | Technical design, challenge non-trivial architecture, read-mostly | per-task | idle | Chief of Staff | product-normalized outcome | design decision, interfaces, rollback | `factory/prompts/architect.md` | Yes (agent id `architect` verified live) | Same as above |
 | Backend/general Builder | Codex | Primary implementation, tests, branch, PR | per-task | idle | Chief of Staff | architect design | code + PR | `factory/prompts/builder.md` | Yes (agent id `backend-builder` verified live) | Same as above |
-| Frontend/UI Builder | Cursor | UI implementation, visual iteration; also founder's own IDE | per-task | idle | Chief of Staff | design + acceptance criteria | UI code + PR | `factory/prompts/builder.md` (shared) | Yes (agent id `frontend-builder` verified live) | Same as above |
+| Frontend/UI Builder | Codex | UI implementation, responsive checks, and visual evidence; Cursor remains the founder's IDE and a planned harness | per-task | idle | Chief of Staff | design + acceptance criteria | UI code + PR | `factory/prompts/builder.md` (shared) | Yes (agent id `frontend-builder` verified live) | Same as above |
 | Reviewer | "multiple" (always a different model from the builder) | Independent correctness/security/product review | per-task | idle | Chief of Staff | PR diff | review findings | `factory/prompts/reviewer.md` | Yes (agent id `reviewer` verified live) | Same as above |
 | QA | "multiple" (different harness from builder) | Verify acceptance criteria, attempt failure cases | per-task | idle | Chief of Staff | build + acceptance criteria | evidence | `factory/prompts/qa.md` | Yes (agent id `qa` verified live) | Same as above |
 | Security | Claude | Secret exposure, permissions, injection, privacy gate | per-task | idle | Chief of Staff | full diff | pass/fail + findings | `factory/prompts/security.md` | Yes (agent id `security` verified live) | Same as above |
