@@ -3,6 +3,7 @@ import { promisify } from "util";
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "fs";
 import { basename, dirname, join } from "path";
 import { PROTOCOL_VERSION, computeDispatchPaths, failDispatch, ingestResult, markDispatchRunning, prepareDispatch, readResultFile } from "./openclaw-protocol.mjs";
+import { parseAgentMeta } from "./hq/agent-meta.mjs";
 import { readState, writeState } from "./task-workflow.mjs";
 import { writeHandoff } from "./handoff.mjs";
 import { publishMergeReadyTask } from "./hq/github-publish.mjs";
@@ -16,13 +17,14 @@ const execFileAsync = promisify(execFile);
 // not matter because the engine still applies them one at a time.
 export const DEFAULT_CONCURRENT_GROUPS = [["reviewer", "qa", "security"]];
 
-export async function runOneStage({ hqRoot, statePath, agentIds = {}, maxAttemptsPerStage = 3, execute = executeOpenClaw, publish = publishMergeReadyTask }) {
+export async function runOneStage({ hqRoot, statePath, agentIds = {}, maxAttemptsPerStage = 3, execute = executeOpenClaw, publish = publishMergeReadyTask, agentMetaByDispatchId = null }) {
   const prepared = prepareDispatch({ hqRoot, statePath });
   if (prepared.status !== "dispatch") return prepared;
   markDispatchRunning({ statePath, dispatchId: prepared.dispatchId });
   const agentId = selectAgentId(prepared, agentIds);
   const sessionKey = `agent:${agentId}:factory-${prepared.dispatchId}`;
   let response;
+  const startedAt = Date.now();
   try {
     const executed = await execute({
       agentId,
@@ -31,6 +33,9 @@ export async function runOneStage({ hqRoot, statePath, agentIds = {}, maxAttempt
       cwd: prepared.cwd,
       dispatch: prepared,
     });
+    const agentMeta = parseAgentMeta(executed, { durationMsFallback: Date.now() - startedAt })
+      || agentMetaByDispatchId?.get(prepared.dispatchId)
+      || null;
     if (!existsSync(prepared.resultPath)) {
       const diagnostic = writeMissingResultDiagnostic({
         worktree: prepared.cwd,
@@ -44,12 +49,15 @@ export async function runOneStage({ hqRoot, statePath, agentIds = {}, maxAttempt
       });
       response = failDispatch({ statePath, dispatchId: prepared.dispatchId, error: diagnostic.summary, maxAttemptsPerStage });
     } else {
-      response = ingestResult({ statePath, result: readResultFile(prepared.resultPath), maxAttemptsPerStage });
+      response = ingestResult({ statePath, result: readResultFile(prepared.resultPath), agentMeta, maxAttemptsPerStage });
       if (response.status === "merge-ready") {
         response.githubPublish = publishAndRecord({ hqRoot, statePath, publish });
       }
     }
   } catch (error) {
+    const agentMeta = parseAgentMeta(error, { durationMsFallback: Date.now() - startedAt })
+      || agentMetaByDispatchId?.get(prepared.dispatchId)
+      || null;
     const failure = existsSync(prepared.resultPath)
       ? summarizeError(error)
       : writeMissingResultDiagnostic({
@@ -63,7 +71,15 @@ export async function runOneStage({ hqRoot, statePath, agentIds = {}, maxAttempt
         stderr: error?.stderr,
         reason: summarizeError(error),
       }).summary;
-    response = failDispatch({ statePath, dispatchId: prepared.dispatchId, error: failure, maxAttemptsPerStage });
+    if (existsSync(prepared.resultPath)) {
+      try {
+        response = ingestResult({ statePath, result: readResultFile(prepared.resultPath), agentMeta, maxAttemptsPerStage });
+      } catch (ingestError) {
+        response = failDispatch({ statePath, dispatchId: prepared.dispatchId, error: summarizeError(ingestError), maxAttemptsPerStage });
+      }
+    } else {
+      response = failDispatch({ statePath, dispatchId: prepared.dispatchId, error: failure, maxAttemptsPerStage });
+    }
   }
   // A founder-readable completion report for every terminal or paused outcome —
   // successes and blockers alike. Rewritten (idempotent) each time the task
@@ -150,29 +166,42 @@ export async function runConcurrentGroupIfReady({ hqRoot, statePath, agentIds = 
     const promptPath = writeHandoff({ hqRoot, statePath, state, resultPath, dispatchId, stage });
     return { stage, actor, dispatchId, resultPath, promptPath, agentId };
   });
+  const agentMetaByDispatchId = new Map();
 
   // The expensive part, concurrent. If a member's agent throws OR leaves no
   // result file, synthesize a `fail` result carrying the real reason so the
   // engine routes it as a normal retry with a legible message — parity with the
   // single-stage `failDispatch` path, instead of an opaque "did not write its
   // result file".
-  const settled = await Promise.allSettled(members.map((m) => execute({
-    agentId: m.agentId,
-    messageFile: m.promptPath,
-    sessionKey: `agent:${m.agentId}:factory-${m.dispatchId}`,
-    cwd: state.worktree,
-    dispatch: {
-      version: PROTOCOL_VERSION,
-      status: "dispatch",
-      taskId: state.task.id,
-      dispatchId: m.dispatchId,
-      stage: m.stage,
-      actor: m.actor,
-      cwd: state.worktree,
-      promptPath: m.promptPath,
-      resultPath: m.resultPath,
-    },
-  })));
+  const settled = await Promise.allSettled(members.map(async (m) => {
+    const startedAt = Date.now();
+    try {
+      const executed = await execute({
+        agentId: m.agentId,
+        messageFile: m.promptPath,
+        sessionKey: `agent:${m.agentId}:factory-${m.dispatchId}`,
+        cwd: state.worktree,
+        dispatch: {
+          version: PROTOCOL_VERSION,
+          status: "dispatch",
+          taskId: state.task.id,
+          dispatchId: m.dispatchId,
+          stage: m.stage,
+          actor: m.actor,
+          cwd: state.worktree,
+          promptPath: m.promptPath,
+          resultPath: m.resultPath,
+        },
+      });
+      const meta = parseAgentMeta(executed, { durationMsFallback: Date.now() - startedAt });
+      if (meta) agentMetaByDispatchId.set(m.dispatchId, meta);
+      return executed;
+    } catch (error) {
+      const meta = parseAgentMeta(error, { durationMsFallback: Date.now() - startedAt });
+      if (meta) agentMetaByDispatchId.set(m.dispatchId, meta);
+      throw error;
+    }
+  }));
   for (let i = 0; i < members.length; i += 1) {
     const m = members[i];
     const rejected = settled[i].status === "rejected";
@@ -190,7 +219,7 @@ export async function runConcurrentGroupIfReady({ hqRoot, statePath, agentIds = 
   const applied = new Set();
   let response;
   for (const m of members) {
-    response = await runOneStage({ hqRoot, statePath, agentIds, maxAttemptsPerStage, execute: noop, publish });
+    response = await runOneStage({ hqRoot, statePath, agentIds, maxAttemptsPerStage, execute: noop, publish, agentMetaByDispatchId });
     applied.add(m.stage);
     if (readState(statePath).stages?.[m.stage]?.status !== "pass") break; // failed → routed away
   }
