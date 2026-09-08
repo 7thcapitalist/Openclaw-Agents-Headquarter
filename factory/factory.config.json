@@ -48,6 +48,10 @@
     "evidenceRetentionDays": 90,
     "patternThreshold": 2
   },
+  "deploy": {
+    "defaultProvider": "vercel",
+    "providers": ["vercel", "none"]
+  },
   "pipeline": [
     "product",
     "architect",

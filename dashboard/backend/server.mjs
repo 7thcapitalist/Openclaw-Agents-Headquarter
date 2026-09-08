@@ -99,6 +99,7 @@ import { decomposeObjective } from "../../factory/lib/objective/decompose.mjs";
 import { runObjective } from "../../factory/lib/objective/orchestrator.mjs";
 import { founderApprovalSetupBlocker } from "../../factory/lib/hq/blocker-class.mjs";
 import { defaultStateRoot } from "../../factory/lib/natural-language-intake.mjs";
+import { readDeploymentStatus } from "../../factory/lib/deploy/status.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const execFileAsync = promisify(execFile);
@@ -790,6 +791,14 @@ app.get("/api/hq/projects/:id", (req, res) => {
     const project = readProject(ROOT, req.params.id);
     if (!project) return res.status(404).json({ error: "Not found" });
     res.json({ project });
+  } catch (e) {
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+app.get("/api/hq/projects/:id/deployment", (req, res) => {
+  try {
+    res.json(readDeploymentStatus({ hqRoot: ROOT, projectKey: req.params.id }));
   } catch (e) {
     res.status(400).json({ error: String(e.message || e) });
   }

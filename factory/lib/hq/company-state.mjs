@@ -17,6 +17,7 @@ import { readHqConfig } from "./config.mjs";
 import { readRepoAwareness, summariseRepoAwareness } from "./github.mjs";
 import { readOpenclawRuntime, readOpenclawActivity, reconcileRoster } from "./runtime.mjs";
 import { discoverProjects } from "./discovery.mjs";
+import { readDeploymentStatus } from "../deploy/status.mjs";
 
 const FOUNDER = { name: "João Vitor", headquarters: "OpenClaw Agents Headquarter" };
 
@@ -106,6 +107,11 @@ export async function buildCompanyState({
   // ---- final project rows (company projects only — never the Headquarters) ----
   const projects = companyProjects.map((p) => {
     const projectTasks = tasksByProject.get(p.key) || [];
+    const deployment = readDeploymentStatus({
+      hqRoot,
+      projectKey: p.key,
+      onError: (error) => warnings.push({ code: `deployment-status-failed:${p.key}`, message: error.message }),
+    });
     return {
       key: p.key,
       name: p.name,
@@ -128,6 +134,7 @@ export async function buildCompanyState({
       taskCount: projectTasks.length,
       externalSummary: externalByKey.get(p.key)?.summary || null,
       intelligenceWarnings: p.intelligence?.warnings || [],
+      deployment,
       // Full detail for a single-project view — the same data already
       // resolved above, not a second fetch or a second source of truth.
       intelligence: p.intelligence || null,
