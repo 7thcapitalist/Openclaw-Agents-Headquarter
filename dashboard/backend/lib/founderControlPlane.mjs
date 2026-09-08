@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "fs";
+import { openSync, closeSync, unlinkSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "fs";
 import { basename, dirname, join, resolve } from "path";
 import { homedir } from "os";
 import { readState, resumeState, writeState } from "../../../factory/lib/task-workflow.mjs";
@@ -256,6 +256,8 @@ export function buildRecoveryPlan(objState, { now = Date.now(), staleActiveMs = 
       try { task = readState(node.statePath); } catch { task = null; }
     }
 
+    if (task?.currentDispatch?.yieldedAt || task?.yieldedGroup) continue;
+    if (task?.status === "blocked" && classifyBlocker(task.blocker) !== "infra") continue;
     const kind = classifyObjectiveNodeBlocker(node.blocker);
     const orphan = Boolean(
       node.status === "running"
@@ -316,6 +318,21 @@ export async function handleObjectiveRetry({
     throw err;
   }
 
+  let lockFd;
+  const lockPath = `${statePath}.recovery.lock`;
+  try { lockFd = openSync(lockPath, "wx", 0o600); }
+  catch (error) {
+    if (error.code !== "EEXIST") throw error;
+    // Match the dispatcher lock policy: the protected section is synchronous,
+    // so a five-minute-old file is left over from a terminated process.
+    if (Date.now() - statSync(lockPath).mtimeMs < 5 * 60 * 1000) {
+      const busy = new Error("Recovery already in progress for this objective.");
+      busy.statusCode = 409; throw busy;
+    }
+    unlinkSync(lockPath);
+    lockFd = openSync(lockPath, "wx", 0o600);
+  }
+  try {
   const nowMs = typeof now === "number" ? now : Date.parse(now) || Date.now();
   const nowISO = new Date(nowMs).toISOString();
   let obj = readObjState(statePath);
@@ -329,7 +346,9 @@ export async function handleObjectiveRetry({
     }
   }
   const liveJob = listFounderJobs(root).find(
-    (j) => j.kind === "objective-recovery" && j.objectiveId === objectiveId && j.status === "recovering",
+    (j) => ["objective", "objective-recovery"].includes(j.kind) && j.objectiveId === objectiveId
+      && ["decomposing", "running", "recovering"].includes(j.status)
+      && nowMs - Date.parse(j.updatedAt || j.createdAt) < STALE_ACTIVE_MS_DEFAULT,
   );
   if (liveJob) {
     const err = new Error("Recovery already in progress for this objective.");
@@ -337,6 +356,18 @@ export async function handleObjectiveRetry({
     throw err;
   }
 
+  const liveSibling = [...Object.values(obj.nodes || {}), obj.integration].filter(Boolean).some((node) => {
+    if (node.status !== "running" || !node.statePath) return false;
+    try {
+      const task = readState(node.statePath);
+      return task.currentDispatch?.yieldedAt || task.yieldedGroup || (task.status === "active"
+        && (!Number.isFinite(Date.parse(task.updatedAt)) || nowMs - Date.parse(task.updatedAt) <= STALE_ACTIVE_MS_DEFAULT));
+    } catch { return true; } // unreadable ownership fails closed
+  });
+  if (liveSibling) {
+    const err = new Error("This objective still has running work. Retry after it settles.");
+    err.statusCode = 409; throw err;
+  }
   const plan = buildRecoveryPlan(obj, { now: nowMs });
   if (!plan.nodes.length) {
     const err = new Error("Nothing to recover — the remaining blockers need you.");
@@ -399,6 +430,10 @@ export async function handleObjectiveRetry({
     skipped: skipped.map(({ id, reason }) => ({ reason })), // omit raw ids from founder-facing skipped if preferred — tests check no auto-answer
     jobId,
   };
+  } finally {
+    try { if (lockFd !== undefined) closeSync(lockFd); } catch { /* best-effort cleanup */ }
+    try { if (lockFd !== undefined && existsSync(lockPath)) unlinkSync(lockPath); } catch { /* stale-lock reclamation handles host interruptions */ }
+  }
 }
 
 // The founder-readable objective summary the orchestrator writes to

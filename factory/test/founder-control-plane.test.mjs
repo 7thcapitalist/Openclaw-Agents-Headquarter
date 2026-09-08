@@ -281,7 +281,7 @@ test("buildObjectivesView: infra recovery vs founder decision on mixed blockers"
       repo, branch: `factory/${id}`, worktree: wt,
     });
     st.status = "blocked";
-    st.blocker = blocker;
+    st.blocker = blocker.infra ? { ...blocker, outcome: "fail" } : blocker;
     st.currentStage = blocker.stage;
     writeState(join(root, "dashboard/backend/data/factory/app/tasks", id, "state.json"), st);
   }
@@ -352,7 +352,7 @@ test("buildRecoveryPlan / buildObjectivesView: only hard/decision → recovery.c
       repo, branch: `factory/${id}`, worktree: wt,
     });
     st.status = "blocked";
-    st.blocker = blocker;
+    st.blocker = blocker.infra ? { ...blocker, outcome: "fail" } : blocker;
     st.currentStage = blocker.stage;
     writeState(join(root, "dashboard/backend/data/factory/app/tasks", id, "state.json"), st);
   }

@@ -15,7 +15,7 @@ import { readState, resumeState, validateTaskContract, writeState } from "../tas
 import { executeOpenClaw, runToTerminal } from "../openclaw-runner.mjs";
 import { ensureBranchHasCommit } from "../hq/github-publish.mjs";
 import { assertAcyclic, buildNodesComplete, descendants, isDeadlocked, readyNodes, GATE_SATISFIED } from "./graph.mjs";
-import { classifyObjectiveNodeBlocker } from "../hq/blocker-class.mjs";
+import { classifyBlocker, classifyObjectiveNodeBlocker } from "../hq/blocker-class.mjs";
 
 const INTEGRATION_SYNTHETIC_STAGES = new Set(["product", "architect", "builder"]);
 
@@ -341,7 +341,7 @@ function collectMetrics(objectivePath) {
 // Resume safely-retryable objective nodes (infra-failed or restart-orphaned) so
 // runObjective can re-drive them. Never answers founder decisions or approvals.
 // Per-node try/catch: one bad node never aborts the batch.
-export function resumeObjectiveNodes({ objectivePath, nodeIds, now = () => new Date().toISOString() }) {
+export function resumeObjectiveNodes({ objectivePath, nodeIds, now = () => new Date().toISOString(), staleActiveMs = 90 * 60 * 1000 }) {
   const at = typeof now === "function" ? now() : now;
   const resumed = [];
   const skipped = [];
@@ -362,6 +362,20 @@ export function resumeObjectiveNodes({ objectivePath, nodeIds, now = () => new D
         continue;
       }
       const state = readState(node.statePath);
+      if (state.currentDispatch?.yieldedAt || state.yieldedGroup) {
+        skipped.push({ id: nodeId, reason: "delegated worker still owns dispatch" }); continue;
+      }
+      // The task engine is authoritative; a stale presentation-level infra tag
+      // cannot override a newer real decision or substantive failure.
+      if (state.status === "blocked" && classifyBlocker(state.blocker) !== "infra") {
+        skipped.push({ id: nodeId, reason: "task requires a decision or substantive repair" }); continue;
+      }
+      if (state.status === "active") {
+        const age = Date.parse(at) - Date.parse(state.updatedAt);
+        if (!Number.isFinite(age) || age <= staleActiveMs) {
+          skipped.push({ id: nodeId, reason: "task is still live" }); continue;
+        }
+      }
       let revived;
       let reason;
       if (state.status === "blocked") {
@@ -370,6 +384,9 @@ export function resumeObjectiveNodes({ objectivePath, nodeIds, now = () => new D
       } else if (state.status === "active") {
         // Restart-orphaned: drop stuck dispatch and re-arm current stage.
         revived = structuredClone(state);
+        if (revived.currentDispatch) revived.dispatches = [...(revived.dispatches || []), {
+          ...revived.currentDispatch, status: "failed", error: "orphaned after runner restart", completedAt: at,
+        }];
         delete revived.currentDispatch;
         if (revived.currentStage) revived.stages[revived.currentStage] = { status: "pending" };
         revived.updatedAt = at;

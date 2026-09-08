@@ -1,3 +1,6 @@
+import * as objectiveRecovery from "/lib/objectiveRecovery.mjs";
+import { costLimitsPanel } from "/cost-limits.mjs";
+
 (function () {
   const app = document.getElementById("app");
   const nav = document.getElementById("nav");
@@ -200,12 +203,14 @@
   // ── Today: the founder observability surface ───────────────────
 
   async function renderToday() {
-    const [state, fc, learning, objectivesResp, autonomy] = await Promise.all([
+    const [state, fc, learning, objectivesResp, autonomy, costs, planLimits] = await Promise.all([
       loadCompany(),
       apiJson("/api/founder/overview").catch(() => ({ jobs: [] })),
       loadLearning().catch(() => null),
       apiJson("/api/founder/objectives").catch(() => ({ objectives: [], summary: {} })),
       apiJson("/api/hq/autonomy").catch(() => null),
+      apiJson("/api/hq/costs").catch(() => null),
+      apiJson("/api/hq/plan-limits").catch(() => null),
     ]);
     const objectives = objectivesResp.objectives || [];
     const projects = state.projects || [];
@@ -322,6 +327,7 @@
             </div>
           </section>
 
+          ${costLimitsPanel(costs, planLimits)}
           ${autonomySection(autonomy)}
           ${learningPanel(learning)}
           ${blindSpotsPanel(state)}
@@ -604,7 +610,7 @@
     if (o.status === "invalid") return `<article class="obj-card"><strong>${esc(o.objectiveId)}</strong><p class="danger-text small">${esc(o.error || "invalid objective state")}</p></article>`;
     const m = o.metrics || {};
     const pr = o.prUrl ? `<a href="${esc(o.prUrl)}" target="_blank" rel="noreferrer">PR ↗</a>` : (o.integration?.githubPublish?.reason ? `<span class="muted small">${esc(o.integration.githubPublish.reason)}</span>` : "");
-    const recoveryHtml = window.__objectiveRecovery?.renderObjectiveRecovery?.(o, { esc }) || "";
+    const recoveryHtml = objectiveRecovery.renderObjectiveRecovery(o, { esc }) || "";
     return `<article class="obj-card">
       <div class="obj-card-head">
         <div><strong>${esc(o.objective || o.objectiveId)}</strong>
@@ -665,7 +671,7 @@
         setTimeout(route, 800);
       } catch (e) { showToast(e.message, true); btn.disabled = false; btn.textContent = "Retry now"; }
     });
-    window.__objectiveRecovery?.bindObjectiveRecovery?.(app, {
+    objectiveRecovery.bindObjectiveRecovery(app, {
       request: apiJson,
       notify: showToast,
       refresh: route,

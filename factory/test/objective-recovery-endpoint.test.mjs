@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, utimesSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -62,7 +62,7 @@ function writeObjectiveFixture(root, { objectiveId = "obj-aabbccdd-demo", nodes 
       project,
       outcome: n.title || n.role,
       status: n.taskStatus || (n.status === "running" ? "active" : "blocked"),
-      blocker: n.taskBlocker || n.blocker,
+      blocker: n.taskBlocker || (n.blocker?.infra ? { ...n.blocker, outcome: "fail" } : n.blocker),
       updatedAt: n.updatedAt,
       risk: n.risk || "low",
     });
@@ -227,4 +227,42 @@ test("handleObjectiveRetry: background orchestration receives objectivePath + st
   assert.ok(job);
   assert.equal(job.status, "complete");
   assert.equal(JSON.parse(readFileSync(objectivePath, "utf8")).recovery?.inFlight, undefined);
+});
+
+test("recovery cannot launch a second orchestrator while a sibling is still live", async () => {
+  const root = mkdtempSync(join(tmpdir(), "obj-live-sibling-"));
+  const { objectiveId, obj } = writeObjectiveFixture(root, { nodes: [
+    { id: "a", status: "blocked", blocker: { outcome: "fail", stage: "builder", summary: "provider timeout" } },
+    { id: "b", status: "running", updatedAt: new Date().toISOString() },
+  ] });
+  let calls = 0;
+  await assert.rejects(handleObjectiveRetry({ root, hqRoot: root, objectiveId, runObjective: async () => { calls++; } }), /still has running work/);
+  assert.equal(calls, 0);
+  assert.equal(readState(Object.values(obj.nodes)[0].statePath).status, "blocked");
+});
+
+test("a stale objective infra tag cannot override a real task decision", async () => {
+  const root = mkdtempSync(join(tmpdir(), "obj-task-decision-"));
+  const { objectiveId, obj } = writeObjectiveFixture(root, { nodes: [
+    { id: "a", status: "blocked", blocker: { outcome: "fail", stage: "builder", summary: "provider timeout", infra: true },
+      taskBlocker: { outcome: "decision-required", stage: "builder", summary: "Approve a production change" } },
+  ] });
+  await assert.rejects(handleObjectiveRetry({ root, hqRoot: root, objectiveId, runObjective: async () => { throw new Error("must not run"); } }), /Nothing to recover/);
+  assert.equal(readState(Object.values(obj.nodes)[0].statePath).blocker.outcome, "decision-required");
+});
+
+
+test("recovery rejects a fresh competing lock and reclaims a stale interruption lock", async () => {
+  const root = mkdtempSync(join(tmpdir(), "obj-recovery-lock-"));
+  const { objectiveId, objectivePath } = writeObjectiveFixture(root, { nodes: [
+    { id: "a", status: "blocked", blocker: { outcome: "fail", stage: "builder", summary: "provider timeout" } },
+  ] });
+  const lock = `${objectivePath}.recovery.lock`;
+  writeFileSync(lock, ""); let calls = 0;
+  const args = { root, hqRoot: root, objectiveId, runObjective: async () => { calls++; return { status: "complete" }; } };
+  await assert.rejects(handleObjectiveRetry(args), /already in progress/);
+  assert.equal(calls, 0); assert.equal(existsSync(lock), true);
+  const old = new Date(Date.now() - 6 * 60 * 1000); utimesSync(lock, old, old);
+  assert.equal((await handleObjectiveRetry(args)).status, "recovering");
+  assert.equal(calls, 1); assert.equal(existsSync(lock), false);
 });
