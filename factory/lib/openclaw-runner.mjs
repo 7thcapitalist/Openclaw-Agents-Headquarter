@@ -98,7 +98,7 @@ export function writeCompletionReport({ statePath }) {
 // task's own state.json so the dashboard/CLI can show it. A GitHub failure
 // here is recorded, never thrown — the task already reached merge-ready
 // through the workflow engine's own gates regardless of what GitHub does.
-function publishAndRecord({ hqRoot, statePath, publish }) {
+export function publishAndRecord({ hqRoot, statePath, publish = publishMergeReadyTask }) {
   const state = readState(statePath);
   let result;
   try {
