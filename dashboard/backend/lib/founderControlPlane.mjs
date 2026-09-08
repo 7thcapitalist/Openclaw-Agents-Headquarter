@@ -721,7 +721,13 @@ export function buildFounderOverview(root, hqProjects = []) {
   const activity = tasks.flatMap((task) => task.events.map((event) => ({ ...event, taskId: task.id, project: task.project, objective: task.objective })))
     .sort((a, b) => String(b.at || "").localeCompare(String(a.at || ""))).slice(0, 30);
 
-  const inbox = buildFounderInbox({ tasks, decisions, questions: control.questions });
+  // Objective-level blockers that need the founder but have no task file yet
+  // (e.g. a high-risk node blocked at init on the missing approval key). Guarded:
+  // a failure here must never take down the overview.
+  let objectivesForInbox = [];
+  try { objectivesForInbox = buildObjectivesView(root).objectives || []; }
+  catch { objectivesForInbox = []; }
+  const inbox = buildFounderInbox({ tasks, decisions, questions: control.questions, objectives: objectivesForInbox });
 
   // Tasks the system is (or should be) recovering from on its own — shown to
   // the founder as progress, NOT as something that needs them. Two cases:
@@ -763,7 +769,7 @@ export function buildFounderOverview(root, hqProjects = []) {
 // the founder: high-risk approvals, decisions a stage raised, terminally
 // blocked tasks, and any unanswered question. It is a projection of task state
 // + the control file; it adds no new state and no new workflow.
-function buildFounderInbox({ tasks, decisions, questions }) {
+function buildFounderInbox({ tasks, decisions, questions, objectives = [] }) {
   const items = [];
   const byId = new Map(tasks.map((t) => [t.id, t]));
 
@@ -808,6 +814,41 @@ function buildFounderInbox({ tasks, decisions, questions }) {
       requestedAt: task.blocker.at || null,
       action: "review-blocked-task",
     });
+  }
+
+  // Decomposed-objective blockers that need the founder but never produced a
+  // task state file — e.g. a high-risk node that could not initialize because
+  // the founder approval key is not configured, an integration merge conflict,
+  // or a publish decision. Without this, these only appear on the Objectives
+  // view and never reach the one list the founder is told to watch.
+  for (const obj of objectives || []) {
+    const objNodes = [...(obj.nodes || []), obj.integration].filter(Boolean);
+    for (const node of objNodes) {
+      if (!node?.blocker) continue;
+      if (node.id && byId.has(node.id)) continue; // already covered by the task scan
+      if (classifyObjectiveNodeBlocker(node.blocker) !== "decision") continue;
+      const isApproval = node.blocker.founderAction === true;
+      items.push({
+        kind: isApproval ? "approval" : "decision",
+        id: `${obj.objectiveId}:${node.id}`,
+        taskId: null,
+        objectiveId: obj.objectiveId,
+        objective: obj.objective || null,
+        project: obj.project || null,
+        statePath: null,
+        title: isApproval
+          ? "A high-risk objective needs your approval to start"
+          : (node.blocker.summary || "An objective needs your direction to continue"),
+        detail: node.blocker.summary || "",
+        recommendation: isApproval
+          ? "Set FACTORY_FOUNDER_PUBLIC_KEY (docs/software-factory/SETUP.md), restart Headquarters, then continue this objective — it will pause once more for your signature."
+          : "Give direction, then continue the objective.",
+        options: isApproval ? ["Set up the approval key", "Keep paused"] : ["Continue objective", "Keep paused"],
+        risk: "high",
+        requestedAt: node.blocker.at || obj.updatedAt || null,
+        action: isApproval ? "configure-founder-approval" : "review-blocked-objective",
+      });
+    }
   }
 
   for (const q of questions || []) {

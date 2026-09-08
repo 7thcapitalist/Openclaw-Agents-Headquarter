@@ -141,6 +141,35 @@ test("runObjective: a failed node blocks its dependents but not its siblings", a
   assert.equal(obj.integration.status, "pending", "integration never ran");
 });
 
+test("runObjective: a high-risk node with no founder approval key blocks for the founder, not a dead `failed`", async () => {
+  const root = mkdtempSync(join(tmpdir(), "objective-highrisk-"));
+  const { repo } = makeRepo(root);
+  const HIGH_RISK_NODES = [
+    { id: "a", role: "backend-builder", objective: "Ship the risky part", acceptanceCriteria: ["A works"], workType: "backend", risk: "high", dependsOn: [] },
+    { id: "b", role: "frontend-builder", objective: "UI on top of A", acceptanceCriteria: ["B works"], workType: "ui", risk: "low", dependsOn: ["a"] },
+  ];
+  const { objectivePath } = writeObjective(root, repo, HIGH_RISK_NODES);
+  const stateRoot = join(root, "factory-state");
+
+  const prev = process.env.FACTORY_FOUNDER_PUBLIC_KEY;
+  delete process.env.FACTORY_FOUNDER_PUBLIC_KEY;
+  try {
+    const res = await runObjective({ hqRoot: HQ, objectivePath, maxConcurrent: 3, stateRoot, execute: makeExecute(), publish: () => ({ published: false }) });
+    const obj = readObjState(objectivePath);
+    const a = obj.nodes[`${obj.objectiveId}-a`];
+    assert.equal(a.status, "blocked", "the high-risk node blocks, it does not `failed`");
+    assert.equal(a.blocker.outcome, "decision-required");
+    assert.equal(a.blocker.founderAction, true);
+    assert.match(a.blocker.summary, /FACTORY_FOUNDER_PUBLIC_KEY/);
+    assert.equal(obj.nodes[`${obj.objectiveId}-b`].status, "blocked-by-dep", "the dependent node is parked, not failed");
+    assert.notEqual(res.status, "complete");
+    assert.equal(obj.integration.status, "pending");
+  } finally {
+    if (prev === undefined) delete process.env.FACTORY_FOUNDER_PUBLIC_KEY;
+    else process.env.FACTORY_FOUNDER_PUBLIC_KEY = prev;
+  }
+});
+
 test("runObjective: an infrastructure failure becomes an actionable decision, not a dead `failed`", async () => {
   const root = mkdtempSync(join(tmpdir(), "objective-infra-"));
   const { repo } = makeRepo(root);

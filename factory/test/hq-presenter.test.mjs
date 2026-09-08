@@ -77,6 +77,40 @@ test("briefBlocker: a real decision uses the parsed question", () => {
   assert.equal(b.needsFounder, true);
 });
 
+test("briefBlocker: a high-risk node blocked on the missing approval key is a founder ask, not a dead failure", () => {
+  const b = briefBlocker({ stage: "init", outcome: "decision-required", founderAction: true, summary: "This objective was assessed high-risk ... FACTORY_FOUNDER_PUBLIC_KEY ..." });
+  assert.equal(b.kind, "decision");
+  assert.equal(b.needsFounder, true);
+  assert.equal(b.headline, "This objective needs your approval before any work can start.");
+  // Robust even if a catch-all forgot to set `outcome`.
+  const b2 = briefBlocker({ summary: "High-risk task initialization requires the configured founder public key." });
+  assert.equal(b2.needsFounder, true);
+});
+
+test("normalizeNodeStatus: a node blocked on the founder approval key → waiting for you", () => {
+  const node = { status: "blocked", blocker: { outcome: "decision-required", founderAction: true, summary: "needs FACTORY_FOUNDER_PUBLIC_KEY" } };
+  assert.equal(normalizeNodeStatus(node), STATUS.WAITING_FOR_FOUNDER);
+});
+
+test("presentObjective: a high-risk objective blocked at init shows WAITING_FOR_FOUNDER, not FAILED", () => {
+  const p = presentObjective({
+    objectiveId: "obj-dep", project: "openclaw-factory",
+    objective: "Make deployment a first-class capability and fix LifeMax on Vercel.",
+    status: "blocked",
+    nodes: [
+      { id: "obj-dep-a", role: "backend-builder", status: "blocked",
+        blocker: { stage: "init", outcome: "decision-required", founderAction: true, summary: "needs FACTORY_FOUNDER_PUBLIC_KEY per SETUP.md" },
+        contract: { outcome: "Implement the deployment contract and Vercel adapter" } },
+      { id: "obj-dep-b", role: "frontend-builder", status: "blocked-by-dep", dependsOn: ["obj-dep-a"],
+        contract: { outcome: "Add the deployment observability UI" } },
+    ],
+    integration: { id: "obj-dep-integration", role: "integration", status: "pending" },
+  });
+  assert.equal(p.status, STATUS.WAITING_FOR_FOUNDER);
+  assert.equal(p.nextAction.kind, "resolve-decision");
+  assert.match(p.headline, /approval/i);
+});
+
 test("normalizeNodeStatus maps every internal status to a founder word", () => {
   assert.equal(normalizeNodeStatus({ status: "gate-satisfied" }), STATUS.COMPLETE);
   assert.equal(normalizeNodeStatus({ status: "running" }), STATUS.RUNNING);

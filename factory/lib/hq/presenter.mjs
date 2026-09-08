@@ -9,7 +9,7 @@
 //
 // Node builtins only.
 
-import { classifyBlocker } from "./blocker-class.mjs";
+import { classifyBlocker, isFounderApprovalSetupFailure } from "./blocker-class.mjs";
 
 // ── the six founder-facing statuses ──────────────────────────────────────────
 export const STATUS = {
@@ -223,6 +223,19 @@ export function briefBlocker(blocker, { decisionQuestion = null } = {}) {
       autoRecovering: true,
       headline: "An agent couldn't start — the system is retrying this automatically.",
       detail: "This is an infrastructure hiccup, not a problem with the work. No action needed unless it keeps happening.",
+      raw,
+    };
+  }
+
+  // A high-risk objective that can't start until the founder's approval key is
+  // configured. Its own decision-required branch would work, but give it a clean
+  // headline and keep it robust even if a catch-all forgot to set `outcome`.
+  if (blocker.founderAction === true || isFounderApprovalSetupFailure(summary)) {
+    return {
+      kind: "decision",
+      needsFounder: true,
+      headline: "This objective needs your approval before any work can start.",
+      detail: "It was assessed high-risk. Configure the founder approval key (FACTORY_FOUNDER_PUBLIC_KEY, see docs/software-factory/SETUP.md), then continue it — it will pause once more for your signature.",
       raw,
     };
   }

@@ -87,6 +87,7 @@ import { readLearningFindings } from "../../factory/lib/hq/chief-of-staff.mjs";
 import { handleRequest as handleFactoryRequest } from "../../scripts/openclaw-factory.mjs";
 import { decomposeObjective } from "../../factory/lib/objective/decompose.mjs";
 import { runObjective } from "../../factory/lib/objective/orchestrator.mjs";
+import { founderApprovalSetupBlocker } from "../../factory/lib/hq/blocker-class.mjs";
 import { defaultStateRoot } from "../../factory/lib/natural-language-intake.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -381,6 +382,35 @@ app.post("/api/founder/objectives", async (req, res) => {
       const dir = join(defaultStateRoot(ROOT, repo), "objectives", graph.objectiveId);
       mkdirSync(dir, { recursive: true });
       const objectivePath = join(dir, "objective-state.json");
+
+      // Preflight: a high-risk node cannot initialize without the founder
+      // approval key. Rather than let the orchestrator hard-fail on the first
+      // node, record the objective as blocked on a founder action so it lands
+      // in the Founder Inbox immediately with the exact remediation.
+      const highRiskNodes = Object.values(graph.nodes).filter((n) => n.contract?.risk === "high");
+      if (highRiskNodes.length && !process.env.FACTORY_FOUNDER_PUBLIC_KEY) {
+        const at = new Date().toISOString();
+        for (const n of highRiskNodes) {
+          n.status = "blocked";
+          n.finishedAt = at;
+          n.blocker = founderApprovalSetupBlocker({ at });
+        }
+        for (const n of Object.values(graph.nodes)) {
+          if (n.status === "pending" && (n.dependsOn || []).some((d) => highRiskNodes.find((h) => h.id === d))) {
+            n.status = "blocked-by-dep";
+          }
+        }
+        graph.status = "blocked";
+        graph.events.push({ at, type: "objective-blocked", detail: "high-risk objective needs founder approval key" });
+        writeFileSync(objectivePath, `${JSON.stringify(graph, null, 2)}\n`, "utf8");
+        saveFounderJob(ROOT, Object.assign(job, {
+          status: "blocked", objectiveId: graph.objectiveId, nodeCount: Object.keys(graph.nodes).length,
+          note: "High-risk objective — configure FACTORY_FOUNDER_PUBLIC_KEY, then continue it from the Founder Inbox.",
+          updatedAt: at,
+        }));
+        return;
+      }
+
       writeFileSync(objectivePath, `${JSON.stringify(graph, null, 2)}\n`, "utf8");
       saveFounderJob(ROOT, Object.assign(job, { status: "running", objectiveId: graph.objectiveId, nodeCount: Object.keys(graph.nodes).length, updatedAt: new Date().toISOString() }));
       const result = await runObjectiveJob(job, { objectivePath, cfg });

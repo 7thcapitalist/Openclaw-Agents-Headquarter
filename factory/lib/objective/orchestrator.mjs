@@ -16,7 +16,7 @@ import { executeOpenClaw, runToTerminal } from "../openclaw-runner.mjs";
 import { publishAndRecord } from "../openclaw-runner.mjs";
 import { ensureBranchHasCommit } from "../hq/github-publish.mjs";
 import { assertAcyclic, buildNodesComplete, descendants, isDeadlocked, readyNodes, GATE_SATISFIED } from "./graph.mjs";
-import { classifyBlocker, classifyObjectiveNodeBlocker } from "../hq/blocker-class.mjs";
+import { classifyBlocker, classifyObjectiveNodeBlocker, founderApprovalSetupBlocker, isFounderApprovalSetupFailure } from "../hq/blocker-class.mjs";
 
 const INTEGRATION_SYNTHETIC_STAGES = new Set(["product", "architect", "builder"]);
 
@@ -55,6 +55,17 @@ function patchNode(path, nodeId, patch, event) {
     Object.assign(target, patch);
     if (event) s.events.push({ at: new Date().toISOString(), node: nodeId, ...event });
   });
+}
+
+// Stop every pending node that transitively depends on a node that just
+// blocked / failed, so the loop deadlocks cleanly instead of spinning.
+function blockDescendants(objectivePath, nodeId, detail) {
+  for (const d of descendants(readObjState(objectivePath), nodeId)) {
+    const s = readObjState(objectivePath);
+    if (s.nodes[d]?.status === "pending") {
+      patchNode(objectivePath, d, { status: "blocked-by-dep" }, { type: "node-blocked-by-dep", detail: detail || `upstream ${nodeId}` });
+    }
+  }
 }
 
 // ── git ──────────────────────────────────────────────────────────────────────
@@ -136,7 +147,23 @@ async function runNode({ hqRoot, objectivePath, nodeId, execute, agentIds, maxAt
     mkdirSync(contractDir, { recursive: true });
     const contractPath = join(contractDir, `${nodeId}.json`);
     writeFileSync(contractPath, `${JSON.stringify(node.contract, null, 2)}\n`, "utf8");
-    const init = initializeTask({ hqRoot, contractPath, repo: obj.repo, branch: node.branch, stateRoot });
+    let init;
+    try {
+      init = initializeTask({ hqRoot, contractPath, repo: obj.repo, branch: node.branch, stateRoot });
+    } catch (error) {
+      // A high-risk node that cannot initialize because the founder approval key
+      // is not configured is a founder action, not a dead failure. Record it as
+      // a decision so it reaches the Founder Inbox and the objective shows
+      // "waiting for you" rather than a cryptic red "failed".
+      if (isFounderApprovalSetupFailure(error?.message)) {
+        const blocker = founderApprovalSetupBlocker({ at: new Date().toISOString() });
+        patchNode(objectivePath, nodeId, { status: "blocked", finishedAt: new Date().toISOString(), blocker },
+          { type: "node-blocked", detail: blocker.summary });
+        blockDescendants(objectivePath, nodeId);
+        return { nodeId, status: "blocked" };
+      }
+      throw error;
+    }
     statePath = init.state;
     worktree = init.worktree;
     patchNode(objectivePath, nodeId, { statePath, worktree, branch: init.branch });
@@ -541,7 +568,18 @@ export async function runObjective({ hqRoot, objectivePath, maxConcurrent = 3, e
   const launch = (nodeId) => {
     patchNode(objectivePath, nodeId, { status: "running", startedAt: new Date().toISOString() }, { type: "node-started" });
     const p = runNode({ hqRoot, objectivePath, nodeId, execute, agentIds, maxAttemptsPerStage, concurrentGroups, stateRoot: nodeStateRoot, publish })
-      .catch((error) => patchNode(objectivePath, nodeId, { status: "failed", blocker: { summary: String(error?.message || error) } }, { type: "node-failed", detail: String(error?.message || error) }))
+      .catch((error) => {
+        const message = String(error?.message || error);
+        // A founder-setup failure that slipped past runNode's own guard still
+        // belongs with the founder, not on a dead "failed" card.
+        if (isFounderApprovalSetupFailure(message)) {
+          const blocker = founderApprovalSetupBlocker({ at: new Date().toISOString() });
+          patchNode(objectivePath, nodeId, { status: "blocked", finishedAt: new Date().toISOString(), blocker }, { type: "node-blocked", detail: blocker.summary });
+          blockDescendants(objectivePath, nodeId);
+          return;
+        }
+        patchNode(objectivePath, nodeId, { status: "failed", blocker: { summary: message } }, { type: "node-failed", detail: message });
+      })
       .finally(() => inFlight.delete(nodeId));
     inFlight.set(nodeId, p);
   };
