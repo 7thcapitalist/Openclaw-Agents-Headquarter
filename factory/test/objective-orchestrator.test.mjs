@@ -326,6 +326,104 @@ test("resumeObjectiveNodes + integration infra: reuses worktree and completes", 
   assert.equal(res.status, "complete");
   assert.equal(obj.integration.status, "gate-satisfied");
   assert.equal(obj.integration.worktree, wt);
+test("runObjective: publishes and records one PR per build node before publishing integration", async () => {
+  const root = mkdtempSync(join(tmpdir(), "objective-publish-"));
+  const { repo } = makeRepo(root);
+  const { objectivePath } = writeObjective(root, repo, NODES);
+  const calls = [];
+  const publish = ({ state }) => {
+    calls.push(state.task.id);
+    return {
+      published: true,
+      pushed: true,
+      ownerRepo: "objective-smoke/app",
+      prUrl: `https://github.com/objective-smoke/app/pull/${calls.length}`,
+    };
+  };
+
+  const res = await runObjective({
+    hqRoot: HQ, objectivePath, maxConcurrent: 3,
+    stateRoot: join(root, "factory-state"), execute: makeExecute(), publish,
+  });
+
+  assert.equal(res.status, "complete");
+  const obj = readObjState(objectivePath);
+  assert.equal(calls.length, NODES.length + 1, "one publication per node plus integration");
+  for (const node of Object.values(obj.nodes)) {
+    assert.equal(calls.filter((id) => id === node.id).length, 1, `${node.id} published once`);
+    assert.match(node.prUrl, /^https:\/\/github\.com\/objective-smoke\/app\/pull\/\d+$/);
+    assert.equal(node.githubPublish.prUrl, node.prUrl);
+    const taskState = JSON.parse(readFileSync(node.statePath, "utf8"));
+    assert.equal(taskState.githubPublish.prUrl, node.prUrl, "task and objective record the same PR");
+  }
+  assert.equal(calls.filter((id) => id === obj.integration.id).length, 1, "integration published once");
+  assert.match(obj.integration.githubPublish.prUrl, /^https:\/\/github\.com\/objective-smoke\/app\/pull\/\d+$/);
+});
+
+test("runObjective: a configured node publication failure blocks the objective and withholds integration", async () => {
+  const root = mkdtempSync(join(tmpdir(), "objective-publish-fail-"));
+  const { repo } = makeRepo(root);
+  const { objectivePath } = writeObjective(root, repo, NODES.slice(0, 1));
+  const calls = [];
+  const publish = ({ state }) => {
+    calls.push(state.task.id);
+    return { published: false, pushed: false, ownerRepo: "objective-smoke/app", reason: "git push failed: permission denied" };
+  };
+
+  const res = await runObjective({
+    hqRoot: HQ, objectivePath, stateRoot: join(root, "factory-state"),
+    execute: makeExecute(), publish,
+  });
+
+  const obj = readObjState(objectivePath);
+  const node = Object.values(obj.nodes)[0];
+  assert.equal(res.status, "blocked");
+  assert.equal(node.status, "blocked");
+  assert.equal(node.blocker.stage, "publish");
+  assert.equal(node.blocker.outcome, "decision-required");
+  assert.match(node.blocker.summary, /permission denied.*Fix GitHub access/i);
+  assert.equal(node.githubPublish.reason, "git push failed: permission denied");
+  assert.equal(obj.integration.status, "pending", "integration never started");
+  assert.deepEqual(calls, [node.id], "only the build node attempted publication");
+});
+
+test("runObjective: rerun retries only a publish-blocked node, then integrates", async () => {
+  const root = mkdtempSync(join(tmpdir(), "objective-publish-resume-"));
+  const { repo } = makeRepo(root);
+  const { objectivePath } = writeObjective(root, repo, NODES.slice(0, 1));
+  const executed = [];
+  const baseExecute = makeExecute();
+  const execute = async (args) => {
+    executed.push(`${args.dispatch.taskId}:${args.dispatch.stage}`);
+    return baseExecute(args);
+  };
+  const calls = [];
+  const publish = ({ state }) => {
+    calls.push(state.task.id);
+    if (calls.length === 1) {
+      return { published: false, pushed: false, ownerRepo: "objective-smoke/app", reason: "temporary GitHub outage" };
+    }
+    return {
+      published: true, pushed: true, ownerRepo: "objective-smoke/app",
+      prUrl: `https://github.com/objective-smoke/app/pull/${calls.length}`,
+    };
+  };
+
+  const options = {
+    hqRoot: HQ, objectivePath, stateRoot: join(root, "factory-state"), execute, publish,
+  };
+  const first = await runObjective(options);
+  assert.equal(first.status, "blocked");
+  const nodeId = Object.keys(first.objective.nodes)[0];
+  const nodeExecutions = executed.filter((entry) => entry.startsWith(`${nodeId}:`)).length;
+
+  const second = await runObjective(options);
+  assert.equal(second.status, "complete");
+  const obj = readObjState(objectivePath);
+  assert.equal(executed.filter((entry) => entry.startsWith(`${nodeId}:`)).length, nodeExecutions, "seven node stages were not rerun");
+  assert.equal(calls.filter((id) => id === nodeId).length, 2, "node publication was retried once");
+  assert.equal(calls.filter((id) => id === obj.integration.id).length, 1, "integration published once after node PR existed");
+  assert.match(obj.nodes[nodeId].prUrl, /^https:\/\/github\.com\/objective-smoke\/app\/pull\/2$/);
 });
 
 test("resuming an infrastructure-blocked node reuses its task and passed stages", async () => {

@@ -66,7 +66,7 @@ Required:
 
 - Codex builds -> Claude reviews by default.
 - Claude builds -> Codex reviews by default.
-- Cursor builds -> Codex or Claude reviews.
+- Frontend Builder (Codex) builds -> Claude reviews and QA verifies independently.
 - UI changes should receive visual QA when possible.
 
 Reviewer should not rewrite the feature unless necessary. It should identify concrete blocking/non-blocking findings and verify the acceptance criteria.

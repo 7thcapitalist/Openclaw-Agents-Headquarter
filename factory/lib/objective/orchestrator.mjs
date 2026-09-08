@@ -13,6 +13,7 @@ import { dirname, join } from "path";
 import { initializeTask } from "../task-initializer.mjs";
 import { readState, resumeState, validateTaskContract, writeState } from "../task-workflow.mjs";
 import { executeOpenClaw, runToTerminal } from "../openclaw-runner.mjs";
+import { publishAndRecord } from "../openclaw-runner.mjs";
 import { ensureBranchHasCommit } from "../hq/github-publish.mjs";
 import { assertAcyclic, buildNodesComplete, descendants, isDeadlocked, readyNodes, GATE_SATISFIED } from "./graph.mjs";
 import { classifyBlocker, classifyObjectiveNodeBlocker } from "../hq/blocker-class.mjs";
@@ -75,11 +76,47 @@ function defaultBranch(repo) {
 
 // ── one build node ───────────────────────────────────────────────────────────
 
-// Build nodes never open their own PR — their branches are merged into the
-// integration branch, which is the single thing published.
-const NODE_NO_PUBLISH = () => ({ published: false, reason: "objective build node — delivered via the integration branch" });
+// A build node may proceed without a PR only when GitHub publication is not
+// configured for the project. Once a real target is resolved, the node must
+// have a reviewable PR URL before integration can start.
+export function classifyNodePublish(result) {
+  if (result?.published && result?.prUrl) return { status: "published", prUrl: result.prUrl };
+  if (!result?.ownerRepo) return { status: "skipped", reason: result?.reason || "GitHub publication is not configured" };
+  return { status: "failed", reason: result?.reason || `GitHub publication for ${result.ownerRepo} did not produce a PR URL` };
+}
 
-async function runNode({ hqRoot, objectivePath, nodeId, execute, agentIds, maxAttemptsPerStage, concurrentGroups, stateRoot }) {
+function blockNodePublish(objectivePath, nodeId, githubPublish, attempts) {
+  const classified = classifyNodePublish(githubPublish);
+  const blocker = {
+    stage: "publish",
+    outcome: "decision-required",
+    summary: `${classified.reason}. Fix GitHub access or repository publication configuration, then rerun the objective.`,
+    at: new Date().toISOString(),
+  };
+  patchNode(objectivePath, nodeId, {
+    status: "blocked", finishedAt: new Date().toISOString(), attempts,
+    githubPublish, prUrl: null, blocker,
+  }, { type: "node-blocked", detail: blocker.summary });
+  for (const d of descendants(readObjState(objectivePath), nodeId)) {
+    const state = readObjState(objectivePath);
+    if (state.nodes[d]?.status === "pending") {
+      patchNode(objectivePath, d, { status: "blocked-by-dep" }, { type: "node-blocked-by-dep", detail: `upstream ${nodeId}` });
+    }
+  }
+  return { nodeId, status: "blocked" };
+}
+
+function recordNodePublish(objectivePath, nodeId, githubPublish, attempts) {
+  const classified = classifyNodePublish(githubPublish);
+  if (classified.status === "failed") return blockNodePublish(objectivePath, nodeId, githubPublish, attempts);
+  patchNode(objectivePath, nodeId, {
+    status: GATE_SATISFIED, finishedAt: new Date().toISOString(), attempts,
+    githubPublish, prUrl: classified.prUrl || null, blocker: null,
+  }, { type: "node-gate-satisfied", detail: classified.prUrl || classified.reason });
+  return { nodeId, status: GATE_SATISFIED };
+}
+
+async function runNode({ hqRoot, objectivePath, nodeId, execute, agentIds, maxAttemptsPerStage, concurrentGroups, stateRoot, publish }) {
   const obj = readObjState(objectivePath);
   const node = obj.nodes[nodeId];
   let statePath = node.statePath;
@@ -112,9 +149,7 @@ async function runNode({ hqRoot, objectivePath, nodeId, execute, agentIds, maxAt
   if (resp.status === "merge-ready") {
     // ensure the branch actually carries a commit even without a github remote
     try { ensureBranchHasCommit({ state }); } catch { /* recorded by the publish step if a remote exists */ }
-    patchNode(objectivePath, nodeId, { status: GATE_SATISFIED, finishedAt: new Date().toISOString(), attempts, blocker: null },
-      { type: "node-gate-satisfied" });
-    return { nodeId, status: GATE_SATISFIED };
+    return recordNodePublish(objectivePath, nodeId, state.githubPublish || resp.githubPublish || null, attempts);
   }
 
   let blocker = state.blocker || { stage: state.currentStage, outcome: "fail", summary: resp.blocker?.summary || "blocked" };
@@ -460,6 +495,17 @@ export async function runObjective({ hqRoot, objectivePath, maxConcurrent = 3, e
   const nodeStateRoot = stateRoot || join(dirname(objectivePath), "..", "..");
   mkdirSync(dirname(objectivePath), { recursive: true });
 
+  // A publication failure happens after all seven stages reached merge-ready.
+  // Retry only that guarded external step on resume; never rerun the gates or
+  // rebuild the already-completed branch.
+  for (const node of Object.values(obj.nodes)) {
+    if (node.status !== "blocked" || node.blocker?.stage !== "publish" || !node.statePath || !existsSync(node.statePath)) continue;
+    const state = readState(node.statePath);
+    if (state.status !== "merge-ready") continue;
+    const githubPublish = publishAndRecord({ hqRoot, statePath: node.statePath, publish });
+    recordNodePublish(objectivePath, node.id, githubPublish, (state.dispatches || []).length);
+  }
+
   // Resume: a node the founder unblocked (its state.json is `active` again) and
   // its stalled descendants go back to `pending` so the loop re-runs them.
   // Re-running runObjective after answering a decision card is all it takes.
@@ -487,7 +533,7 @@ export async function runObjective({ hqRoot, objectivePath, maxConcurrent = 3, e
   const inFlight = new Map();
   const launch = (nodeId) => {
     patchNode(objectivePath, nodeId, { status: "running", startedAt: new Date().toISOString() }, { type: "node-started" });
-    const p = runNode({ hqRoot, objectivePath, nodeId, execute, agentIds, maxAttemptsPerStage, concurrentGroups, stateRoot: nodeStateRoot })
+    const p = runNode({ hqRoot, objectivePath, nodeId, execute, agentIds, maxAttemptsPerStage, concurrentGroups, stateRoot: nodeStateRoot, publish })
       .catch((error) => patchNode(objectivePath, nodeId, { status: "failed", blocker: { summary: String(error?.message || error) } }, { type: "node-failed", detail: String(error?.message || error) }))
       .finally(() => inFlight.delete(nodeId));
     inFlight.set(nodeId, p);

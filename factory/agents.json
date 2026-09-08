@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "_doc": "The AI workforce: one entry per AGENT (a role/employee), not per model. `harness` names the model/tool that powers the agent for its default work; `runtimeAgentId` is the OpenClaw runtime agent that executes it. Models (Claude, Codex, Cursor, OpenClaw) are tools, never employees. Live status is derived from the runtime by factory/lib/hq/activity.mjs, not stored here.",
+  "_doc": "The AI workforce: one entry per AGENT (a role/employee), not per model. `harness` names the model/tool that powers the agent for its default work; `runtimeAgentId` is the OpenClaw runtime agent that executes it. Models and coding harnesses are tools, never employees. Live status is derived from the runtime by factory/lib/hq/activity.mjs, not stored here.",
   "agents": [
     {
       "id": "chief-of-staff",
@@ -48,12 +48,11 @@
       "role": "Implementation — UI & product",
       "responsibility": "Implements UI/product changes with visual iteration and responsive checks; also the founder's interactive development surface.",
       "stages": ["builder"],
-      "harness": "cursor",
-      "harnessAvailable": false,
-      "harnessFallback": "codex",
+      "harness": "codex",
+      "plannedHarness": "cursor",
       "runtimeAgentId": "frontend-builder",
       "reportsTo": "chief-of-staff",
-      "notes": "Frontend Builder is the organizational role; Cursor is its intended harness for visual/UI iteration. Status: UNAVAILABLE — `cursor-agent` (authed as of 2026-09-06) exposes no ACP server mode, so OpenClaw's acpx backend cannot drive it (`cursor-agent acp` is a no-op, `--help` lists no ACP/stdio mode). Dispatches run on the fallback harness (codex) in a real isolated worktree. factory.config.json's `builder:cursor` token maps to this agent. Re-run scripts/probe-cursor-harness.mjs if Cursor ships an ACP mode."
+      "notes": "Codex-backed today in its own isolated worktree. Cursor remains a planned visual-iteration harness, but is not an active route because cursor-agent exposes no ACP server mode for OpenClaw's acpx backend. Re-run scripts/probe-cursor-harness.mjs if Cursor ships one."
     },
     {
       "id": "reviewer",

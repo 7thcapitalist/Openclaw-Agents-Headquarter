@@ -73,12 +73,11 @@ Pulled from the current state of the repo. Any run should pick from here or
 something better it finds, not attempt all of it.
 
 **Agent quality & speed**
-- Move `product` and the `main`/`openclaw` routing role off the shared OpenAI
-  CLI seat (it fails "did not write its result file"); give them the acpx
-  runtime like `reviewer`/`qa`/`security`/`release`.
-- `frontend-builder` currently falls back to acpx-Claude because Cursor never
-  came online — make that path first-class (prompt, evidence expectations for
-  UI work: screenshots / DOM assertions) rather than a fallback.
+- Monitor the configured non-OpenAI decomposition/intake and product routes for
+  provider contention; keep their OpenAI fallbacks for recovery.
+- Keep the Codex-backed `frontend-builder` route honest and first-class (prompt
+  and evidence expectations for UI work: screenshots / DOM assertions); only
+  promote Cursor if its probe proves a driveable ACP mode.
 - Tighten `factory/prompts/*.md` from real transcripts: the biggest time sink is
   qa↔builder bounces — make QA's FAIL criteria unambiguous.
 

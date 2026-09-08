@@ -44,9 +44,9 @@ export function validateTaskContract(task) {
 export function defaultAssignments(task) {
   const builder = task.preferredBuilder && task.preferredBuilder !== "auto"
     ? task.preferredBuilder
-    : task.workType === "ui" ? "cursor" : "codex";
+    : task.workType === "ui" ? "frontend" : "codex";
   const reviewer = builder === "claude" ? "codex" : "claude";
-  const qa = builder === "cursor" ? "codex" : builder === "codex" ? "claude" : "codex";
+  const qa = builder === "frontend" ? "claude" : builder === "codex" ? "claude" : "codex";
   return {
     product: "openclaw",
     architect: "claude",

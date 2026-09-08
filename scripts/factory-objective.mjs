@@ -81,8 +81,9 @@ async function start(args) {
   if (!objective || !project || !repo) { console.error("start needs --objective, --project and --repo"); process.exit(1); }
   if (!existsSync(join(repo, ".git"))) { console.error(`${repo} is not a git working tree`); process.exit(1); }
 
+  const cfg = JSON.parse(readFileSync(join(HQ_ROOT, "factory", "factory.config.json"), "utf8"));
   console.log("Decomposing objective (Chief of Staff)...");
-  const obj = await decomposeObjective({ hqRoot: HQ_ROOT, objective, project, repo });
+  const obj = await decomposeObjective({ hqRoot: HQ_ROOT, objective, project, repo, decomposeAgentId: cfg.openclawIntegration?.agentIds?.decompose });
   printGraph(obj);
 
   const dir = join(objectivesDir(repo), obj.objectiveId);
@@ -92,7 +93,6 @@ async function start(args) {
 
   if (args["dry-run"]) { console.log(`--dry-run: graph written to ${objectivePath}, not executed.`); return; }
 
-  const cfg = JSON.parse(readFileSync(join(HQ_ROOT, "factory", "factory.config.json"), "utf8"));
   const result = await runObjective({
     hqRoot: HQ_ROOT,
     objectivePath,
