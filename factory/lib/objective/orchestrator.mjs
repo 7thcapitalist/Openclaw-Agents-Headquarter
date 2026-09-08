@@ -86,7 +86,14 @@ async function runNode({ hqRoot, objectivePath, nodeId, execute, agentIds, maxAt
   const contractPath = join(contractDir, `${nodeId}.json`);
   writeFileSync(contractPath, `${JSON.stringify(node.contract, null, 2)}\n`, "utf8");
 
-  const init = initializeTask({ hqRoot, contractPath, repo: obj.repo, branch: node.branch, stateRoot });
+  // Resuming must preserve passed stages, dispatch history and the original branch.
+  const existing = node.statePath ? readState(node.statePath) : null;
+  if (existing && (existing.task.id !== node.id || existing.branch !== node.branch || existing.repo !== obj.repo)) {
+    throw new Error(`Existing task does not match objective node ${node.id}`);
+  }
+  const init = existing
+    ? { state: node.statePath, worktree: existing.worktree, branch: existing.branch }
+    : initializeTask({ hqRoot, contractPath, repo: obj.repo, branch: node.branch, stateRoot });
   patchNode(objectivePath, nodeId, { statePath: init.state, worktree: init.worktree, branch: init.branch });
 
   const resp = await runToTerminal({ hqRoot, statePath: init.state, agentIds, maxAttemptsPerStage, concurrentGroups, execute, publish: NODE_NO_PUBLISH });
