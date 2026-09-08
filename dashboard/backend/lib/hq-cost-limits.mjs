@@ -8,19 +8,26 @@ import { readPlanLimits } from "../../../factory/lib/hq/plan-limits.mjs";
 const RATE_LIMIT_RE = /rate.?limit|cooldown|quota|usage limit|429|temporarily unavailable|provider .* unavailable/i;
 const COOLDOWN_RE = /cooldown|cooldown.*\(|cooldown\s*\d/i;
 
-export async function buildHqCostsPayload({ hqRoot, stateRoot = null, pricing = null, now = new Date().toISOString() } = {}) {
+export async function buildHqCostsPayload({
+  hqRoot,
+  repo = hqRoot,
+  stateRoot = null,
+  pricing = null,
+  now = new Date().toISOString(),
+} = {}) {
   const resolvedPricing = pricing || loadPricing(hqRoot);
-  return summarizeCosts({ hqRoot, stateRoot: stateRoot || defaultStateRoot(hqRoot), pricing: resolvedPricing, now });
+  return summarizeCosts({ hqRoot, stateRoot: stateRoot || defaultStateRoot(hqRoot, repo), pricing: resolvedPricing, now });
 }
 
 export async function buildHqPlanLimitsPayload({
   hqRoot,
+  repo = hqRoot,
   stateRoot = null,
   authoritativeSource = null,
   now = new Date().toISOString(),
   lookbackHours = 24,
 } = {}) {
-  const resolvedStateRoot = stateRoot || defaultStateRoot(hqRoot);
+  const resolvedStateRoot = stateRoot || defaultStateRoot(hqRoot, repo);
   const { usageWindows, cooldownHistory } = collectInferredHeadroom({ hqRoot, stateRoot: resolvedStateRoot, now, lookbackHours });
   return readPlanLimits({ authoritativeSource, usageWindows, cooldownHistory, asOf: now });
 }
