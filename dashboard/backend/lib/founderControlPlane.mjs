@@ -783,13 +783,25 @@ function buildFounderInbox({ tasks, decisions, questions, objectives = [] }) {
       objective: task?.objective || null,
       project: d.project || null,
       statePath: d.statePath || null,
-      title: d.question,
-      detail: d.why,
-      recommendation: d.recommendation,
+      title: isApproval ? "Approve a high-risk build" : d.question,
+      detail: isApproval
+        ? `The factory has planned "${task?.objective || d.taskId}" and is holding before it writes any code. High-risk work (deployment, credentials, or an irreversible change) needs your sign-off first.`
+        : d.why,
+      recommendation: isApproval
+        ? "Review what it will do, then approve from your terminal — your signing key never touches this dashboard or the agents."
+        : d.recommendation,
       options: d.options,
       risk: d.risk || null,
       requestedAt: d.requestedAt || null,
-      action: isApproval ? "submit-signed-approval" : "respond-and-resume",
+      action: isApproval ? "founder-side-approval" : "respond-and-resume",
+      // Everything the review card needs; the browser never signs.
+      approval: isApproval
+        ? {
+            command: `npm run approve${d.taskId ? ` -- --task ${d.taskId}` : ""}`,
+            whatHappensNext: "builder → reviewer → QA → security → release, then a pull request you merge",
+            keyNote: "Your Ed25519 private key stays on your machine (outside OpenClaw and the browser). The dashboard only records the already-verified signature.",
+          }
+        : null,
     });
   }
 
