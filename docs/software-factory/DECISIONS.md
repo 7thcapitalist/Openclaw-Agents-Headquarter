@@ -154,3 +154,25 @@ entries. When a decision changes, add a new entry and mark the old one
   completed. After merge, the branch and worktree are disposable and no work
   continues from them. Agents synchronize with the latest `main` before starting
   new work.
+## SFD-2026-009 — Deploy orchestrator is dry-run by default; real production deploy is founder-triggered
+
+- Date: 2026-09-08
+- Status: Proposed (architect; objective `obj-039f0f5a-deployment-capability-core`)
+- Decision: The deployment capability (`factory/lib/deploy/`) runs build → test →
+  deploy → smoke only when explicitly invoked by the founder (CLI / dashboard
+  action). Its orchestrator takes an `allowRealDeploy` flag that defaults to
+  `false`; a dry run validates the manifest, builds, and tests, then lands
+  `needs_founder_action` without calling the provider's `deploy()`. The
+  orchestrator is never added to `factory.config.json` `pipeline` or
+  `concurrentGroups` and is never called from the 7-stage engine or the
+  objective orchestrator.
+- Rationale: `production-deploy` is already listed in
+  `factory.config.json` `prohibitedAutonomousActions`. Keeping real deploys
+  behind an explicit founder action keeps the new capability inside that policy
+  with no change to the engine or its gates.
+- Consequences: Automated tests exercise the state machine with a mocked
+  provider and `allowRealDeploy: true`. Any future move to auto-deploy (even to a
+  non-production environment) requires a new founder-approved decision. Adapter
+  credentials (`VERCEL_TOKEN`, project/org ids, DB URLs) are read from
+  `process.env` / the secret store only and are redacted from all persisted
+  deployment state.
