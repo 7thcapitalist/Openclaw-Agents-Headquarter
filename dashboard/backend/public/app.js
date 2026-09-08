@@ -1,3 +1,5 @@
+import { costLimitsPanel } from "/cost-limits.mjs";
+
 (function () {
   const app = document.getElementById("app");
   const nav = document.getElementById("nav");
@@ -200,12 +202,14 @@
   // ── Today: the founder observability surface ───────────────────
 
   async function renderToday() {
-    const [state, fc, learning, objectivesResp, autonomy] = await Promise.all([
+    const [state, fc, learning, objectivesResp, autonomy, costs, planLimits] = await Promise.all([
       loadCompany(),
       apiJson("/api/founder/overview").catch(() => ({ jobs: [] })),
       loadLearning().catch(() => null),
       apiJson("/api/founder/objectives").catch(() => ({ objectives: [], summary: {} })),
       apiJson("/api/hq/autonomy").catch(() => null),
+      apiJson("/api/hq/costs").catch(() => null),
+      apiJson("/api/hq/plan-limits").catch(() => null),
     ]);
     const objectives = objectivesResp.objectives || [];
     const projects = state.projects || [];
@@ -322,6 +326,7 @@
             </div>
           </section>
 
+          ${costLimitsPanel(costs, planLimits)}
           ${autonomySection(autonomy)}
           ${learningPanel(learning)}
           ${blindSpotsPanel(state)}

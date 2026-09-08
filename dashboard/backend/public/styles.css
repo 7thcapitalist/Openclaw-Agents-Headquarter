@@ -1201,6 +1201,79 @@ pre,
   border-bottom: none;
 }
 
+.cost-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+}
+
+.cost-table th,
+.cost-table td {
+  text-align: left;
+  vertical-align: top;
+  padding: 0.55rem 0.75rem;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.cost-table thead th {
+  color: var(--muted);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.cost-table tbody tr:last-child > * {
+  border-bottom: none;
+}
+
+.cost-section + .cost-section {
+  margin-top: 1rem;
+}
+
+.cost-section h3,
+.cost-section h4 {
+  color: #cbd2df;
+  margin: 0 0 0.5rem;
+  font-size: 0.82rem;
+}
+
+.cost-section h4 {
+  margin-top: 0.85rem;
+  font-size: 0.74rem;
+}
+
+.cost-secondary,
+.cost-source-label {
+  display: block;
+  margin-top: 0.2rem;
+  color: var(--muted);
+  font-size: 0.7rem;
+}
+
+.cost-source-label {
+  color: #cbd2df;
+  text-transform: capitalize;
+}
+
+.cost-drill {
+  min-width: 24rem;
+}
+
+.cost-stage-wrap {
+  margin: 0.5rem 0 0;
+}
+
+.cost-stage-empty {
+  padding: 0.5rem 0 0.2rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.cost-empty {
+  min-height: 72px;
+}
+
 .intel-list {
   margin: 0;
   padding-left: 1.1rem;
