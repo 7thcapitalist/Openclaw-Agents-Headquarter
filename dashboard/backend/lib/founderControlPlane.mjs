@@ -100,9 +100,9 @@ function walkStateFiles(dir, out = []) {
 
 function readControl(root) {
   const path = join(factoryRoot(root), CONTROL_FILE);
-  if (!existsSync(path)) return { version: 1, projects: {}, questions: [], jobs: [], archivedObjectives: {} };
+  if (!existsSync(path)) return { version: 1, projects: {}, questions: [], jobs: [], archivedObjectives: {}, dismissedInbox: {} };
   const value = JSON.parse(readFileSync(path, "utf8"));
-  return { version: 1, projects: {}, questions: [], jobs: [], archivedObjectives: {}, ...value };
+  return { version: 1, projects: {}, questions: [], jobs: [], archivedObjectives: {}, dismissedInbox: {}, ...value };
 }
 
 function writeControl(root, value) {
@@ -772,7 +772,16 @@ export function buildFounderOverview(root, hqProjects = []) {
   let objectivesForInbox = [];
   try { objectivesForInbox = buildObjectivesView(root).objectives || []; }
   catch { objectivesForInbox = []; }
-  const inbox = buildFounderInbox({ tasks, decisions, questions: control.questions, objectives: objectivesForInbox });
+  // Founder-controlled presentation state: entries the founder has dismissed
+  // with the inbox "×" stay out of "Needs you" and move to a "Dismissed" fold.
+  // Reversible, adds no workflow — the underlying task/decision is untouched.
+  const dismissedMap = control.dismissedInbox || {};
+  const allInboxItems = buildFounderInbox({ tasks, decisions, questions: control.questions, objectives: objectivesForInbox })
+    .map((item) => (dismissedMap[item.id]
+      ? { ...item, dismissed: true, dismissedAt: dismissedMap[item.id].dismissedAt || null }
+      : item));
+  const inbox = allInboxItems.filter((item) => !item.dismissed);
+  const dismissedInbox = allInboxItems.filter((item) => item.dismissed);
 
   // Tasks the system is (or should be) recovering from on its own — shown to
   // the founder as progress, NOT as something that needs them. Two cases:
@@ -803,6 +812,7 @@ export function buildFounderOverview(root, hqProjects = []) {
     decisions,
     openDecisions: intel.company?.openDecisions || decisions,
     inbox,
+    dismissedInbox,
     autoRecovering,
     company: intel.company,
     questions: control.questions.slice(-20).reverse(),
@@ -1000,6 +1010,33 @@ export function setObjectiveArchived(root, objectiveId, archived, { reason = "" 
 
 export function listArchivedObjectives(root) {
   return readControl(root).archivedObjectives || {};
+}
+
+// Founder-controlled presentation state for a single Founder Inbox entry.
+// Dismissing moves it out of "Needs you" into the "Dismissed" fold; it never
+// resolves the decision, approves the build, or unblocks the task — those are
+// still there, just hidden — and it is fully reversible (restore === true).
+export function setInboxItemDismissed(root, itemId, dismissed, { reason = "" } = {}) {
+  const control = readControl(root);
+  control.dismissedInbox = control.dismissedInbox || {};
+  if (dismissed) {
+    control.dismissedInbox[itemId] = {
+      dismissedAt: control.dismissedInbox[itemId]?.dismissedAt || new Date().toISOString(),
+      reason: String(reason || "").slice(0, 500) || undefined,
+    };
+  } else {
+    delete control.dismissedInbox[itemId];
+  }
+  writeControl(root, control);
+  return {
+    itemId,
+    dismissed: Boolean(dismissed),
+    dismissedAt: control.dismissedInbox[itemId]?.dismissedAt || null,
+  };
+}
+
+export function listDismissedInboxItems(root) {
+  return readControl(root).dismissedInbox || {};
 }
 
 export function recordQuestion(root, question) {

@@ -224,6 +224,7 @@ import { costLimitsPanel } from "/cost-limits.mjs";
     const agents = state.agents?.agents || [];
     const decisions = state.decisions || [];
     const inbox = fc.inbox || [];
+    const dismissedInbox = fc.dismissedInbox || [];
     const inboxActionable = inbox.filter((i) => i.action && i.action !== "none").length;
     const jobs = fc.jobs || [];
     const allTasks = fc.tasks || [];
@@ -297,6 +298,10 @@ import { costLimitsPanel } from "/cost-limits.mjs";
             <section class="inbox-panel">
               <div class="panel-heading"><div><span class="eyebrow">Founder inbox</span><h2>Needs you</h2></div>${inboxActionable ? pill(inboxActionable, "badge-warn") : pill("Clear", "health-healthy")}</div>
               ${inbox.map((x) => inboxItem(x)).join("") || `<div class="empty-state"><strong>Nothing needs you.</strong><span>Your agents have what they need to keep moving.</span></div>`}
+              ${dismissedInbox.length ? `<details class="inbox-fold">
+                <summary><span class="eyebrow">Dismissed</span> Hidden by you — still open, fully restorable <span class="muted small">${dismissedInbox.length}</span></summary>
+                <div class="inbox-fold-list">${dismissedInbox.map((x) => dismissedInboxRow(x)).join("")}</div>
+              </details>` : ""}
               ${recommendedActions(state.company)}
             </section>
           </div>
@@ -639,10 +644,30 @@ import { costLimitsPanel } from "/cost-limits.mjs";
   const INBOX_KIND_LABEL = { approval: "Approval", decision: "Decision", blocked: "Blocked", question: "Question" };
   const INBOX_KIND_CLASS = { approval: "badge-warn", decision: "badge-warn", blocked: "health-failed", question: "badge-type" };
 
-  // One Founder Inbox entry. Decisions and approvals reuse the decision-card
-  // action buttons; blocked tasks link to their completion report; questions
-  // are read-only (this system answers them synchronously).
+  // One Founder Inbox entry, wrapped with a "×" that dismisses it to the
+  // "Dismissed" fold below. Dismissing is presentation-only and reversible —
+  // it never resolves the decision, approves the build, or unblocks the task.
   function inboxItem(x) {
+    return `<div class="inbox-entry" data-inbox-id="${esc(x.id)}">
+      <button class="inbox-dismiss" data-dismiss-inbox="${esc(x.id)}" title="Dismiss from your inbox" aria-label="Dismiss from your inbox">×</button>
+      ${inboxCardBody(x)}
+    </div>`;
+  }
+
+  // Compact row for an inbox entry the founder dismissed — shown in the
+  // collapsed "Dismissed" fold with a one-click Restore.
+  function dismissedInboxRow(x) {
+    return `<div class="inbox-dismissed-row">
+      <div><strong>${esc(x.title || INBOX_KIND_LABEL[x.kind] || x.kind)}</strong>
+      <span class="muted small">${esc(INBOX_KIND_LABEL[x.kind] || x.kind)}${x.project ? ` · ${esc(x.project)}` : ""}${x.taskId ? ` · ${esc(x.taskId)}` : ""}${x.dismissedAt ? ` · dismissed ${esc(fmtTime(x.dismissedAt))}` : ""}</span></div>
+      <button class="btn secondary tiny" data-restore-inbox="${esc(x.id)}">Restore</button>
+    </div>`;
+  }
+
+  // Decisions and approvals reuse the decision-card action buttons; blocked
+  // tasks link to their completion report; questions are read-only (this
+  // system answers them synchronously).
+  function inboxCardBody(x) {
     if (x.kind === "approval") return approvalCard(x);
     if (x.kind === "decision") {
       return decisionCard({
@@ -770,6 +795,22 @@ import { costLimitsPanel } from "/cost-limits.mjs";
         showToast("Retrying now.");
         setTimeout(route, 800);
       } catch (e) { showToast(e.message, true); btn.disabled = false; btn.textContent = "Retry now"; }
+    });
+    app.querySelectorAll("[data-dismiss-inbox]").forEach((btn) => btn.onclick = async () => {
+      btn.disabled = true;
+      try {
+        await apiJson("/api/founder/inbox/dismiss", { method: "POST", body: JSON.stringify({ id: btn.dataset.dismissInbox }) });
+        showToast("Dismissed. It's in “Dismissed” at the bottom of your inbox — restore it any time.");
+        route();
+      } catch (e) { showToast(e.message, true); btn.disabled = false; }
+    });
+    app.querySelectorAll("[data-restore-inbox]").forEach((btn) => btn.onclick = async () => {
+      btn.disabled = true;
+      try {
+        await apiJson("/api/founder/inbox/dismiss", { method: "POST", body: JSON.stringify({ id: btn.dataset.restoreInbox, restore: true }) });
+        showToast("Restored to your inbox.");
+        route();
+      } catch (e) { showToast(e.message, true); btn.disabled = false; }
     });
     objectiveRecovery.bindObjectiveRecovery(app, {
       request: apiJson,
