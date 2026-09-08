@@ -164,6 +164,8 @@ function normalise({ parsed, objective, project, repo, objectiveId, now }) {
       startedAt: null,
       finishedAt: null,
       attempts: 0,
+      githubPublish: null,
+      prUrl: null,
       blocker: null,
     };
   }

@@ -22,6 +22,8 @@ test("decomposeObjective builds a validated task graph from a model response", a
     assert.ok(Array.isArray(n.contract.acceptanceCriteria) && n.contract.acceptanceCriteria.length);
     assert.equal(n.contract.id, n.id);
     assert.equal(n.branch, `factory/${n.id}`);
+    assert.equal(n.githubPublish, null);
+    assert.equal(n.prUrl, null);
   }
   // integration node depends on every build node
   assert.deepEqual(g.integration.dependsOn.sort(), Object.keys(g.nodes).sort());
