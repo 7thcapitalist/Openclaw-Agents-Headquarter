@@ -78,6 +78,14 @@ import {
   setProjectPaused,
 } from "./lib/founderControlPlane.mjs";
 import { buildHqCostsPayload, buildHqPlanLimitsPayload } from "./lib/hq-cost-limits.mjs";
+import {
+  enrollFounderKey,
+  getEnrolledFounderKey,
+  prepareFounderApproval,
+  rejectFounderApproval,
+  rekeyPendingApproval,
+  submitFounderApproval,
+} from "./lib/founderApproval.mjs";
 import { readAutonomy } from "../../factory/lib/hq/autonomy.mjs";
 import { retryStuckTasks } from "../../factory/lib/hq/auto-retry.mjs";
 import { resumeState as resumeTaskState, readState as readTaskState, writeState as writeTaskState } from "../../factory/lib/task-workflow.mjs";
@@ -502,6 +510,62 @@ app.post("/api/founder/decisions/approve", async (req, res) => {
   } catch (e) {
     res.status(400).json({ error: String(e.message || e) });
   }
+});
+
+// ── One-click founder approval ──────────────────────────────────────────────
+// The founder enrolls a non-extractable Ed25519 key from their browser, then
+// Approve = prepare (server writes the evidence, returns the bytes to sign) →
+// browser signs with the browser-held key → submit (existing gate verifies +
+// records + resumes). The private key never reaches the server or the agents.
+
+const APPROVAL_ID = /^[a-z0-9][a-z0-9-]*$/;
+const approvalRunObjective = (opts) => runObjectiveJob(null, { objectivePath: opts.objectivePath, stateRoot: opts.stateRoot });
+const approvalRunTask = ({ statePath }) => handleFactoryRequest({ version: 1, action: "run", statePath });
+const approvalError = (res, e) => res.status(e.statusCode || 400).json({ error: String(e.message || e), code: e.code, details: e.details });
+
+app.get("/api/founder/approval-key", (_req, res) => {
+  try {
+    const k = getEnrolledFounderKey(ROOT);
+    res.json({ enrolled: k.enrolled, source: k.source, algorithm: "Ed25519", fingerprint: k.fingerprint, enrolledAt: k.enrolledAt });
+  } catch (e) { approvalError(res, e); }
+});
+
+app.post("/api/founder/approval-key", (req, res) => {
+  try {
+    const { publicKeyPem, rotationSignature } = req.body || {};
+    if (!publicKeyPem) return res.status(400).json({ error: "publicKeyPem is required." });
+    res.json(enrollFounderKey(ROOT, { publicKeyPem, rotationSignature }));
+  } catch (e) { approvalError(res, e); }
+});
+
+app.post("/api/founder/approvals/:taskId/prepare", (req, res) => {
+  try {
+    if (!APPROVAL_ID.test(req.params.taskId)) return res.status(400).json({ error: "Invalid task id." });
+    res.json(prepareFounderApproval(ROOT, req.params.taskId, { note: req.body?.note || "" }));
+  } catch (e) { approvalError(res, e); }
+});
+
+app.post("/api/founder/approvals/:taskId/submit", async (req, res) => {
+  try {
+    if (!APPROVAL_ID.test(req.params.taskId)) return res.status(400).json({ error: "Invalid task id." });
+    const out = await submitFounderApproval(ROOT, ROOT, req.params.taskId, { assertion: req.body?.assertion },
+      { runObjective: approvalRunObjective, runTask: approvalRunTask });
+    res.json(out);
+  } catch (e) { approvalError(res, e); }
+});
+
+app.post("/api/founder/approvals/:taskId/reject", (req, res) => {
+  try {
+    if (!APPROVAL_ID.test(req.params.taskId)) return res.status(400).json({ error: "Invalid task id." });
+    res.json(rejectFounderApproval(ROOT, req.params.taskId, { reason: req.body?.reason || "" }));
+  } catch (e) { approvalError(res, e); }
+});
+
+app.post("/api/founder/approvals/:taskId/rekey", (req, res) => {
+  try {
+    if (!APPROVAL_ID.test(req.params.taskId)) return res.status(400).json({ error: "Invalid task id." });
+    res.json(rekeyPendingApproval(ROOT, req.params.taskId));
+  } catch (e) { approvalError(res, e); }
 });
 
 // The founder-readable completion report for one factory task (markdown + html),
