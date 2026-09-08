@@ -79,8 +79,13 @@ async function startFromObjective(request, dependencies) {
     issue: request.issue,
     project: request.project,
     stateRoot,
+    hqRoot,
     execute: dependencies.executeChiefOfStaff,
   });
+  const decisionAdvisory = intake.advisory?.decisionClassification;
+  if (decisionAdvisory) {
+    console.warn(`[decision-advisory] ${intake.contract.id}: ${decisionAdvisory.surfacedAs} / ${decisionAdvisory.trigger} — advisory only, not blocking`);
+  }
   const created = initialize({ ...request, action: "init", contractPath: intake.contractPath, stateRoot }, dependencies.initializeTask || initializeTask);
   const config = JSON.parse(readFileSync(resolve(hqRoot, "factory", "factory.config.json"), "utf8"));
   const result = await runToTerminal({
@@ -91,7 +96,7 @@ async function startFromObjective(request, dependencies) {
     concurrentGroups: config.openclawIntegration?.concurrentGroups,
     execute: dependencies.execute,
   });
-  return { ...result, statePath: created.statePath, worktree: created.worktree, branch: created.branch, contract: intake.contract };
+  return { ...result, statePath: created.statePath, worktree: created.worktree, branch: created.branch, contract: intake.contract, advisory: intake.advisory };
 }
 
 function initialize(request, initializer) {
