@@ -1,4 +1,5 @@
 import * as objectiveRecovery from "/lib/objectiveRecovery.mjs";
+import * as founderApproval from "/lib/founderApproval.mjs";
 import { costLimitsPanel } from "/cost-limits.mjs";
 
 (function () {
@@ -556,13 +557,13 @@ import { costLimitsPanel } from "/cost-limits.mjs";
     </article>`;
   }
 
-  // High-risk approval. The browser cannot hold the signing key, so the founder
-  // approves from their terminal (`npm run approve`) — this card explains what is
-  // being approved and what happens next, and gives them the exact command.
+  // High-risk approval — one click. The signature is produced by a
+  // non-extractable Ed25519 key held only in this browser (see
+  // /lib/founderApproval.mjs); the server verifies + records through the
+  // unchanged gate and resumes the work.
   function approvalCard(x) {
     const a = x.approval || {};
-    const cmd = a.command || "npm run approve";
-    return `<article class="decision-card approval-card">
+    return `<article class="decision-card approval-card" data-approval-task="${esc(x.taskId || "")}">
       <div class="decision-top"><span class="decision-icon">◆</span>
         <div><strong>${esc(x.title || "Approve a high-risk build")}</strong>
         <span>${pill("Approval", "badge-warn")} ${esc(x.project || "company")}${x.taskId ? ` · <code>${esc(x.taskId)}</code>` : ""}</span></div>
@@ -570,18 +571,63 @@ import { costLimitsPanel } from "/cost-limits.mjs";
       ${x.objective ? `<p class="muted small">What the factory will do: <strong>${esc(x.objective)}</strong></p>` : ""}
       <p>${esc(x.detail || "")}</p>
       ${a.whatHappensNext ? `<div class="decision-rec"><small>After you approve</small>${esc(a.whatHappensNext)}</div>` : ""}
-      <p class="muted small">${esc(a.keyNote || "Your signing key never touches this dashboard or the agents.")}</p>
-      <div class="approve-cmd"><code>${esc(cmd)}</code><button class="btn secondary tiny" data-copy-text="${esc(cmd)}">Copy</button></div>
-      <p class="muted small">Run it at the repo root, review the summary it prints, confirm. This card clears once the signature is recorded.</p>
+      <p class="muted small">${esc(a.keyNote || "Signed by a key held only in your browser.")}</p>
+      <div class="approve-actions">
+        <button class="btn" data-approve="${esc(x.taskId || "")}">Approve</button>
+        <button class="btn secondary" data-reject="${esc(x.taskId || "")}">Reject</button>
+      </div>
+      <div class="approve-status" data-approve-status hidden></div>
       <details class="approve-advanced">
-        <summary>I already have a signed assertion file</summary>
-        <label class="field-label">Assertion path</label>
-        <input class="modal-input" data-adv-assertion placeholder="/path/to/approval.json"/>
-        <label class="field-label">Evidence path (relative to worktree)</label>
-        <input class="modal-input" data-adv-evidence placeholder="evidence/founder-approval.md"/>
-        <button class="btn secondary" data-approve-decision="${esc(x.statePath || "")}">Verify &amp; approve</button>
+        <summary>Approve from a trusted terminal instead</summary>
+        <p class="muted small">Run <code>npm run approve${x.taskId ? ` -- --task ${esc(x.taskId)}` : ""}</code> at the repo root. Use this if this browser can't reach your signing key.</p>
       </details>
     </article>`;
+  }
+
+  // Ensure this browser has an enrolled, non-extractable signing key. Returns a
+  // CryptoKeyPair or throws with a founder-readable message.
+  async function ensureApprovalKey() {
+    if (!founderApproval.webcryptoEd25519Available()) {
+      throw new Error("This browser can't hold a signing key. Use the terminal fallback (npm run approve).");
+    }
+    const server = await apiJson("/api/founder/approval-key");
+    let pair = await founderApproval.loadLocalKeyPair();
+    if (!pair) {
+      if (server.enrolled && server.source === "browser") {
+        throw new Error("A signing key is enrolled but not in this browser. Approve from the terminal, or rotate your key.");
+      }
+      pair = await founderApproval.createLocalKeyPair();
+      const publicKeyPem = await founderApproval.exportPublicKeyPem(pair);
+      const res = await apiJson("/api/founder/approval-key", { method: "POST", body: JSON.stringify({ publicKeyPem }) });
+      showToast(`Approval key enrolled · SHA256 ${String(res.fingerprint || "").slice(0, 16)}…`);
+    }
+    return pair;
+  }
+
+  async function runOneClickApproval(taskId, statusEl) {
+    const setStatus = (msg, err) => { statusEl.hidden = false; statusEl.textContent = msg; statusEl.classList.toggle("danger-text", !!err); };
+    setStatus("Preparing…");
+    const pair = await ensureApprovalKey();
+    let prep;
+    const res = await api(`/api/founder/approvals/${encodeURIComponent(taskId)}/prepare`, { method: "POST", body: JSON.stringify({}) });
+    prep = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      if (prep.code === "KEY_MISMATCH") {
+        setStatus("This task predates your current key. Re-keying…");
+        await apiJson(`/api/founder/approvals/${encodeURIComponent(taskId)}/rekey`, { method: "POST", body: "{}" });
+        return runOneClickApproval(taskId, statusEl);
+      }
+      throw new Error(prep.error || `Prepare failed (${res.status})`);
+    }
+    if (prep.unsigned.taskId !== taskId || !prep.unsigned.challenge) throw new Error("Prepared approval did not match this task.");
+    setStatus("Signing in your browser…");
+    const signature = await founderApproval.signPayloadString(pair, JSON.stringify(prep.unsigned));
+    setStatus("Recording…");
+    const out = await apiJson(`/api/founder/approvals/${encodeURIComponent(taskId)}/submit`, {
+      method: "POST", body: JSON.stringify({ assertion: { ...prep.unsigned, signature } }),
+    });
+    setStatus(`Approved — ${out.currentStage ? `resuming at ${out.currentStage}` : "resumed"}.`);
+    return out;
   }
 
   const INBOX_KIND_LABEL = { approval: "Approval", decision: "Decision", blocked: "Blocked", question: "Question" };
@@ -712,22 +758,28 @@ import { costLimitsPanel } from "/cost-limits.mjs";
       } catch (e) { showToast(e.message, true); btn.disabled = false; }
     });
     app.querySelectorAll("[data-resolve-decision]").forEach((btn) => btn.onclick = () => { openModal("Answer in your own words", `<label class="field-label">Your direction for the team</label><textarea class="editor" id="decision-direction" placeholder="Go with option A because…"></textarea><button class="btn" id="submit-decision">Send &amp; resume</button>`); document.getElementById("submit-decision").onclick = async () => { const dir = document.getElementById("decision-direction").value.trim(); if (!dir) { showToast("Type a direction first.", true); return; } try { await apiJson("/api/founder/decisions/resolve", { method: "POST", body: JSON.stringify({ statePath: btn.dataset.resolveDecision, direction: dir }) }); closeModal(); showToast("Decision recorded. Work resumed."); route(); } catch (e) { showToast(e.message, true); } }; });
-    app.querySelectorAll("[data-copy-text]").forEach((btn) => btn.onclick = async () => {
-      try { await navigator.clipboard.writeText(btn.dataset.copyText); showToast("Copied. Run it at the repo root."); }
-      catch { showToast(btn.dataset.copyText, false); }
-    });
-    // Power-user fallback: a founder who signed the assertion by hand can still
-    // submit its path + evidence path directly (same verification endpoint).
-    app.querySelectorAll("[data-approve-decision]").forEach((btn) => btn.onclick = async () => {
-      const wrap = btn.closest("details") || document;
-      const assertionPath = wrap.querySelector("[data-adv-assertion]")?.value?.trim();
-      const evidence = wrap.querySelector("[data-adv-evidence]")?.value?.trim();
-      if (!assertionPath || !evidence) { showToast("Both paths are required.", true); return; }
-      btn.disabled = true;
+    app.querySelectorAll("[data-approve]").forEach((btn) => btn.onclick = async () => {
+      const card = btn.closest("[data-approval-task]");
+      const statusEl = card?.querySelector("[data-approve-status]") || document.createElement("div");
+      card?.querySelectorAll("button").forEach((b) => b.disabled = true);
       try {
-        await apiJson("/api/founder/decisions/approve", { method: "POST", body: JSON.stringify({ statePath: btn.dataset.approveDecision, approvalAssertionPath: assertionPath, evidence }) });
-        showToast("Signature verified. Work resumed."); route();
-      } catch (e) { showToast(e.message, true); btn.disabled = false; }
+        await runOneClickApproval(btn.dataset.approve, statusEl);
+        showToast("Approved — the factory is resuming.");
+        setTimeout(route, 900);
+      } catch (e) {
+        statusEl.hidden = false; statusEl.textContent = e.message; statusEl.classList.add("danger-text");
+        showToast(e.message, true);
+        card?.querySelectorAll("button").forEach((b) => b.disabled = false);
+      }
+    });
+    app.querySelectorAll("[data-reject]").forEach((btn) => btn.onclick = () => {
+      openModal("Reject this high-risk build", `<p class="muted small">The task stops here. It will not resume.</p><label class="field-label">Reason (optional, recorded)</label><textarea class="editor" id="reject-reason" placeholder="Not now — revisit after the infra work lands"></textarea><button class="btn" id="submit-reject">Reject</button>`);
+      document.getElementById("submit-reject").onclick = async () => {
+        try {
+          await apiJson(`/api/founder/approvals/${encodeURIComponent(btn.dataset.reject)}/reject`, { method: "POST", body: JSON.stringify({ reason: document.getElementById("reject-reason").value }) });
+          closeModal(); showToast("Rejected. The task has stopped."); route();
+        } catch (e) { showToast(e.message, true); }
+      };
     });
     document.getElementById("ask-agent").onclick = () => { openModal("Ask an agent", `<label class="field-label">Agent</label><input class="modal-input" id="question-agent" value="main"/><label class="field-label">Question</label><textarea class="editor" id="question-text" placeholder="What is blocking this project?"></textarea><button class="btn" id="send-question">Ask</button><div id="question-answer"></div>`); document.getElementById("send-question").onclick = async () => { const out = document.getElementById("question-answer"); out.innerHTML = `<p class="muted">Agent is thinking…</p>`; try { const j = await apiJson("/api/founder/questions", { method: "POST", body: JSON.stringify({ agentId: document.getElementById("question-agent").value, question: document.getElementById("question-text").value }) }); out.innerHTML = `<div class="card">${esc(j.question.answer)}</div>`; } catch (e) { out.innerHTML = `<p class="danger-text">${esc(e.message)}</p>`; } }; };
     app.querySelectorAll("[data-report-task]").forEach((btn) => btn.onclick = () => openReportDrilldown("task", btn.dataset.reportTask));

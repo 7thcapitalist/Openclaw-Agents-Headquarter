@@ -4,6 +4,17 @@ import { basename, dirname, join, resolve } from "path";
 import { createState, taskStatePath, validateTaskContract, writeState } from "./task-workflow.mjs";
 import { writeHandoff } from "./handoff.mjs";
 
+// The public half of the founder approval authority embedded into every
+// high-risk task at creation. Prefer the key the founder enrolled from
+// Headquarters (data/factory/founder-approval-key.pem); fall back to the
+// FACTORY_FOUNDER_PUBLIC_KEY env path for the pre-enrollment / CLI setup.
+export function resolveFounderPublicKey(hqRoot) {
+  const enrolled = join(hqRoot, "dashboard", "backend", "data", "factory", "founder-approval-key.pem");
+  if (existsSync(enrolled)) return readFileSync(enrolled, "utf8");
+  const envPath = process.env.FACTORY_FOUNDER_PUBLIC_KEY;
+  return envPath && existsSync(resolve(envPath)) ? readFileSync(resolve(envPath), "utf8") : null;
+}
+
 export function initializeTask({ hqRoot, contractPath, repo: repoInput, branch: requestedBranch, worktree: requestedWorktree, stateRoot: requestedStateRoot, git = runGit }) {
   if (!contractPath || !repoInput) throw new Error("Initialization requires contractPath and repo.");
   const task = validateTaskContract(JSON.parse(readFileSync(resolve(contractPath), "utf8")));
@@ -15,9 +26,7 @@ export function initializeTask({ hqRoot, contractPath, repo: repoInput, branch: 
   if (existsSync(statePath)) throw new Error(`Task state already exists: ${statePath}`);
   const worktree = resolve(requestedWorktree || join(dirname(repo), ".openclaw-worktrees", `${basename(repo)}-${task.id}`));
   if (existsSync(worktree)) throw new Error(`Worktree path already exists: ${worktree}`);
-  const founderPublicKeyPath = process.env.FACTORY_FOUNDER_PUBLIC_KEY;
-  const founderPublicKey = founderPublicKeyPath ? readFileSync(resolve(founderPublicKeyPath), "utf8") : null;
-  const state = createState({ task, repo, branch, worktree, founderPublicKey });
+  const state = createState({ task, repo, branch, worktree, founderPublicKey: resolveFounderPublicKey(hqRoot) });
   if (git(repo, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], { allowFailure: true }).ok) {
     throw new Error(`Branch already exists: ${branch}`);
   }

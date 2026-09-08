@@ -300,7 +300,7 @@ function hasValidFounderApproval(state) {
   }
 }
 
-function publicKeyFingerprint(publicKey) {
+export function publicKeyFingerprint(publicKey) {
   return createHash("sha256").update(String(publicKey)).digest("hex");
 }
 

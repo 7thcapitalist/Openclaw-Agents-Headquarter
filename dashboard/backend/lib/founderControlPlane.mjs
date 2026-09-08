@@ -788,18 +788,18 @@ function buildFounderInbox({ tasks, decisions, questions, objectives = [] }) {
         ? `The factory has planned "${task?.objective || d.taskId}" and is holding before it writes any code. High-risk work (deployment, credentials, or an irreversible change) needs your sign-off first.`
         : d.why,
       recommendation: isApproval
-        ? "Review what it will do, then approve from your terminal — your signing key never touches this dashboard or the agents."
+        ? "Review what it will do, then Approve. Your signature comes from a key held only in your browser — the dashboard and the agents never see it."
         : d.recommendation,
       options: d.options,
       risk: d.risk || null,
       requestedAt: d.requestedAt || null,
-      action: isApproval ? "founder-side-approval" : "respond-and-resume",
-      // Everything the review card needs; the browser never signs.
+      action: isApproval ? "one-click-approval" : "respond-and-resume",
+      // Copy for the one-click review card. The browser signs with a
+      // non-extractable Ed25519 key; the server only verifies + records.
       approval: isApproval
         ? {
-            command: `npm run approve${d.taskId ? ` -- --task ${d.taskId}` : ""}`,
             whatHappensNext: "builder → reviewer → QA → security → release, then a pull request you merge",
-            keyNote: "Your Ed25519 private key stays on your machine (outside OpenClaw and the browser). The dashboard only records the already-verified signature.",
+            keyNote: "Signed by a non-extractable key held only in your browser. If it can't reach that key, npm run approve in a terminal still works.",
           }
         : null,
     });
