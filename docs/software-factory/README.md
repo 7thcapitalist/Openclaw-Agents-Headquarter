@@ -24,9 +24,9 @@ shared by every harness. Accepted decisions and their rationale live in
 | Chief of Staff | OpenClaw | turn goals into bounded work; route/escalate |
 | Architect | Claude Code | design and challenge non-trivial architecture |
 | Builder | Codex | primary autonomous implementation |
-| Product/UI Builder | Cursor | interface work and visual iteration |
+| Product/UI Builder | Codex (`frontend-builder`) | interface work, responsive checks, and visual evidence |
 | Reviewer | different from builder | find correctness, maintainability, security, and product issues |
-| QA | Cursor/Codex/Claude | attempt to break the result and verify acceptance criteria |
+| QA | Claude/Codex | attempt to break the result and verify acceptance criteria independently |
 | Release Manager | deterministic gates + OpenClaw | decide whether work is merge-ready; no production autonomy in V1 |
 
 Roles are responsibilities, not seven permanently-running processes.
@@ -37,7 +37,7 @@ GitHub is the durable control plane:
 
 `idea -> issue -> ready -> building -> review -> QA -> merge-ready -> merged -> deployed`
 
-OpenClaw is the orchestrator. Codex, Claude Code, and Cursor are execution harnesses. The HQ dashboard is the operator view.
+OpenClaw is the orchestrator. Codex and Claude are the active execution harnesses; Cursor remains an interactive IDE and planned harness. The HQ dashboard is the operator view.
 
 ## V1 safety model
 

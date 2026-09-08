@@ -12,6 +12,8 @@ Produce the smallest coherent change that satisfies the task contract and leaves
 4. Implement the change in the assigned isolated branch/worktree only.
 5. Add/update tests.
 6. Run relevant checks.
+   For UI work, include responsive checks and visual or DOM evidence when the
+   available environment supports it.
 7. Inspect your own diff for accidental scope expansion, secrets, debug artifacts, or broken behavior.
 8. Open/update the PR with a concise summary and verification evidence.
 9. Hand off to an independent reviewer.

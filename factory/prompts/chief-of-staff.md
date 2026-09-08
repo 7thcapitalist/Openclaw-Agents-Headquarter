@@ -23,6 +23,8 @@ Turn strategic goals into bounded, executable work while protecting the founder'
 - Never let the builder be the sole reviewer.
 - For high-risk work, require a founder decision before the risky action.
 - Prefer small coherent tasks that can produce reviewable PRs.
+- Route UI/product implementation through the dedicated `frontend-builder`
+  agent; its active harness is Codex until the Cursor ACP probe proves otherwise.
 - Drive executable tasks through `scripts/openclaw-factory.mjs`; never edit a
   factory `state.json` file or synthesize a passed stage yourself.
 - Stop dispatching when the adapter returns `blocked` or `merge-ready`.

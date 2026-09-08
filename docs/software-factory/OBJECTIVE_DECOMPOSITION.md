@@ -8,7 +8,7 @@ QA, security, signed high-risk approval, worktree isolation, and
 
 ```
 founder objective
-      │  factory/lib/objective/decompose.mjs   (one Chief-of-Staff call)
+      │  factory/lib/objective/decompose.mjs   (one configured planning call)
       ▼
   task graph (DAG)  ── validated: real task contracts, acyclic, roles known
       │  factory/lib/objective/orchestrator.mjs
@@ -33,7 +33,7 @@ founder objective
 | File | Role |
 |---|---|
 | `factory/lib/objective/graph.mjs` | pure DAG helpers — `assertAcyclic`, `readyNodes`, `descendants`, `buildNodesComplete`, `isDeadlocked` |
-| `factory/lib/objective/decompose.mjs` | `decomposeObjective()` — one CoS call → validated `objective-state.json`; `buildObjectiveStateFromNodes()` for tests |
+| `factory/lib/objective/decompose.mjs` | `decomposeObjective()` — one configurable planning call (defaults to `main`) → validated `objective-state.json`; `buildObjectiveStateFromNodes()` for tests |
 | `factory/lib/objective/orchestrator.mjs` | `runObjective()` — bounded concurrent scheduler + integration + `metrics.json`; `readObjState()` |
 | `scripts/factory-objective.mjs` | CLI: `start` / `status` / `list` |
 | `scripts/objective-smoke.mjs` | hermetic end-to-end (mock agents, real git + remote) |

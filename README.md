@@ -25,7 +25,7 @@ The dashboard is my headquarters. OpenClaw is the automation/runtime layer. Agen
 For the durable operating context used by coding agents, see
 [`docs/software-factory/PROJECT_CONTEXT.md`](docs/software-factory/PROJECT_CONTEXT.md).
 It defines the human-merge workflow, role assignments, approval boundaries,
-Cursor's place in the system, and the boundary between repository knowledge and
+the frontend-builder route, and the boundary between repository knowledge and
 private OpenClaw state.
 
 ## What This Does

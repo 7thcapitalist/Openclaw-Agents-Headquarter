@@ -11,11 +11,11 @@ const execFileAsync = promisify(execFile);
 const DEFAULT_HQ_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const SURFACED_OUTCOMES = new Set(["decision-request", "ask", "block"]);
 
-export async function createContractFromObjective({ objective, repo, issue, project, stateRoot, hqRoot = DEFAULT_HQ_ROOT, protocol = null, execute = executeChiefOfStaff }) {
+export async function createContractFromObjective({ objective, repo, issue, project, stateRoot, hqRoot = DEFAULT_HQ_ROOT, protocol = null, intakeAgentId = "main", execute = executeChiefOfStaff }) {
   if (typeof objective !== "string" || !objective.trim()) throw new Error("start requires a non-empty objective.");
   const id = `task-${randomUUID().slice(0, 8)}`;
-  const prompt = `You are the Chief of Staff intake for a software factory. Convert the natural-language request below into one bounded task contract. Inspect the repository only when needed to classify it. Return ONLY a JSON object with exactly these fields: id, issue, outcome, acceptanceCriteria, project, workType, risk, preferredBuilder, constraints. Use id ${JSON.stringify(id)}. Use issue ${JSON.stringify(issue || `local:${id}`)}.${project ? ` Use project ${JSON.stringify(project)} exactly.` : ""} workType must be ui, backend, architecture, bugfix, research, or ops. risk must be low, medium, or high according to the repository operating rules. preferredBuilder must be auto, codex, claude, or cursor. Do not invent product scope. Acceptance criteria must be observable and include appropriate verification.\n\nRepository: ${resolve(repo)}\n\nFounder request:\n${objective.trim()}`;
-  const raw = await execute({ prompt, repo, id });
+  const prompt = `You are the Chief of Staff intake for a software factory. Convert the natural-language request below into one bounded task contract. Inspect the repository only when needed to classify it. Return ONLY a JSON object with exactly these fields: id, issue, outcome, acceptanceCriteria, project, workType, risk, preferredBuilder, constraints. Use id ${JSON.stringify(id)}. Use issue ${JSON.stringify(issue || `local:${id}`)}.${project ? ` Use project ${JSON.stringify(project)} exactly.` : ""} workType must be ui, backend, architecture, bugfix, research, or ops. risk must be low, medium, or high according to the repository operating rules. preferredBuilder must be auto, codex, claude, or frontend. Do not invent product scope. Acceptance criteria must be observable and include appropriate verification.\n\nRepository: ${resolve(repo)}\n\nFounder request:\n${objective.trim()}`;
+  const raw = await execute({ prompt, repo, id, agentId: intakeAgentId });
   const contract = validateTaskContract(extractJsonObject(raw));
   if (contract.id !== id) throw new Error("Chief of Staff changed the assigned task id.");
   // This namespace is owned by the deterministic classifier, not model output.
@@ -65,11 +65,19 @@ function findMatchedRule(classification, protocol) {
   return null;
 }
 
-export async function executeChiefOfStaff({ prompt, repo, id }) {
-  const { stdout } = await execFileAsync("openclaw", [
-    "agent", "--agent", "main", "--session-key", `agent:main:factory-intake-${id}`,
-    "--message", prompt, "--json", "--timeout", "600",
-  ], { cwd: resolve(repo), timeout: 10 * 60 * 1000, maxBuffer: 8 * 1024 * 1024 });
+export function buildIntakeInvocation({ agentId = "main", id, prompt }) {
+  const sessionKey = `agent:${agentId}:factory-intake-${id}`;
+  return {
+    bin: "openclaw",
+    sessionKey,
+    args: ["agent", "--agent", agentId, "--session-key", sessionKey, "--message", prompt, "--json", "--timeout", "600"],
+  };
+}
+
+export async function executeChiefOfStaff({ prompt, repo, id, agentId = "main" }) {
+  const invocation = buildIntakeInvocation({ agentId, id, prompt });
+  const { stdout } = await execFileAsync(invocation.bin, invocation.args,
+    { cwd: resolve(repo), timeout: 10 * 60 * 1000, maxBuffer: 8 * 1024 * 1024 });
   const envelope = JSON.parse(stdout);
   if (envelope.status !== "ok") throw new Error(`Chief of Staff intake failed: ${envelope.summary || envelope.status}`);
   const text = envelope.result?.payloads?.map((item) => item.text).filter(Boolean).join("\n");
