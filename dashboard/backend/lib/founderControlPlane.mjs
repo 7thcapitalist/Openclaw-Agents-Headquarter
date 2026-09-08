@@ -9,6 +9,7 @@ import { toTaskRecord } from "../../../factory/lib/learning/evidence.mjs";
 import { classifyBlocker, classifyObjectiveNodeBlocker } from "../../../factory/lib/hq/blocker-class.mjs";
 import { resumeObjectiveNodes, setObjectiveRecoveryInFlight, readObjState } from "../../../factory/lib/objective/orchestrator.mjs";
 import { defaultStateRoot } from "../../../factory/lib/natural-language-intake.mjs";
+import { presentObjective, isSeedProject } from "../../../factory/lib/hq/presenter.mjs";
 
 const CONTROL_FILE = "control-plane.json";
 
@@ -528,7 +529,11 @@ export function buildObjectivesView(root) {
       for (const entry of readdirSync(objDir, { withFileTypes: true })) {
         const path = join(objDir, entry.name, "objective-state.json");
         if (!existsSync(path)) continue;
-        try { objectives.push(shapeObjective(root, JSON.parse(readFileSync(path, "utf8")), join(objDir, entry.name))); }
+        try {
+          const shaped = shapeObjective(root, JSON.parse(readFileSync(path, "utf8")), join(objDir, entry.name));
+          shaped.hasReport = existsSync(join(objDir, entry.name, "report.md"));
+          objectives.push(shaped);
+        }
         catch (error) { objectives.push({ objectiveId: entry.name, status: "invalid", error: error.message }); }
       }
     }
@@ -548,7 +553,8 @@ export function buildObjectivesView(root) {
         title: task.objective || node.title || null,
         stage: task.stage, taskStatus: task.status, elapsedMs: task.elapsedMs,
         lastResult: task.lastResult, blocker: node.blocker || task.blocker,
-        decisionRequired: classifyObjectiveNodeBlocker(node.blocker || task.blocker) === "decision",
+        decisionRequired: (node.blocker || task.blocker)?.outcome === "decision-required",
+        decisionCard: task.decisionCard || null,
         retries: (task.events || []).filter((e) => e.type === "failure-routed").length,
         statePath: task.statePath,
         hasReport: Boolean(task.completionReport),
@@ -568,6 +574,29 @@ export function buildObjectivesView(root) {
     obj.nextUp = (obj.nodes || [])
       .filter((n) => n.status === "pending" && (n.dependsOn || []).every((d) => (obj.nodes || []).find((x) => x.id === d)?.status === "gate-satisfied"))
       .map((n) => n.id);
+    // Add a stable founder-facing projection while retaining the raw fields
+    // above for drill-downs and recovery controls.
+    if (obj.status !== "invalid") {
+      try {
+        const p = presentObjective(obj);
+        obj.title = p.title;
+        obj.description = p.description;
+        obj.status6 = p.status;
+        obj.statusLabel = p.statusLabel;
+        obj.statusTone = p.statusTone;
+        obj.statusIcon = p.statusIcon;
+        obj.headline = p.headline;
+        obj.progress = p.progress;
+        obj.blockerBrief = p.blockerBrief;
+        obj.nextAction = p.nextAction;
+        obj.builders = p.builders;
+        obj.isSeed = p.isSeed;
+        obj.nodeBriefs = p.nodeStatuses;
+      } catch (error) {
+        obj.presenterError = error.message || String(error);
+      }
+    }
+    obj.isSeed = obj.isSeed ?? isSeedProject(obj.project);
   }
   // Attach recovery plans from raw objective-state (needs statePath on nodes).
   for (const obj of objectives) {
@@ -589,15 +618,22 @@ export function buildObjectivesView(root) {
       obj.recovery = { count: 0, nodes: [] };
     }
   }
+  const sorted = objectives.sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
+  const real = sorted.filter((o) => !o.isSeed);
+  const seed = sorted.filter((o) => o.isSeed);
+  const countBy = (list, s) => list.filter((o) => o.status6 === s).length;
   return {
-    objectives: objectives.sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""))),
+    objectives: real,
+    seedObjectives: seed,
     rolePolicy,
     summary: {
-      total: objectives.length,
-      running: objectives.filter((o) => o.status === "active").length,
-      complete: objectives.filter((o) => o.status === "complete").length,
-      blocked: objectives.filter((o) => ["blocked", "integration-blocked"].includes(o.status)).length,
-      needsFounder: objectives.filter((o) => o.blockedOn).length,
+      total: real.length,
+      running: countBy(real, "RUNNING"),
+      complete: countBy(real, "COMPLETE"),
+      blocked: countBy(real, "BLOCKED") + countBy(real, "FAILED"),
+      needsFounder: countBy(real, "WAITING_FOR_FOUNDER"),
+      pending: countBy(real, "PENDING"),
+      seed: seed.length,
     },
   };
 }
