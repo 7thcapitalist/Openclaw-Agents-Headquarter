@@ -9,6 +9,7 @@
     "dev": "AGENT_LAB_ROOT=$PWD npm --prefix dashboard/backend run dev",
     "start": "AGENT_LAB_ROOT=$PWD npm --prefix dashboard/backend start",
     "test:factory": "node --test factory/test/*.test.mjs",
+    "approve": "node scripts/founder-approve.mjs",
     "factory:openclaw": "node scripts/openclaw-factory.mjs",
     "factory:intel": "node scripts/project-intel.mjs",
     "factory:hq": "node scripts/hq.mjs",

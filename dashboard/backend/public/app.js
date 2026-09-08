@@ -548,13 +548,39 @@ import { costLimitsPanel } from "/cost-limits.mjs";
       <p>${esc(x.why || "")}</p>
       ${x.recommendation ? `<div class="decision-rec"><small>Recommendation</small>${esc(x.recommendation)}</div>` : ""}
       ${actionable
-        ? (x.risk === "high"
-            ? `<p class="muted small">The private signing key stays outside OpenClaw and this dashboard.</p><button class="btn" data-approve-decision="${esc(x.statePath)}">Submit signed approval</button>`
-            : `<div class="decision-choices">
-                ${choices.map((c) => `<button class="btn" data-resolve-choice="${esc(x.statePath)}" data-choice="${esc(c)}">${esc(c)}</button>`).join("")}
-                <button class="btn secondary" data-resolve-decision="${esc(x.statePath)}">Answer in my own words…</button>
-              </div>`)
+        ? `<div class="decision-choices">
+            ${choices.map((c) => `<button class="btn" data-resolve-choice="${esc(x.statePath)}" data-choice="${esc(c)}">${esc(c)}</button>`).join("")}
+            <button class="btn secondary" data-resolve-decision="${esc(x.statePath)}">Answer in my own words…</button>
+          </div>`
         : `<p class="muted small">Strategic decision tracked in ${esc(x.project || "the project")}'s ownership.json — not resolvable from here yet; update the file directly.</p>`}
+    </article>`;
+  }
+
+  // High-risk approval. The browser cannot hold the signing key, so the founder
+  // approves from their terminal (`npm run approve`) — this card explains what is
+  // being approved and what happens next, and gives them the exact command.
+  function approvalCard(x) {
+    const a = x.approval || {};
+    const cmd = a.command || "npm run approve";
+    return `<article class="decision-card approval-card">
+      <div class="decision-top"><span class="decision-icon">◆</span>
+        <div><strong>${esc(x.title || "Approve a high-risk build")}</strong>
+        <span>${pill("Approval", "badge-warn")} ${esc(x.project || "company")}${x.taskId ? ` · <code>${esc(x.taskId)}</code>` : ""}</span></div>
+      </div>
+      ${x.objective ? `<p class="muted small">What the factory will do: <strong>${esc(x.objective)}</strong></p>` : ""}
+      <p>${esc(x.detail || "")}</p>
+      ${a.whatHappensNext ? `<div class="decision-rec"><small>After you approve</small>${esc(a.whatHappensNext)}</div>` : ""}
+      <p class="muted small">${esc(a.keyNote || "Your signing key never touches this dashboard or the agents.")}</p>
+      <div class="approve-cmd"><code>${esc(cmd)}</code><button class="btn secondary tiny" data-copy-text="${esc(cmd)}">Copy</button></div>
+      <p class="muted small">Run it at the repo root, review the summary it prints, confirm. This card clears once the signature is recorded.</p>
+      <details class="approve-advanced">
+        <summary>I already have a signed assertion file</summary>
+        <label class="field-label">Assertion path</label>
+        <input class="modal-input" data-adv-assertion placeholder="/path/to/approval.json"/>
+        <label class="field-label">Evidence path (relative to worktree)</label>
+        <input class="modal-input" data-adv-evidence placeholder="evidence/founder-approval.md"/>
+        <button class="btn secondary" data-approve-decision="${esc(x.statePath || "")}">Verify &amp; approve</button>
+      </details>
     </article>`;
   }
 
@@ -565,7 +591,8 @@ import { costLimitsPanel } from "/cost-limits.mjs";
   // action buttons; blocked tasks link to their completion report; questions
   // are read-only (this system answers them synchronously).
   function inboxItem(x) {
-    if (x.kind === "decision" || x.kind === "approval") {
+    if (x.kind === "approval") return approvalCard(x);
+    if (x.kind === "decision") {
       return decisionCard({
         question: x.title, why: x.detail, project: x.project, taskId: x.taskId, objective: x.objective,
         recommendation: x.recommendation, options: x.options, risk: x.risk, statePath: x.statePath,
@@ -685,7 +712,23 @@ import { costLimitsPanel } from "/cost-limits.mjs";
       } catch (e) { showToast(e.message, true); btn.disabled = false; }
     });
     app.querySelectorAll("[data-resolve-decision]").forEach((btn) => btn.onclick = () => { openModal("Answer in your own words", `<label class="field-label">Your direction for the team</label><textarea class="editor" id="decision-direction" placeholder="Go with option A because…"></textarea><button class="btn" id="submit-decision">Send &amp; resume</button>`); document.getElementById("submit-decision").onclick = async () => { const dir = document.getElementById("decision-direction").value.trim(); if (!dir) { showToast("Type a direction first.", true); return; } try { await apiJson("/api/founder/decisions/resolve", { method: "POST", body: JSON.stringify({ statePath: btn.dataset.resolveDecision, direction: dir }) }); closeModal(); showToast("Decision recorded. Work resumed."); route(); } catch (e) { showToast(e.message, true); } }; });
-    app.querySelectorAll("[data-approve-decision]").forEach((btn) => btn.onclick = () => { openModal("Signed founder approval", `<p class="muted small">Create the assertion with <code>factory-sign-approval.mjs</code>, then submit its path and the matching evidence path inside the task worktree.</p><label class="field-label">Approval assertion path</label><input class="modal-input" id="approval-assertion" placeholder="/private/operator/approval.json"/><label class="field-label">Evidence path (relative to worktree)</label><input class="modal-input" id="approval-evidence" placeholder="evidence/founder-approval.md"/><button class="btn" id="submit-approval">Verify & approve</button>`); document.getElementById("submit-approval").onclick = async () => { try { await apiJson("/api/founder/decisions/approve", { method: "POST", body: JSON.stringify({ statePath: btn.dataset.approveDecision, approvalAssertionPath: document.getElementById("approval-assertion").value, evidence: document.getElementById("approval-evidence").value }) }); closeModal(); showToast("Signature verified. Work resumed."); route(); } catch (e) { showToast(e.message, true); } }; });
+    app.querySelectorAll("[data-copy-text]").forEach((btn) => btn.onclick = async () => {
+      try { await navigator.clipboard.writeText(btn.dataset.copyText); showToast("Copied. Run it at the repo root."); }
+      catch { showToast(btn.dataset.copyText, false); }
+    });
+    // Power-user fallback: a founder who signed the assertion by hand can still
+    // submit its path + evidence path directly (same verification endpoint).
+    app.querySelectorAll("[data-approve-decision]").forEach((btn) => btn.onclick = async () => {
+      const wrap = btn.closest("details") || document;
+      const assertionPath = wrap.querySelector("[data-adv-assertion]")?.value?.trim();
+      const evidence = wrap.querySelector("[data-adv-evidence]")?.value?.trim();
+      if (!assertionPath || !evidence) { showToast("Both paths are required.", true); return; }
+      btn.disabled = true;
+      try {
+        await apiJson("/api/founder/decisions/approve", { method: "POST", body: JSON.stringify({ statePath: btn.dataset.approveDecision, approvalAssertionPath: assertionPath, evidence }) });
+        showToast("Signature verified. Work resumed."); route();
+      } catch (e) { showToast(e.message, true); btn.disabled = false; }
+    });
     document.getElementById("ask-agent").onclick = () => { openModal("Ask an agent", `<label class="field-label">Agent</label><input class="modal-input" id="question-agent" value="main"/><label class="field-label">Question</label><textarea class="editor" id="question-text" placeholder="What is blocking this project?"></textarea><button class="btn" id="send-question">Ask</button><div id="question-answer"></div>`); document.getElementById("send-question").onclick = async () => { const out = document.getElementById("question-answer"); out.innerHTML = `<p class="muted">Agent is thinking…</p>`; try { const j = await apiJson("/api/founder/questions", { method: "POST", body: JSON.stringify({ agentId: document.getElementById("question-agent").value, question: document.getElementById("question-text").value }) }); out.innerHTML = `<div class="card">${esc(j.question.answer)}</div>`; } catch (e) { out.innerHTML = `<p class="danger-text">${esc(e.message)}</p>`; } }; };
     app.querySelectorAll("[data-report-task]").forEach((btn) => btn.onclick = () => openReportDrilldown("task", btn.dataset.reportTask));
     app.querySelectorAll("[data-report-objective]").forEach((btn) => btn.onclick = () => openReportDrilldown("objective", btn.dataset.reportObjective));

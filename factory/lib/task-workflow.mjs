@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "fs";
 import { dirname, join, resolve } from "path";
-import { createHash, randomUUID, verify as verifySignature } from "crypto";
+import { createHash, randomUUID, sign as signPayload, verify as verifySignature } from "crypto";
 import { classifyBlocker } from "./hq/blocker-class.mjs";
 
 export const STAGES = [
@@ -233,6 +233,30 @@ export function evidenceSha256(path) {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
+// Build the signed founder-approval assertion for a high-risk task. The ONLY
+// place a private key is used in the approval flow — callers must run this in a
+// founder-controlled process (never the dashboard server or an agent). The
+// produced object is exactly what recordFounderApproval() verifies.
+//
+//   state        — the task state (needs founderApprovalRequest + task.risk "high")
+//   evidencePath — absolute path to the approval evidence file inside the worktree
+//   privateKey   — Ed25519 private key (PEM string or KeyObject)
+//   approvedAt   — ISO timestamp of the human decision (defaults to now)
+export function createFounderApprovalAssertion(state, { evidencePath, privateKey, approvedAt = new Date().toISOString() }) {
+  if (state?.task?.risk !== "high" || !state.founderApprovalRequest) {
+    throw new Error("Task has no high-risk founder approval request.");
+  }
+  if (!evidencePath) throw new Error("Founder approval requires an evidence file path.");
+  if (!privateKey) throw new Error("Founder approval requires the founder private key.");
+  const unsigned = {
+    ...state.founderApprovalRequest,
+    approvedAt,
+    evidenceSha256: evidenceSha256(evidencePath),
+  };
+  const signature = signPayload(null, Buffer.from(founderApprovalPayload(state, unsigned)), privateKey).toString("base64");
+  return { ...unsigned, signature };
+}
+
 function sanitizeTaskContract(task) {
   const safe = structuredClone(task);
   for (const field of ["founderApproval", "founderApprovalAuthority", "founderApprovalRequest", "approval", "approvals"]) delete safe[field];
@@ -251,6 +275,19 @@ function validateFounderAssertion(state, assertion, evidence) {
   const payload = founderApprovalPayload(state, assertion);
   const valid = verifySignature(null, Buffer.from(payload), state.founderApprovalAuthority.publicKey, Buffer.from(assertion.signature, "base64"));
   if (!valid) throw new Error("Founder approval signature is invalid.");
+}
+
+// True when a task is parked at the high-risk gate before `builder` and still
+// has no valid recorded approval — i.e. it is waiting for the founder to sign.
+export function isAwaitingFounderApproval(state) {
+  return Boolean(
+    state
+    && state.task?.risk === "high"
+    && state.status === "blocked"
+    && state.blocker?.stage === "builder"
+    && state.blocker?.outcome === "decision-required"
+    && !hasValidFounderApproval(state),
+  );
 }
 
 function hasValidFounderApproval(state) {
