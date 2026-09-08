@@ -30,6 +30,7 @@ import { decomposeObjective } from "../factory/lib/objective/decompose.mjs";
 import { runObjective, readObjState } from "../factory/lib/objective/orchestrator.mjs";
 import { defaultStateRoot } from "../factory/lib/natural-language-intake.mjs";
 import { readState, writeState, resumeState } from "../factory/lib/task-workflow.mjs";
+import { observeObjectivePrs } from "../factory/lib/hq/pr-observation.mjs";
 import { classifyBlocker } from "../factory/lib/hq/blocker-class.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -85,16 +86,17 @@ async function providerPressure({ barrenRound }) {
 // A round is "barren" if it shipped nothing and at least one node is stuck on
 // an infra/exhaustion-class blocker — the signature of running out of credits
 // rather than hitting a real design wall.
-export function assessRound(result) {
+export function assessRound(result, observedPrs = []) {
   const obj = result?.objective || {};
   const nodes = Object.values(obj.nodes || {});
   const prs = [];
   for (const n of nodes) {
-    const url = n.githubPublish?.prUrl;
+    const url = n.githubPublish?.prUrl || n.prUrl;
     if (url) prs.push({ node: n.id, url });
   }
   const integPr = obj.integration?.githubPublish?.prUrl;
   if (integPr) prs.push({ node: "integration", url: integPr });
+  for (const pr of observedPrs) if (!prs.some((p) => p.url === pr.url)) prs.push(pr);
   const infraBlocked = nodes.filter((n) => n.blocker && classifyBlocker(n.blocker) === "infra").map((n) => n.id);
   const barren = prs.length === 0 && (infraBlocked.length > 0 || classifyBlocker(obj.integration?.blocker) === "infra");
   return { prs, infraBlocked, barren, status: result?.status || "unknown" };
@@ -155,7 +157,8 @@ async function runRound({ project, repo, dryRun, resumePath }) {
     concurrentGroups: cfg.openclawIntegration?.concurrentGroups,
     stateRoot: defaultStateRoot(HQ_ROOT, repo),
   });
-  return { objectiveId: obj.objectiveId, objectivePath, ...assessRound(result) };
+  const observation = await observeObjectivePrs({ hqRoot: HQ_ROOT, objective: result.objective });
+  return { objectiveId: obj.objectiveId, objectivePath, ...assessRound(result, observation.prs), prLookupErrors: observation.errors };
 }
 
 async function main() {
@@ -186,7 +189,7 @@ async function main() {
   let round = 0;
   let backoffIdx = 0;
   let endReason = null;
-  const shippedPrs = [];
+  const shippedPrs = new Set();
 
   while (!stop && round < maxRounds && Date.now() < deadline) {
     round += 1;
@@ -198,7 +201,7 @@ async function main() {
     } catch (error) {
       r = { objectiveId: null, status: "threw", barren: error?.transient === true, infraBlocked: [], prs: [], error: String(error?.message || error) };
     }
-    (r.prs || []).forEach((p) => shippedPrs.push(p.url));
+    (r.prs || []).forEach((p) => shippedPrs.add(p.url));
     logRound({ round, ...r, elapsedMin: Math.round((Date.now() - roundStart) / 60000) });
 
     if (dryRun || stop) break;
@@ -238,7 +241,7 @@ async function main() {
     }
   }
 
-  logRound({ event: "loop-end", rounds: round, totalPrs: shippedPrs.length, prs: shippedPrs, reason: stop ? "signal" : endReason || (dryRun ? "dry-run" : round >= maxRounds ? "max-rounds" : "budget") });
+  logRound({ event: "loop-end", rounds: round, totalPrs: shippedPrs.size, prs: [...shippedPrs], reason: stop ? "signal" : endReason || (dryRun ? "dry-run" : round >= maxRounds ? "max-rounds" : "budget") });
 }
 
 // Run only when invoked directly, not when imported by a test.

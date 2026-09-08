@@ -1,5 +1,6 @@
 import { execFile } from "child_process";
 import { promisify } from "util";
+import { setTimeout as delay } from "timers/promises";
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "fs";
 import { basename, dirname, join } from "path";
 import { PROTOCOL_VERSION, computeDispatchPaths, failDispatch, ingestResult, markDispatchRunning, prepareDispatch, readResultFile } from "./openclaw-protocol.mjs";
@@ -17,22 +18,69 @@ const execFileAsync = promisify(execFile);
 // not matter because the engine still applies them one at a time.
 export const DEFAULT_CONCURRENT_GROUPS = [["reviewer", "qa", "security"]];
 
-export async function runOneStage({ hqRoot, statePath, agentIds = {}, maxAttemptsPerStage = 3, execute = executeOpenClaw, publish = publishMergeReadyTask, agentMetaByDispatchId = null }) {
+export function isYieldedExecution(executed) {
+  let envelope;
+  try { envelope = JSON.parse(executed?.stdout || "{}"); } catch { return false; }
+  if (envelope.status && envelope.status !== "ok") return false;
+  return [envelope, envelope.result, envelope.result?.meta].some((part) =>
+    part?.yielded === true || part?.livenessState === "paused");
+}
+
+// A yielded gateway turn is still owned by its delegated worker. Wait for the
+// exact dispatch artifact; a bounded wait expiring is NOT a failed execution.
+export async function waitForYieldedResult({ resultPath, wait = delay, now = Date.now,
+  timeoutMs = 60 * 60 * 1000, pollMs = 5000, heartbeat = () => {} }) {
+  const deadline = now() + timeoutMs;
+  const ready = () => {
+    try { return Boolean(readResultFile(resultPath)); } catch { return false; }
+  };
+  while (!ready()) {
+    if (now() >= deadline) return false;
+    heartbeat();
+    await wait(Math.min(pollMs, deadline - now()));
+  }
+  return true;
+}
+
+export async function runOneStage({ hqRoot, statePath, agentIds = {}, maxAttemptsPerStage = 3, execute = executeOpenClaw, publish = publishMergeReadyTask, agentMetaByDispatchId = null, waitForResult = waitForYieldedResult }) {
+  const initial = readState(statePath);
+  if (initial.yieldedGroup) return { version: PROTOCOL_VERSION, status: "dispatch", taskId: initial.task.id, waiting: true };
   const prepared = prepareDispatch({ hqRoot, statePath });
   if (prepared.status !== "dispatch") return prepared;
+  const owned = readState(statePath).currentDispatch;
+  if (owned?.status === "running" && owned.yieldedAt) {
+    if (!existsSync(prepared.resultPath)) return { ...prepared, waiting: true };
+    const resumed = ingestResult({ statePath, result: readResultFile(prepared.resultPath), maxAttemptsPerStage });
+    if (resumed.status === "merge-ready") resumed.githubPublish = publishAndRecord({ hqRoot, statePath, publish });
+    if (["merge-ready", "blocked"].includes(resumed.status)) writeCompletionReport({ statePath });
+    return resumed;
+  }
   markDispatchRunning({ statePath, dispatchId: prepared.dispatchId });
   const agentId = selectAgentId(prepared, agentIds);
   const sessionKey = `agent:${agentId}:factory-${prepared.dispatchId}`;
   let response;
   const startedAt = Date.now();
   try {
-    const executed = await execute({
+    const executed = existsSync(prepared.resultPath) ? {} : await execute({
       agentId,
       messageFile: prepared.promptPath,
       sessionKey,
       cwd: prepared.cwd,
       dispatch: prepared,
     });
+    if (!existsSync(prepared.resultPath) && isYieldedExecution(executed)) {
+      const current = readState(statePath);
+      current.currentDispatch.yieldedAt = new Date().toISOString();
+      current.events.push({ at: current.currentDispatch.yieldedAt, type: "dispatch-yielded", dispatchId: prepared.dispatchId, stage: prepared.stage });
+      writeState(statePath, current);
+      const ready = await waitForResult({ resultPath: prepared.resultPath, heartbeat: () => {
+        const live = readState(statePath);
+        if (live.currentDispatch?.id !== prepared.dispatchId) throw new Error("Yielded dispatch ownership changed");
+        live.updatedAt = new Date().toISOString();
+        writeState(statePath, live);
+      } });
+      if (!ready) return { ...prepared, waiting: true };
+    }
     const agentMeta = parseAgentMeta(executed, { durationMsFallback: Date.now() - startedAt })
       || agentMetaByDispatchId?.get(prepared.dispatchId)
       || null;
@@ -55,6 +103,11 @@ export async function runOneStage({ hqRoot, statePath, agentIds = {}, maxAttempt
       }
     }
   } catch (error) {
+    const current = readState(statePath);
+    if (current.currentDispatch?.id !== prepared.dispatchId) {
+      return { version: PROTOCOL_VERSION, status: current.status, taskId: current.task.id,
+        currentStage: current.currentStage, blocker: current.blocker || null };
+    }
     const agentMeta = parseAgentMeta(error, { durationMsFallback: Date.now() - startedAt })
       || agentMetaByDispatchId?.get(prepared.dispatchId)
       || null;
@@ -149,15 +202,23 @@ export async function runToTerminal(options) {
 // slow part), then feed each result back through the UNCHANGED engine one stage
 // at a time. Returns the engine response, or null when no fan-out applies (the
 // caller then does a normal sequential `runOneStage`).
-export async function runConcurrentGroupIfReady({ hqRoot, statePath, agentIds = {}, maxAttemptsPerStage = 3, execute = executeOpenClaw, publish = publishMergeReadyTask, groups = DEFAULT_CONCURRENT_GROUPS }) {
+export async function runConcurrentGroupIfReady({ hqRoot, statePath, agentIds = {}, maxAttemptsPerStage = 3, execute = executeOpenClaw, publish = publishMergeReadyTask, groups = DEFAULT_CONCURRENT_GROUPS, waitForResult = waitForYieldedResult }) {
   const state = readState(statePath);
   if (state.status !== "active" || state.currentDispatch) return null;
+  if (state.yieldedGroup) {
+    if (state.yieldedGroup.some((m) => !existsSync(m.resultPath))) {
+      return { version: PROTOCOL_VERSION, status: "dispatch", taskId: state.task.id, waiting: true };
+    }
+    execute = async () => {}; // consume the already-produced group, never re-dispatch
+  }
   const pending = (s) => {
     const st = state.stages?.[s]?.status;
     return st === undefined || st === "pending";
   };
   const group = (groups || []).find((g) => Array.isArray(g) && g.length >= 2 && g[0] === state.currentStage && g.slice(1).every(pending));
-  if (!group) return null;
+  if (!group) return state.yieldedGroup
+    ? { version: PROTOCOL_VERSION, status: "dispatch", taskId: state.task.id, waiting: true }
+    : null;
 
   const members = group.map((stage) => {
     const { dispatchId, resultPath } = computeDispatchPaths({ state, stage, statePath });
@@ -176,7 +237,7 @@ export async function runConcurrentGroupIfReady({ hqRoot, statePath, agentIds = 
   const settled = await Promise.allSettled(members.map(async (m) => {
     const startedAt = Date.now();
     try {
-      const executed = await execute({
+      const executed = existsSync(m.resultPath) ? {} : await execute({
         agentId: m.agentId,
         messageFile: m.promptPath,
         sessionKey: `agent:${m.agentId}:factory-${m.dispatchId}`,
@@ -193,6 +254,17 @@ export async function runConcurrentGroupIfReady({ hqRoot, statePath, agentIds = 
           resultPath: m.resultPath,
         },
       });
+      if (!existsSync(m.resultPath) && isYieldedExecution(executed)) {
+        const current = readState(statePath);
+        current.yieldedGroup = members.map(({ dispatchId, stage, resultPath }) => ({ dispatchId, stage, resultPath }));
+        current.updatedAt = new Date().toISOString();
+        writeState(statePath, current);
+        await waitForResult({ resultPath: m.resultPath, heartbeat: () => {
+          const live = readState(statePath);
+          live.updatedAt = new Date().toISOString();
+          writeState(statePath, live);
+        } });
+      }
       const meta = parseAgentMeta(executed, { durationMsFallback: Date.now() - startedAt });
       if (meta) agentMetaByDispatchId.set(m.dispatchId, meta);
       return executed;
@@ -205,7 +277,7 @@ export async function runConcurrentGroupIfReady({ hqRoot, statePath, agentIds = 
   for (let i = 0; i < members.length; i += 1) {
     const m = members[i];
     const rejected = settled[i].status === "rejected";
-    if (rejected || !existsSync(m.resultPath)) {
+    if ((rejected || !existsSync(m.resultPath)) && !(settled[i].status === "fulfilled" && isYieldedExecution(settled[i].value))) {
       const reason = rejected
         ? summarizeError(settled[i].reason)
         : `the ${m.stage} agent (${m.agentId}) produced no result file`;
@@ -213,6 +285,12 @@ export async function runConcurrentGroupIfReady({ hqRoot, statePath, agentIds = 
     }
   }
 
+  if (settled.some((r, i) => r.status === "fulfilled" && isYieldedExecution(r.value) && !existsSync(members[i].resultPath))) {
+    return { version: PROTOCOL_VERSION, status: "dispatch", taskId: state.task.id, waiting: true };
+  }
+  const completedGroup = readState(statePath);
+  delete completedGroup.yieldedGroup;
+  writeState(statePath, completedGroup);
   // Apply through the real engine, one stage at a time, with a no-op execute so
   // `runOneStage` consumes the result file each member already wrote.
   const noop = async () => {};

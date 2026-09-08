@@ -189,6 +189,15 @@ export function publishMergeReadyTask({ hqRoot, state, exec = defaultExec, ghAva
   }
 
   const slug = target.ownerRepo;
+  // Builders can open a draft before release. Reuse that exact branch PR.
+  const observed = exec(worktree, ["gh", "pr", "list", "--repo", slug, "--head", branch,
+    "--state", "open", "--json", "url,headRefName,isCrossRepository"]);
+  if (!observed.ok) return { published: false, pushed: true, ...audit, reason: "Could not check existing branch PRs; retry publication" };
+  let existing;
+  try { existing = JSON.parse(observed.out).find((pr) => pr.headRefName === branch && pr.isCrossRepository === false && pr.url?.startsWith(`https://github.com/${slug}/pull/`)); }
+  catch { return { published: false, pushed: true, ...audit, reason: "Invalid existing PR response; retry publication" }; }
+  if (existing) return { published: true, pushed: true, prUrl: existing.url, ...audit };
+
   const title = truncate(state.task.outcome || state.task.id, 120);
   const body = buildPrBody(state);
   try {

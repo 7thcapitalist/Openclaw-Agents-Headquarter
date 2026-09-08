@@ -70,6 +70,12 @@ export async function retryStuckTasks({
     let state;
     try { state = readState(statePath); } catch { continue; }
 
+    // A delegated worker may still be writing. Age is not proof of termination.
+    if (state.currentDispatch?.yieldedAt || state.yieldedGroup) {
+      skipped.push({ taskId: state.task?.id, statePath, reason: "delegated execution still owns its dispatch" });
+      continue;
+    }
+
     // Two recoverable situations, both "no live runner owns this task":
     //   1. blocked on an INFRA-class failure (transient agent/process error)
     //   2. active but untouched for > staleActiveMs — its in-process runner

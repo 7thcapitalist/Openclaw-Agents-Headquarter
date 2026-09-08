@@ -142,10 +142,17 @@ async function runNode({ hqRoot, objectivePath, nodeId, execute, agentIds, maxAt
     patchNode(objectivePath, nodeId, { statePath, worktree, branch: init.branch });
   }
 
-  const resp = await runToTerminal({ hqRoot, statePath, agentIds, maxAttemptsPerStage, concurrentGroups, execute, publish: NODE_NO_PUBLISH });
+  // Let the workflow publish the completed build branch once it reaches the
+  // merge-ready gate. The recorded result is then mirrored onto objective
+  // state so integration only starts from reviewable branches.
+  const resp = await runToTerminal({ hqRoot, statePath, agentIds, maxAttemptsPerStage, concurrentGroups, execute, publish });
   const state = readState(statePath);
   const attempts = (state.dispatches || []).length;
 
+  if (resp.waiting) {
+    patchNode(objectivePath, nodeId, { status: "running", blocker: null }, { type: "node-waiting-for-delegate" });
+    return { nodeId, status: "running" };
+  }
   if (resp.status === "merge-ready") {
     // ensure the branch actually carries a commit even without a github remote
     try { ensureBranchHasCommit({ state }); } catch { /* recorded by the publish step if a remote exists */ }
