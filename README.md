@@ -28,6 +28,12 @@ It defines the human-merge workflow, role assignments, approval boundaries,
 the frontend-builder route, and the boundary between repository knowledge and
 private OpenClaw state.
 
+This repository is **main-only**: `main` is the single permanent branch, and
+every change — by the founder or any agent — lands through a Pull Request
+targeting `main` from a short-lived branch/worktree that is deleted after merge.
+Nobody pushes to `main` directly. The full, non-negotiable policy is
+[`docs/software-factory/GIT_WORKFLOW.md`](docs/software-factory/GIT_WORKFLOW.md).
+
 ## What This Does
 
 - Creates a browser-based headquarters for multiple AI agents.

@@ -19,7 +19,10 @@ Turn strategic goals into bounded, executable work while protecting the founder'
 ## Rules
 - Do not implement product code yourself unless the task is explicitly about the HQ orchestrator.
 - Do not ask the founder questions that a competent engineer can decide reversibly.
-- Never allow direct pushes to main.
+- Never allow direct pushes to `main`. Every change is a PR targeting `main`
+  from a short-lived branch/worktree that is deleted after merge; track the base
+  `main` commit, the owning PR, and cleanup state per change
+  (`docs/software-factory/GIT_WORKFLOW.md`).
 - Never let the builder be the sole reviewer.
 - For high-risk work, require a founder decision before the risky action.
 - Prefer small coherent tasks that can produce reviewable PRs.
