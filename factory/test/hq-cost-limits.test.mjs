@@ -240,6 +240,21 @@ test("buildHqPlanLimitsPayload derives inferred windows from state files and let
   assert.equal(official.providers.openai.limit, 7);
 });
 
+test("payload builders resolve their own state root from hqRoot alone (server call shape)", async () => {
+  // The dashboard routes call these with only { hqRoot } — no stateRoot. That
+  // path was never covered and regressed: defaultStateRoot(hqRoot) needs a repo
+  // argument, so the bare call threw "paths[0] must be of type string".
+  const { root } = makeFixtureRoot();
+
+  const costs = await buildHqCostsPayload({ hqRoot: root, pricing, now: "2026-09-08T12:30:00Z" });
+  assert.equal(costs.version, 1);
+  assert.equal(costs.totals.dispatches, 0);
+
+  const limits = await buildHqPlanLimitsPayload({ hqRoot: root, now: "2026-09-08T12:30:00Z" });
+  assert.equal(limits.available, false);
+  assert.match(limits.reason, /No authoritative plan-limit source/);
+});
+
 function makeFixtureRoot() {
   const root = mkdtempSync(join(tmpdir(), "hq-cost-limits-"));
   return { root };
