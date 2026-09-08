@@ -3,6 +3,8 @@
 //
 //   node scripts/factory-improve-loop.mjs [--hours 8] [--max-rounds 20]
 //        [--gap-min 5] [--project openclaw-factory] [--dry-run]
+//        [--objective-path /path/to/objective-state.json] [--not-before ISO_TIME]
+// FACTORY_HQ_ROOT may target the canonical HQ while running a repair checkout.
 //
 // Each round decomposes the standing self-improvement directive
 // (factory/prompts/self-improvement-objective.md) into <=4 build nodes and runs
@@ -21,15 +23,17 @@
 import { execFile } from "child_process";
 import { promisify } from "util";
 import { readFileSync, existsSync, mkdirSync, writeFileSync, appendFileSync } from "fs";
-import { dirname, join } from "path";
+import { dirname, join, resolve } from "path";
+import { setTimeout as delay } from "timers/promises";
 import { fileURLToPath } from "url";
 import { decomposeObjective } from "../factory/lib/objective/decompose.mjs";
 import { runObjective, readObjState } from "../factory/lib/objective/orchestrator.mjs";
 import { defaultStateRoot } from "../factory/lib/natural-language-intake.mjs";
+import { readState, writeState, resumeState } from "../factory/lib/task-workflow.mjs";
 import { classifyBlocker } from "../factory/lib/hq/blocker-class.mjs";
 
 const execFileAsync = promisify(execFile);
-const HQ_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+const HQ_ROOT = resolve(process.env.FACTORY_HQ_ROOT || join(dirname(fileURLToPath(import.meta.url)), ".."));
 const DIRECTIVE_PATH = join(HQ_ROOT, "factory", "prompts", "self-improvement-objective.md");
 const LOG_PATH = join(HQ_ROOT, "dashboard", "backend", "data", "factory", "improve-loop.jsonl");
 const BACKOFF_MIN = [20, 45, 90, 180]; // escalating; last value repeats
@@ -44,7 +48,10 @@ function parseArgs(argv) {
   return out;
 }
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+export async function waitForNextRound(ms, signal) {
+  try { await delay(ms, undefined, { signal }); }
+  catch (error) { if (error.name !== "AbortError") throw error; }
+}
 const nowIso = () => new Date().toISOString();
 
 function logRound(entry) {
@@ -89,18 +96,54 @@ export function assessRound(result) {
   const integPr = obj.integration?.githubPublish?.prUrl;
   if (integPr) prs.push({ node: "integration", url: integPr });
   const infraBlocked = nodes.filter((n) => n.blocker && classifyBlocker(n.blocker) === "infra").map((n) => n.id);
-  const barren = prs.length === 0 && (infraBlocked.length > 0 || result?.status === "blocked");
+  const barren = prs.length === 0 && (infraBlocked.length > 0 || classifyBlocker(obj.integration?.blocker) === "infra");
   return { prs, infraBlocked, barren, status: result?.status || "unknown" };
 }
 
-async function runRound({ project, repo, dryRun }) {
+// Only the task engine's original infrastructure FAIL may be retried. A node's
+// presentation-level decision card is not authority to bypass a real decision.
+export function retryableObjective(objectivePath, { resume = false } = {}) {
+  const obj = readObjState(objectivePath);
+  const failed = [...Object.values(obj.nodes), obj.integration]
+    .filter((n) => n && ["blocked", "failed"].includes(n.status));
+  if (!failed.length || Object.values(obj.nodes).some((n) => n.status === "running")) return false;
+  const tasks = [];
+  for (const node of failed) {
+    if (!node.statePath) return false;
+    const state = readState(node.statePath);
+    if (state.status !== "blocked" || classifyBlocker(state.blocker) !== "infra") return false;
+    // Integration initialization/merge recovery is separate; don't recreate it.
+    if (node.id === obj.integration?.id) return false;
+    tasks.push({ path: node.statePath, state });
+  }
+  if (resume) for (const task of tasks) {
+    const revived = resumeState(task.state);
+    revived.events.push({ at: new Date().toISOString(), type: "overnight-infra-retry", actor: "system", reason: task.state.blocker.summary });
+    writeState(task.path, revived);
+  }
+  return true;
+}
+
+export function assertResumableObjective(obj) {
+  if (Object.values(obj.nodes).some((n) => n.status === "running")) {
+    throw new Error("Resume objective still has running nodes; verify ownership and recover interrupted dispatches first");
+  }
+  if (obj.integration?.statePath || obj.integration?.status !== "pending") {
+    throw new Error("Integration already started; integration recovery is not supported by the overnight loop");
+  }
+}
+
+async function runRound({ project, repo, dryRun, resumePath }) {
   const objective = readFileSync(DIRECTIVE_PATH, "utf8").trim();
   const cfg = JSON.parse(readFileSync(join(HQ_ROOT, "factory", "factory.config.json"), "utf8"));
-  const obj = await decomposeObjective({ hqRoot: HQ_ROOT, objective, project, repo, decomposeAgentId: cfg.openclawIntegration?.agentIds?.decompose });
+  const obj = resumePath ? readObjState(resumePath) : await decomposeObjective({ hqRoot: HQ_ROOT, objective, project, repo, decomposeAgentId: cfg.openclawIntegration?.agentIds?.decompose });
+  if (obj.repo !== resolve(repo) || obj.project !== project) throw new Error("Resume objective does not match the selected project/repository");
+  if (resumePath) assertResumableObjective(obj);
   const dir = join(defaultStateRoot(HQ_ROOT, repo), "objectives", obj.objectiveId);
   mkdirSync(dir, { recursive: true });
-  const objectivePath = join(dir, "objective-state.json");
-  writeFileSync(objectivePath, `${JSON.stringify(obj, null, 2)}\n`);
+  const objectivePath = resumePath || join(dir, "objective-state.json");
+  if (!resumePath) writeFileSync(objectivePath, `${JSON.stringify(obj, null, 2)}\n`);
+  logRound({ event: resumePath ? "objective-resumed" : "objective-created", objectiveId: obj.objectiveId, objectivePath });
   if (dryRun) return { objectiveId: obj.objectiveId, status: "dry-run", nodeCount: Object.keys(obj.nodes).length };
 
   const result = await runObjective({
@@ -112,7 +155,7 @@ async function runRound({ project, repo, dryRun }) {
     concurrentGroups: cfg.openclawIntegration?.concurrentGroups,
     stateRoot: defaultStateRoot(HQ_ROOT, repo),
   });
-  return { objectiveId: obj.objectiveId, ...assessRound(result) };
+  return { objectiveId: obj.objectiveId, objectivePath, ...assessRound(result) };
 }
 
 async function main() {
@@ -124,16 +167,25 @@ async function main() {
   const gapMs = Math.max(0, (Number(args["gap-min"]) || 5)) * 60_000;
   const dryRun = Boolean(args["dry-run"]);
   const deadline = Date.now() + hours * 3_600_000;
+  const notBefore = args["not-before"] ? Date.parse(String(args["not-before"])) : Date.now();
+  if (!Number.isFinite(notBefore)) throw new Error("--not-before must be an ISO timestamp");
 
   if (!existsSync(DIRECTIVE_PATH)) { console.error(`missing directive: ${DIRECTIVE_PATH}`); process.exit(1); }
   if (!existsSync(join(repo, ".git"))) { console.error(`${repo} is not a git working tree`); process.exit(1); }
 
+  let resumePath = args["objective-path"] ? resolve(String(args["objective-path"])) : null;
+  const idleWait = new AbortController();
   let stop = false;
-  for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => { stop = true; logRound({ round: null, event: `${sig} — stopping after this round` }); });
+  for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => { stop = true; idleWait.abort(); logRound({ round: null, event: `${sig} — stopping after this round` }); });
 
   logRound({ event: "loop-start", project, hours, maxRounds, dryRun });
+  if (notBefore > Date.now()) {
+    logRound({ event: "waiting-for-reset", resumeAfter: new Date(notBefore).toISOString(), deadline: new Date(deadline).toISOString() });
+    await waitForNextRound(Math.min(notBefore, deadline) - Date.now(), idleWait.signal);
+  }
   let round = 0;
   let backoffIdx = 0;
+  let endReason = null;
   const shippedPrs = [];
 
   while (!stop && round < maxRounds && Date.now() < deadline) {
@@ -141,14 +193,30 @@ async function main() {
     const roundStart = Date.now();
     let r;
     try {
-      r = await runRound({ project, repo, dryRun });
+      r = await runRound({ project, repo, dryRun, resumePath });
+      resumePath = null;
     } catch (error) {
-      r = { objectiveId: null, status: "threw", barren: true, infraBlocked: [], prs: [], error: String(error?.message || error) };
+      r = { objectiveId: null, status: "threw", barren: error?.transient === true, infraBlocked: [], prs: [], error: String(error?.message || error) };
     }
     (r.prs || []).forEach((p) => shippedPrs.push(p.url));
     logRound({ round, ...r, elapsedMin: Math.round((Date.now() - roundStart) / 60000) });
 
-    if (dryRun) break;
+    if (dryRun || stop) break;
+    if (["blocked", "integration-blocked", "incomplete"].includes(r.status)) {
+      if (r.objectivePath && retryableObjective(r.objectivePath)) {
+        resumePath = r.objectivePath;
+        r.barren = true;
+      } else {
+        endReason = "recovery-required";
+        logRound({ round, event: "stopped-for-recovery", objectiveId: r.objectiveId, reason: "Preserve existing work; recover this objective before starting another round" });
+        break;
+      }
+    }
+    if (r.status === "threw" && !r.barren) {
+      endReason = "recovery-required";
+      logRound({ round, event: "stopped-for-recovery", reason: r.error });
+      break;
+    }
 
     const pressure = await providerPressure({ barrenRound: r.barren });
     if (pressure.pressured) {
@@ -157,15 +225,20 @@ async function main() {
       const waitMs = Math.min(waitMin * 60_000, Math.max(0, deadline - Date.now()));
       if (waitMs <= 60_000) { logRound({ round, event: "budget-exhausted-during-backoff" }); break; }
       logRound({ round, event: "credit-backoff", reason: pressure.reason, waitMin: Math.round(waitMs / 60000) });
-      await sleep(waitMs);
+      await waitForNextRound(waitMs, idleWait.signal);
+      if (!stop && Date.now() < deadline && resumePath && !retryableObjective(resumePath, { resume: true })) {
+        endReason = "recovery-required";
+        logRound({ round, event: "stopped-for-recovery", reason: "Objective changed during backoff" });
+        break;
+      }
     } else {
       backoffIdx = 0; // productive round — reset
       const gap = Math.min(gapMs, Math.max(0, deadline - Date.now()));
-      if (gap > 0) await sleep(gap);
+      if (gap > 0) await waitForNextRound(gap, idleWait.signal);
     }
   }
 
-  logRound({ event: "loop-end", rounds: round, totalPrs: shippedPrs.length, prs: shippedPrs, reason: stop ? "signal" : round >= maxRounds ? "max-rounds" : "budget" });
+  logRound({ event: "loop-end", rounds: round, totalPrs: shippedPrs.length, prs: shippedPrs, reason: stop ? "signal" : endReason || (dryRun ? "dry-run" : round >= maxRounds ? "max-rounds" : "budget") });
 }
 
 // Run only when invoked directly, not when imported by a test.

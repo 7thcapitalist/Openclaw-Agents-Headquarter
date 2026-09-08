@@ -179,3 +179,26 @@ test("runObjective: report.md is written next to metrics.json", async () => {
   assert.match(report, /## Build nodes/);
   assert.match(report, /## Integration/);
 });
+
+
+test("resuming an infrastructure-blocked node reuses its task and passed stages", async () => {
+  const { resumeState, readState, writeState } = await import("../lib/task-workflow.mjs");
+  const root = mkdtempSync(join(tmpdir(), "objective-resume-"));
+  const { repo } = makeRepo(root);
+  const { objectivePath } = writeObjective(root, repo, NODES.slice(0, 1));
+  const opts = { hqRoot: HQ, objectivePath, stateRoot: join(root, "states"), maxAttemptsPerStage: 1, concurrentGroups: [], publish: () => ({ published: false }) };
+  const normal = makeExecute();
+  await runObjective({ ...opts, execute: async (input) => {
+    if (input.dispatch.stage === "architect") throw new Error("provider temporarily unavailable");
+    return normal(input);
+  } });
+  const node = Object.values(readObjState(objectivePath).nodes)[0];
+  const before = readState(node.statePath);
+  assert.equal(before.stages.product.status, "pass");
+  writeState(node.statePath, resumeState(before));
+  const windows = [];
+  const result = await runObjective({ ...opts, execute: makeExecute({ windows }) });
+  assert.equal(result.status, "complete");
+  assert.equal(windows.filter((w) => w.task === node.id && w.stage === "product").length, 0);
+  assert.equal(result.objective.nodes[node.id].worktree, node.worktree);
+});

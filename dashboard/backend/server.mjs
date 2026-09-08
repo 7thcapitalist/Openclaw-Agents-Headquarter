@@ -76,6 +76,7 @@ import {
   saveFounderJob,
   setProjectPaused,
 } from "./lib/founderControlPlane.mjs";
+import { buildHqCostsPayload, buildHqPlanLimitsPayload } from "./lib/hq-cost-limits.mjs";
 import { readAutonomy } from "../../factory/lib/hq/autonomy.mjs";
 import { retryStuckTasks } from "../../factory/lib/hq/auto-retry.mjs";
 import { resumeState as resumeTaskState, readState as readTaskState, writeState as writeTaskState } from "../../factory/lib/task-workflow.mjs";
@@ -98,6 +99,7 @@ const HOST = process.env.DASHBOARD_HOST || "127.0.0.1";
 const PASSWORD = process.env.DASHBOARD_PASSWORD || "";
 const SESSION_SECRET = process.env.DASHBOARD_SESSION_SECRET || "";
 const TRUST_PROXY = process.env.DASHBOARD_TRUST_PROXY === "1";
+const PLAN_LIMITS_SOURCE = parsePlanLimitsSource(process.env.DASHBOARD_PLAN_LIMITS_SOURCE_JSON);
 
 function hashPass(p) {
   return createHash("sha256").update(p, "utf8").digest();
@@ -111,6 +113,15 @@ function passOk(input, secret) {
     return a.length === b.length && timingSafeEqual(a, b);
   } catch {
     return false;
+  }
+}
+
+function parsePlanLimitsSource(value) {
+  if (typeof value !== "string" || !value.trim()) return null;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
   }
 }
 
@@ -256,6 +267,22 @@ app.get("/api/hq/company", async (req, res) => {
 app.get("/api/hq/learning", (_req, res) => {
   try {
     res.json(readLearningFindings(ROOT));
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+app.get("/api/hq/costs", async (_req, res) => {
+  try {
+    res.json(await buildHqCostsPayload({ hqRoot: ROOT }));
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+app.get("/api/hq/plan-limits", async (_req, res) => {
+  try {
+    res.json(await buildHqPlanLimitsPayload({ hqRoot: ROOT, authoritativeSource: PLAN_LIMITS_SOURCE }));
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
   }

@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "currency": "USD",
+  "updatedAt": "2026-09-08",
+  "models": {
+    "openai/gpt-5.6-sol": {
+      "provider": "openai",
+      "model": "gpt-5.6-sol",
+      "label": "GPT-5.6 Sol",
+      "inputUsdPerMillion": 4,
+      "outputUsdPerMillion": 20,
+      "source": "https://developers.openai.com/api/docs/pricing"
+    },
+    "anthropic/claude-sonnet-5": {
+      "provider": "anthropic",
+      "model": "claude-sonnet-5",
+      "label": "Claude Sonnet 5",
+      "inputUsdPerMillion": 2,
+      "outputUsdPerMillion": 10,
+      "source": "https://docs.anthropic.com/en/docs/about-claude/pricing"
+    }
+  },
+  "aliases": {
+    "gpt-5.6-sol": "openai/gpt-5.6-sol",
+    "claude-sonnet-5": "anthropic/claude-sonnet-5"
+  },
+  "unknownModel": {
+    "strategy": "null-cost",
+    "label": "unpriced"
+  }
+}
