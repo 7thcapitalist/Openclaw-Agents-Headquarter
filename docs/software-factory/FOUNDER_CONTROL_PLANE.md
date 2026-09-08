@@ -13,6 +13,9 @@ dashboard and use **Today**.
   job queue.
 - See project status, current stage, assigned agent, blocker, and last activity.
 - Pause a project so no new tasks can be launched, then resume it later.
+- Archive a decomposed objective off the main Today view when it is no longer
+  worth watching, and unarchive it later. Archiving changes only presentation —
+  the objective's state, report, evidence, metrics, and GitHub history are kept.
 - See live task dispatches and durable factory events.
 - Ask a configured OpenClaw agent a question.
 - Answer normal Decision Cards and resume the blocked task.
@@ -67,8 +70,19 @@ the existing task resume transition; high-risk approval uses the existing
 Ed25519 verification path.
 
 The local `control-plane.json` file stores only dashboard concerns: project
-pause flags, question history, and launch-job status. It is runtime data under
+pause flags, question history, launch-job status, and the founder's
+objective-archive flags (`archivedObjectives`). It is runtime data under
 `dashboard/backend/data/factory/` and is gitignored.
+
+The Today objective portfolio is bucketed by a pure `objectiveLifecycle()`
+projection: **Active** (the presenter's Running / Waiting for you / Blocked /
+Recently completed), **History** (older or long-finished work — collapsed), and
+**Archived** (explicitly dismissed by the founder — collapsed, fully
+recoverable). Objectives that need the founder (`WAITING_FOR_FOUNDER`,
+`BLOCKED`) stay Active until resolved or archived regardless of age;
+running/pending/failed work falls to History once it has been silent past
+`HQ_OBJECTIVE_ACTIVE_STALE_MS` (default 12h) with no pending recovery; completed
+work stays Active for `HQ_OBJECTIVE_RECENT_COMPLETE_MS` (default 72h).
 
 Pausing a project prevents new task launches. It does not terminate an agent
 that is already running, because killing a live harness could leave a worktree
