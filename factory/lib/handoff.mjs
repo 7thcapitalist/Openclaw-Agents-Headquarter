@@ -43,9 +43,21 @@ export function writeHandoff({ hqRoot, statePath, state, resultPath = null, disp
   } catch {
     knowledgeBlock = "";
   }
+  const advisory = state.task.advisory?.decisionClassification;
+  const advisoryBlock = advisory
+    ? "## Advisory decision classification\n\n" +
+      `**${advisory.label || "ADVISORY — this does not block dispatch."}**\n\n` +
+      `- Surfaced as: ${advisory.surfacedAs}\n` +
+      `- Classifier outcome: ${advisory.outcome}\n` +
+      `- Trigger: ${advisory.trigger || "unknown"}\n` +
+      `- Reason: ${advisory.reason}\n` +
+      `- Matched rule: ${advisory.matchedRule?.id || "unknown"}\n` +
+      `- Blocks dispatch: ${advisory.blocksDispatch === true ? "yes" : "no"}\n\n`
+    : "";
   const body = `# Factory handoff: ${state.task.id} -> ${stage}\n\n` +
     `Assigned harness: ${state.assignments[stage]}\n\nRepository: ${state.repo}\nWorktree: ${state.worktree}\nBranch: ${state.branch}\nIssue: ${state.task.issue}\n\n` +
     contextBlock +
+    advisoryBlock +
     `## Outcome\n\n${state.task.outcome}\n\n## Acceptance criteria\n\n${state.task.acceptanceCriteria.map((x) => `- ${x}`).join("\n")}\n\n` +
     `## Constraints\n\n${(state.task.constraints || []).map((x) => `- ${x}`).join("\n") || "- none recorded"}\n\n` +
     `## Founder decisions\n\n${founderDecisions}\n\n` +

@@ -63,6 +63,49 @@ test("natural-language start creates a contract and drives every stage", async (
   assert.equal(JSON.parse(readFileSync(contractPath)).workType, "backend");
 });
 
+test("decision advisory is surfaced while natural-language start still dispatches every stage", async () => {
+  const root = mkdtempSync(join(tmpdir(), "factory-advisory-start-"));
+  const repo = join(root, "project");
+  mkdirSync(repo);
+  const dispatched = [];
+  const originalWarn = console.warn;
+  const warnings = [];
+  console.warn = (message) => warnings.push(String(message));
+  try {
+    const response = await handleRequest({ version: 1, action: "start", repo, stateRoot: join(root, "state"), objective: "Store user health data." }, {
+      executeChiefOfStaff: async ({ id }) => taskJsonForStart(id),
+      initializeTask: (options) => initializeStartFixture({ options, root, repo }),
+      execute: async ({ dispatch, cwd }) => {
+        dispatched.push(dispatch.stage);
+        mkdirSync(join(cwd, "evidence"), { recursive: true });
+        const evidence = `evidence/${dispatch.stage}.md`;
+        writeFileSync(join(cwd, evidence), "verified\n");
+        writeFileSync(dispatch.resultPath, JSON.stringify({ version: 1, dispatchId: dispatch.dispatchId, stage: dispatch.stage, actor: dispatch.actor, outcome: "pass", summary: "passed", evidence: [evidence] }));
+      },
+    });
+    assert.equal(response.status, "merge-ready");
+    assert.equal(response.advisory.decisionClassification.trigger, "privacy");
+    assert.equal(response.advisory.decisionClassification.blocksDispatch, false);
+    assert.deepEqual(dispatched, ["product", "architect", "builder", "reviewer", "qa", "security", "release"]);
+    assert.match(warnings.join("\n"), /\[decision-advisory\].*advisory only, not blocking/);
+  } finally {
+    console.warn = originalWarn;
+  }
+});
+
+function taskJsonForStart(id) {
+  return JSON.stringify({ id, issue: `local:${id}`, outcome: "Store data.", acceptanceCriteria: ["Storage is verified"], project: "project", workType: "backend", risk: "low", preferredBuilder: "auto", constraints: [] });
+}
+
+function initializeStartFixture({ options, root, repo }) {
+  const task = JSON.parse(readFileSync(options.contractPath));
+  const statePath = join(root, "state.json");
+  const worktree = join(root, "worktree");
+  mkdirSync(worktree);
+  writeState(statePath, createState({ task, repo, branch: `factory/${task.id}`, worktree }));
+  return { task: task.id, state: statePath, branch: `factory/${task.id}`, worktree, next: "product" };
+}
+
 test("shared initializer creates state and handoff using a single worktree operation", () => {
   const root = mkdtempSync(join(tmpdir(), "factory-init-"));
   const repo = join(root, "project");
