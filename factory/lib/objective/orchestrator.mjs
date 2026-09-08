@@ -85,10 +85,15 @@ async function runNode({ hqRoot, objectivePath, nodeId, execute, agentIds, maxAt
   let statePath = node.statePath;
   let worktree = node.worktree;
 
-  if (statePath && existsSync(statePath)) {
-    // Resume an already-initialized node. The recovery action (or runObjective's
-    // resume block) has already flipped state.json back to `active`.
-    // Nothing to initialize — reuse the existing single worktree for this branch.
+  const existing = statePath && existsSync(statePath) ? readState(statePath) : null;
+  if (existing) {
+    // Resume an already-initialized node without losing passed stages, dispatch
+    // history, or the original single worktree for this branch.
+    if (existing.task.id !== node.id || existing.branch !== node.branch || existing.repo !== obj.repo) {
+      throw new Error(`Existing task does not match objective node ${node.id}`);
+    }
+    worktree = existing.worktree;
+    patchNode(objectivePath, nodeId, { statePath, worktree, branch: existing.branch });
   } else {
     const contractDir = join(dirname(objectivePath), "contracts");
     mkdirSync(contractDir, { recursive: true });
