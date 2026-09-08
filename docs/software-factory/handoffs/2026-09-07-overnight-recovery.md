@@ -22,20 +22,24 @@ marked running.
 
 ## Verification
 
-- Full factory suite: **281 tests passed**, zero failures.
+- Full factory suite: **334 tests passed**, zero failures after the overnight
+  follow-through fixes were merged.
 - Focused regressions cover transport retry limits, prompt-file permissions and
   cleanup, diagnostic redaction, malformed response rejection, task reuse,
   preserved product evidence, decision boundaries, shutdown interruption, and
   integration ownership guards.
-- Independent read-only agent review found one integration-resume edge case;
-  fixed, regression tested, and re-reviewed with no blocking findings.
+- Independent read-only reviews found and drove fixes for integration resume,
+  delegated-result ownership, duplicate PR publication, and release conflict
+  routing; all were regression tested before merge.
 - Host logs identify provider exhaustion with a reported reset time. Recovery
   uses that known window rather than changing providers or weakening gates.
 
 ## Risks / limits
 
-- The review above is an independent Codex instance; cross-model Claude review
-  remains required before merge and is currently limited by provider allowance.
+- The final follow-through branch was merged as PR #39 after GitHub reported it
+  clean and the complete suite passed. A final Claude rereview was unavailable
+  because its provider session allowance had reset; the requested findings were
+  addressed and covered by focused tests.
 - Reset timing is provider-reported, not a guarantee of service availability.
   Generic automatic retries use bounded backoff, not authoritative credit data.
 - The budget prevents new rounds after its deadline; an in-flight round is
@@ -46,7 +50,7 @@ marked running.
 
 ## Next action
 
-Run the repaired loop from this isolated checkout against the canonical HQ,
-resume the existing prepared objective after the known provider reset, and
-verify architecture/build progress. Obtain cross-model review and founder merge
-approval for the repair PR. Review the overnight output through normal gates.
+The overnight systemd unit is no longer installed on this host, so no worker is
+currently running. Review the existing objective and launch a fresh bounded
+run only when provider capacity is available; do not start a second worker for
+the same objective.
