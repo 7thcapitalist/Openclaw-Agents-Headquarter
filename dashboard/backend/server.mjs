@@ -64,6 +64,7 @@ import {
   buildRolePolicy,
   discoverFactoryTasks,
   findTaskStatePath,
+  handleObjectiveRetry,
   isProjectPaused,
   listFounderJobs,
   readObjectiveReport,
@@ -382,14 +383,7 @@ app.post("/api/founder/objectives", async (req, res) => {
       const objectivePath = join(dir, "objective-state.json");
       writeFileSync(objectivePath, `${JSON.stringify(graph, null, 2)}\n`, "utf8");
       saveFounderJob(ROOT, Object.assign(job, { status: "running", objectiveId: graph.objectiveId, nodeCount: Object.keys(graph.nodes).length, updatedAt: new Date().toISOString() }));
-      const result = await runObjective({
-        hqRoot: ROOT, objectivePath,
-        maxConcurrent: Number(process.env.FACTORY_MAX_CONCURRENT) || 3,
-        agentIds: cfg.openclawIntegration?.agentIds || {},
-        maxAttemptsPerStage: cfg.openclawIntegration?.maxAttemptsPerStage || 3,
-        concurrentGroups: cfg.openclawIntegration?.concurrentGroups,
-        stateRoot: defaultStateRoot(ROOT, repo),
-      });
+      const result = await runObjectiveJob(job, { objectivePath, cfg });
       saveFounderJob(ROOT, Object.assign(job, { status: result.status, objectiveId: graph.objectiveId, updatedAt: new Date().toISOString() }));
     } catch (error) {
       saveFounderJob(ROOT, Object.assign(job, { status: "error", error: error.message || String(error), updatedAt: new Date().toISOString() }));
@@ -397,6 +391,45 @@ app.post("/api/founder/objectives", async (req, res) => {
   })();
 
   res.status(202).json({ job });
+});
+
+// Detached objective orchestrator — shared by create + recovery retry.
+async function runObjectiveJob(job, { objectivePath, cfg = {}, stateRoot, ...rest } = {}) {
+  return runObjective({
+    hqRoot: ROOT,
+    objectivePath,
+    maxConcurrent: Number(process.env.FACTORY_MAX_CONCURRENT) || 3,
+    agentIds: cfg.openclawIntegration?.agentIds || rest.agentIds || {},
+    maxAttemptsPerStage: cfg.openclawIntegration?.maxAttemptsPerStage || rest.maxAttemptsPerStage || 3,
+    concurrentGroups: cfg.openclawIntegration?.concurrentGroups || rest.concurrentGroups,
+    stateRoot: stateRoot || defaultStateRoot(ROOT, job?.repo || rest.repo),
+    ...rest,
+  });
+}
+
+// One click: retry every safely-retryable infrastructure failure in a blocked
+// objective and resume the orchestrator. Never touches decision / approval /
+// hard-fail / live nodes. Mirrors POST /api/founder/tasks/:id/retry.
+app.post("/api/founder/objectives/:id/retry", async (req, res) => {
+  try {
+    if (!/^obj-[a-z0-9-]+$/i.test(req.params.id)) return res.status(400).json({ error: "Invalid objective id." });
+    const out = await handleObjectiveRetry({
+      root: ROOT,
+      hqRoot: ROOT,
+      objectiveId: req.params.id,
+      // Options-shaped seam; runObjectiveJob also serves POST /objectives.
+      runObjective: (opts) => runObjectiveJob(null, {
+        objectivePath: opts.objectivePath,
+        stateRoot: opts.stateRoot,
+        agentIds: opts.agentIds,
+        maxAttemptsPerStage: opts.maxAttemptsPerStage,
+        concurrentGroups: opts.concurrentGroups,
+      }),
+    });
+    res.status(202).json(out);
+  } catch (e) {
+    res.status(e.statusCode || 400).json({ error: String(e.message || e) });
+  }
 });
 
 // role -> harness / model policy (the honest "what runs each role" table).

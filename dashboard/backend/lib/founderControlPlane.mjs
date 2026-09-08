@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "fs";
+import { openSync, closeSync, unlinkSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "fs";
 import { basename, dirname, join, resolve } from "path";
 import { homedir } from "os";
 import { readState, resumeState, writeState } from "../../../factory/lib/task-workflow.mjs";
@@ -6,7 +6,9 @@ import { writeHandoff } from "../../../factory/lib/handoff.mjs";
 import { listProjectBriefs } from "../../../factory/lib/intel/project-brief.mjs";
 import { buildCompanyBriefing } from "../../../factory/lib/intel/founder-briefing.mjs";
 import { toTaskRecord } from "../../../factory/lib/learning/evidence.mjs";
-import { classifyBlocker } from "../../../factory/lib/hq/blocker-class.mjs";
+import { classifyBlocker, classifyObjectiveNodeBlocker } from "../../../factory/lib/hq/blocker-class.mjs";
+import { resumeObjectiveNodes, setObjectiveRecoveryInFlight, readObjState } from "../../../factory/lib/objective/orchestrator.mjs";
+import { defaultStateRoot } from "../../../factory/lib/natural-language-intake.mjs";
 
 const CONTROL_FILE = "control-plane.json";
 
@@ -207,6 +209,233 @@ export function readTaskCompletionReport(root, taskId) {
   return null;
 }
 
+// Absolute path to an objective-state.json by objective id, or null.
+export function findObjectiveStatePath(root, objectiveId) {
+  const factoryDir = factoryRoot(root);
+  const allowedRoot = resolve(factoryDir);
+  if (!existsSync(factoryDir) || !/^obj-[a-z0-9-]+$/i.test(objectiveId)) return null;
+  for (const project of readdirSync(factoryDir, { withFileTypes: true })) {
+    if (!project.isDirectory()) continue;
+    const statePath = resolve(factoryDir, project.name, "objectives", objectiveId, "objective-state.json");
+    if (!statePath.startsWith(`${allowedRoot}/`)) continue;
+    if (existsSync(statePath)) return statePath;
+  }
+  return null;
+}
+
+const STALE_ACTIVE_MS_DEFAULT = 90 * 60 * 1000;
+const RECOVERY_LOCK_MS = 15 * 60 * 1000;
+
+function recoveryReasonFromBlocker(blocker) {
+  const text = String(blocker?.summary || blocker?.detail || "");
+  if (/rate.?limit|429|quota|overloaded|capacity/i.test(text)) return "model provider was rate-limited";
+  if (/could not (start|run)|provider|unavailable|ECONN|ETIMEDOUT|socket/i.test(text)) return "model provider was unavailable";
+  if (/result file|timed out|timeout/i.test(text)) return "agent did not finish cleanly";
+  return "infrastructure hiccup";
+}
+
+/**
+ * Pure plan of which objective nodes are safely retryable (infra-failed or
+ * restart-orphaned). Never includes genuine decisions, hard fails, high-risk
+ * approvals awaiting signature, or freshly-running tasks.
+ */
+export function buildRecoveryPlan(objState, { now = Date.now(), staleActiveMs = STALE_ACTIVE_MS_DEFAULT } = {}) {
+  const nodes = [];
+  const nowMs = typeof now === "number" ? now : Date.parse(now) || Date.now();
+  const candidates = [
+    ...Object.values(objState.nodes || {}),
+    ...(objState.integration ? [objState.integration] : []),
+  ];
+
+  for (const node of candidates) {
+    if (!node?.id) continue;
+    if (node.status === "blocked-by-dep") continue; // clears automatically when deps live
+
+    let task = null;
+    if (node.statePath && existsSync(node.statePath)) {
+      try { task = readState(node.statePath); } catch { task = null; }
+    }
+
+    if (task?.currentDispatch?.yieldedAt || task?.yieldedGroup) continue;
+    if (task?.status === "blocked" && classifyBlocker(task.blocker) !== "infra") continue;
+    const kind = classifyObjectiveNodeBlocker(node.blocker);
+    const orphan = Boolean(
+      node.status === "running"
+      && task?.status === "active"
+      && task.updatedAt
+      && (nowMs - (Date.parse(task.updatedAt) || nowMs)) > staleActiveMs,
+    );
+
+    if (kind === "decision" || kind === "hard") continue;
+    if (!(kind === "infra" || orphan)) continue;
+
+    // High-risk build awaiting signed approval — never auto-recover.
+    if (
+      task?.task?.risk === "high"
+      && (node.blocker?.stage === "builder" || task.blocker?.stage === "builder")
+      && task.founderApprovalRequest
+      && !task.founderApproval
+    ) continue;
+
+    // Live runner owns a fresh active task — leave it alone (unless orphan above).
+    if (task?.status === "active" && !orphan) {
+      const age = nowMs - (Date.parse(task.updatedAt) || nowMs);
+      if (age <= staleActiveMs) continue;
+    }
+    if (node.status === "running" && task?.status === "active" && !orphan) continue;
+
+    const title = node.contract?.outcome || node.objective || node.role || "step";
+    nodes.push({
+      id: node.id,
+      role: node.role || (objState.integration?.id === node.id ? "integration" : null),
+      title,
+      reason: orphan ? "interrupted by a restart" : recoveryReasonFromBlocker(node.blocker),
+    });
+  }
+
+  return { nodes };
+}
+
+/**
+ * Founder one-click: resume every safely-retryable node and restart the
+ * objective orchestrator in the background. Injectable `runObjective` for tests.
+ */
+export async function handleObjectiveRetry({
+  root,
+  hqRoot,
+  objectiveId,
+  runObjective,
+  now = Date.now(),
+  readConfig = () => {
+    try { return JSON.parse(readFileSync(join(hqRoot || root, "factory", "factory.config.json"), "utf8")); }
+    catch { return {}; }
+  },
+}) {
+  const statePath = findObjectiveStatePath(root, objectiveId);
+  if (!statePath) {
+    const err = new Error("No such objective.");
+    err.statusCode = 404;
+    throw err;
+  }
+
+  let lockFd;
+  const lockPath = `${statePath}.recovery.lock`;
+  try { lockFd = openSync(lockPath, "wx", 0o600); }
+  catch (error) {
+    if (error.code !== "EEXIST") throw error;
+    // Match the dispatcher lock policy: the protected section is synchronous,
+    // so a five-minute-old file is left over from a terminated process.
+    if (Date.now() - statSync(lockPath).mtimeMs < 5 * 60 * 1000) {
+      const busy = new Error("Recovery already in progress for this objective.");
+      busy.statusCode = 409; throw busy;
+    }
+    unlinkSync(lockPath);
+    lockFd = openSync(lockPath, "wx", 0o600);
+  }
+  try {
+  const nowMs = typeof now === "number" ? now : Date.parse(now) || Date.now();
+  const nowISO = new Date(nowMs).toISOString();
+  let obj = readObjState(statePath);
+
+  if (obj.recovery?.inFlight?.at) {
+    const lockAge = nowMs - (Date.parse(obj.recovery.inFlight.at) || 0);
+    if (lockAge < RECOVERY_LOCK_MS) {
+      const err = new Error("Recovery already in progress for this objective.");
+      err.statusCode = 409;
+      throw err;
+    }
+  }
+  const liveJob = listFounderJobs(root).find(
+    (j) => ["objective", "objective-recovery"].includes(j.kind) && j.objectiveId === objectiveId
+      && ["decomposing", "running", "recovering"].includes(j.status)
+      && nowMs - Date.parse(j.updatedAt || j.createdAt) < STALE_ACTIVE_MS_DEFAULT,
+  );
+  if (liveJob) {
+    const err = new Error("Recovery already in progress for this objective.");
+    err.statusCode = 409;
+    throw err;
+  }
+
+  const liveSibling = [...Object.values(obj.nodes || {}), obj.integration].filter(Boolean).some((node) => {
+    if (node.status !== "running" || !node.statePath) return false;
+    try {
+      const task = readState(node.statePath);
+      return task.currentDispatch?.yieldedAt || task.yieldedGroup || (task.status === "active"
+        && (!Number.isFinite(Date.parse(task.updatedAt)) || nowMs - Date.parse(task.updatedAt) <= STALE_ACTIVE_MS_DEFAULT));
+    } catch { return true; } // unreadable ownership fails closed
+  });
+  if (liveSibling) {
+    const err = new Error("This objective still has running work. Retry after it settles.");
+    err.statusCode = 409; throw err;
+  }
+  const plan = buildRecoveryPlan(obj, { now: nowMs });
+  if (!plan.nodes.length) {
+    const err = new Error("Nothing to recover — the remaining blockers need you.");
+    err.statusCode = 409;
+    throw err;
+  }
+
+  const { resumed, skipped } = resumeObjectiveNodes({
+    objectivePath: statePath,
+    nodeIds: plan.nodes.map((n) => n.id),
+    now: nowISO,
+  });
+  if (!resumed.length) {
+    const err = new Error("Nothing to recover — the remaining blockers need you.");
+    err.statusCode = 409;
+    throw err;
+  }
+
+  const jobId = `founder-recovery-${Date.now().toString(36)}`;
+  setObjectiveRecoveryInFlight(statePath, { at: nowISO, jobId });
+  const job = {
+    id: jobId,
+    kind: "objective-recovery",
+    projectId: obj.project,
+    objectiveId,
+    objective: obj.objective,
+    repo: obj.repo,
+    nodeCount: resumed.length,
+    status: "recovering",
+    createdAt: nowISO,
+    updatedAt: nowISO,
+  };
+  saveFounderJob(root, job);
+
+  const cfg = readConfig();
+  const hq = hqRoot || root;
+  Promise.resolve()
+    .then(() => runObjective({
+      hqRoot: hq,
+      objectivePath: statePath,
+      agentIds: cfg.openclawIntegration?.agentIds || {},
+      maxAttemptsPerStage: cfg.openclawIntegration?.maxAttemptsPerStage || 3,
+      concurrentGroups: cfg.openclawIntegration?.concurrentGroups,
+      stateRoot: defaultStateRoot(hq, obj.repo),
+    }))
+    .then((r) => {
+      saveFounderJob(root, Object.assign(job, { status: r?.status || "complete", updatedAt: new Date().toISOString() }));
+    })
+    .catch((error) => {
+      saveFounderJob(root, Object.assign(job, { status: "error", error: error.message || String(error), updatedAt: new Date().toISOString() }));
+    })
+    .finally(() => {
+      try { setObjectiveRecoveryInFlight(statePath, null); } catch { /* ignore */ }
+    });
+
+  return {
+    objectiveId,
+    status: "recovering",
+    nodes: resumed.map(({ role, title }) => ({ role, title })),
+    skipped: skipped.map(({ id, reason }) => ({ reason })), // omit raw ids from founder-facing skipped if preferred — tests check no auto-answer
+    jobId,
+  };
+  } finally {
+    try { if (lockFd !== undefined) closeSync(lockFd); } catch { /* best-effort cleanup */ }
+    try { if (lockFd !== undefined && existsSync(lockPath)) unlinkSync(lockPath); } catch { /* stale-lock reclamation handles host interruptions */ }
+  }
+}
+
 // The founder-readable objective summary the orchestrator writes to
 // objectives/<id>/report.md. Path-guarded to the factory state tree.
 export function readObjectiveReport(root, objectiveId) {
@@ -319,7 +548,7 @@ export function buildObjectivesView(root) {
         title: task.objective || node.title || null,
         stage: task.stage, taskStatus: task.status, elapsedMs: task.elapsedMs,
         lastResult: task.lastResult, blocker: node.blocker || task.blocker,
-        decisionRequired: (node.blocker || task.blocker)?.outcome === "decision-required",
+        decisionRequired: classifyObjectiveNodeBlocker(node.blocker || task.blocker) === "decision",
         retries: (task.events || []).filter((e) => e.type === "failure-routed").length,
         statePath: task.statePath,
         hasReport: Boolean(task.completionReport),
@@ -329,10 +558,36 @@ export function buildObjectivesView(root) {
         : [];
     }
     obj.prUrl = obj.integration?.githubPublish?.prUrl || null;
-    obj.blockedOn = allNodes.find((n) => n.decisionRequired || n.status === "blocked")?.id || null;
+    // Only genuine founder decisions / non-infra blocks — infra goes to recovery.
+    obj.blockedOn = allNodes.find((n) => {
+      const kind = classifyObjectiveNodeBlocker(n.blocker);
+      if (kind === "decision") return true;
+      if (n.status === "blocked" && kind !== "infra") return true;
+      return false;
+    })?.id || null;
     obj.nextUp = (obj.nodes || [])
       .filter((n) => n.status === "pending" && (n.dependsOn || []).every((d) => (obj.nodes || []).find((x) => x.id === d)?.status === "gate-satisfied"))
       .map((n) => n.id);
+  }
+  // Attach recovery plans from raw objective-state (needs statePath on nodes).
+  for (const obj of objectives) {
+    if (obj.status === "invalid") continue;
+    const statePath = findObjectiveStatePath(root, obj.objectiveId);
+    if (!statePath) {
+      obj.recovery = { count: 0, nodes: [] };
+      continue;
+    }
+    try {
+      const raw = readObjState(statePath);
+      const plan = buildRecoveryPlan(raw);
+      obj.recovery = {
+        count: plan.nodes.length,
+        nodes: plan.nodes.map(({ role, title, reason }) => ({ role, title, reason })),
+        attempts: raw.recovery?.attempts || 0,
+      };
+    } catch {
+      obj.recovery = { count: 0, nodes: [] };
+    }
   }
   return {
     objectives: objectives.sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""))),
@@ -358,6 +613,7 @@ function shapeObjective(root, obj, dir) {
     status: n.status, branch: n.branch || null, worktree: n.worktree || null,
     startedAt: n.startedAt || null, finishedAt: n.finishedAt || null, attempts: n.attempts || 0,
     blocker: n.blocker || null,
+    statePath: n.statePath || null,
     githubPublish: n.githubPublish || null,
     mergeLog: Array.isArray(n.mergeLog) ? n.mergeLog.map((m) => ({ branch: m.branch, ok: m.ok })) : null,
   });
@@ -373,6 +629,7 @@ function shapeObjective(root, obj, dir) {
     integration: nodeRow(obj.integration || {}),
     events: (obj.events || []).slice(-40),
     metrics,
+    recoveryAttempts: obj.recovery?.attempts || 0,
   };
 }
 
