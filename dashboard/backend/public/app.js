@@ -1,5 +1,6 @@
 import * as objectiveRecovery from "/lib/objectiveRecovery.mjs";
 import * as founderApproval from "/lib/founderApproval.mjs";
+import * as objectiveView from "/lib/objectiveView.mjs";
 import { costLimitsPanel } from "/cost-limits.mjs";
 
 (function () {
@@ -12,6 +13,10 @@ import { costLimitsPanel } from "/cost-limits.mjs";
 
   const BOARD_COLUMNS = ["Inbox", "Assigned", "In Progress", "Review", "Done", "Blocked"];
   const SEVERITY_RANK = { high: 0, medium: 1, low: 2, unspecified: 3 };
+
+  // Objectives from the last Today render, keyed by objectiveId, so the
+  // "Details" drill-down can render without another round-trip.
+  let objectivesById = {};
 
   function showToast(msg, err) {
     toastEl.textContent = msg;
@@ -214,6 +219,7 @@ import { costLimitsPanel } from "/cost-limits.mjs";
       apiJson("/api/hq/plan-limits").catch(() => null),
     ]);
     const objectives = objectivesResp.objectives || [];
+    objectivesById = Object.fromEntries(objectives.map((o) => [o.objectiveId, o]));
     const projects = state.projects || [];
     const agents = state.agents?.agents || [];
     const decisions = state.decisions || [];
@@ -295,13 +301,10 @@ import { costLimitsPanel } from "/cost-limits.mjs";
             </section>
           </div>
 
-          <section class="activity-panel">
-            <div class="panel-heading"><div><span class="eyebrow">In flight</span><h2>Objectives</h2></div>${objectives.length ? pill(`${objectives.filter((o) => o.status === "active").length} running`, "badge-type") : ""}</div>
-            ${objectives.length ? objectives.slice(0, 6).map((o) => objectiveCard(o)).join("") : `<div class="empty-state">No objectives yet. Use the box above with "Decompose into parallel tasks" checked to split a goal into concurrent work.</div>`}
-          </section>
+          ${renderObjectivePortfolio(objectives)}
 
           <section class="activity-panel">
-            <div class="panel-heading"><div><span class="eyebrow">Delivered</span><h2>Completed work</h2></div>${finishedTasks.length ? pill(finishedTasks.length, "health-healthy") : ""}</div>
+            <div class="panel-heading"><div><span class="eyebrow">Delivered</span><h2>Completed tasks</h2></div>${finishedTasks.length ? pill(finishedTasks.length, "health-healthy") : ""}</div>
             <div class="company-feed">
               ${finishedTasks.map((t) => `
                 <div class="company-agent">
@@ -656,53 +659,74 @@ import { costLimitsPanel } from "/cost-limits.mjs";
     </article>`;
   }
 
-  const OBJ_STATUS_CLASS = { active: "badge-type", complete: "health-healthy", blocked: "health-failed", "integration-blocked": "badge-warn", incomplete: "badge-warn" };
-  const NODE_STATUS_CLASS = { "gate-satisfied": "health-healthy", running: "badge-type", pending: "badge-type", failed: "health-failed", blocked: "badge-warn", "blocked-by-dep": "badge-type" };
+  const NODE_TONE = { good: "health-healthy", info: "badge-type", warn: "badge-warn", bad: "health-failed", neutral: "badge-type" };
 
-  function objectiveNodeRow(n, objId) {
-    const short = (id) => String(id || "").replace(new RegExp(`^${objId}-`), "");
-    const deps = (n.dependsOn || []).map(short).join(", ");
-    const stage = n.stage || (n.status === "gate-satisfied" ? "done" : "—");
-    const pulse = n.status === "running" ? `<span class="activity-pulse"></span>` : "";
-    return `<div class="obj-node">
-      ${pulse}
-      <div class="obj-node-main">
-        <strong>${esc(n.title || short(n.id).replace(/-/g, " "))}</strong>
-        <span class="muted small">${esc(n.role || "—")} · ${esc(n.model || "model?")}${deps ? ` · needs ${esc(deps)}` : ""} · <code>${esc(short(n.id))}</code></span>
-        ${n.blocker ? `<span class="danger-text small">${esc(n.blocker.summary || n.blocker.outcome || "blocked")}</span>` : ""}
-      </div>
-      <div class="obj-node-meta">
-        ${pill(n.status, NODE_STATUS_CLASS[n.status] || "badge-type")}
-        <span class="muted small">${esc(stage)}${n.elapsedMs != null ? ` · ${esc(fmtDuration(n.elapsedMs))}` : ""}${n.retries ? ` · ${n.retries} retr${n.retries === 1 ? "y" : "ies"}` : ""}</span>
-        ${n.status === "gate-satisfied" && n.hasReport ? `<button class="btn secondary tiny" data-report-task="${esc(n.id)}">report</button>` : ""}
-      </div>
-    </div>`;
+  // Today's objective portfolio: ACTIVE (the four founder-attention buckets),
+  // then HISTORY, then ARCHIVED — the last two collapsed so old work never
+  // dominates. Cards are the compact presenter view; full detail is a click away.
+  function renderObjectivePortfolio(objectives) {
+    const g = objectiveView.groupObjectives(objectives);
+    const card = (o) => objectiveView.renderObjectiveCard(o, { esc });
+    const row = (o) => objectiveView.renderObjectiveHistoryRow(o, { esc });
+    const group = (label, list) => list.length
+      ? `<div class="obj-group"><div class="obj-group-head">${esc(label)} <span class="muted small">${list.length}</span></div>${list.map(card).join("")}</div>`
+      : "";
+    const activeCount = g.running.length + g.waiting.length + g.blocked.length + g.recentlyCompleted.length;
+    return `
+      <section class="activity-panel">
+        <div class="panel-heading"><div><span class="eyebrow">Active</span><h2>Objectives</h2></div>${activeCount ? pill(activeCount, "badge-type") : pill("Clear", "health-healthy")}</div>
+        ${activeCount ? [
+          group("Running", g.running),
+          group("Waiting for you", g.waiting),
+          group("Blocked", g.blocked),
+          group("Recently completed", g.recentlyCompleted),
+        ].join("") : `<div class="empty-state">No objective needs your attention right now. Older work is in History below.</div>`}
+      </section>
+      ${g.history.length ? `<section class="activity-panel">
+        <details class="obj-fold">
+          <summary><span class="eyebrow">History</span> Older objectives <span class="muted small">${g.history.length}</span></summary>
+          <div class="obj-fold-list">${g.history.map(row).join("")}</div>
+        </details>
+      </section>` : ""}
+      ${g.archived.length ? `<section class="activity-panel">
+        <details class="obj-fold">
+          <summary><span class="eyebrow">Archived</span> Dismissed by you — fully recoverable <span class="muted small">${g.archived.length}</span></summary>
+          <div class="obj-fold-list">${g.archived.map(row).join("")}</div>
+        </details>
+      </section>` : ""}`;
   }
 
-  function objectiveCard(o) {
-    if (o.status === "invalid") return `<article class="obj-card"><strong>${esc(o.objectiveId)}</strong><p class="danger-text small">${esc(o.error || "invalid objective state")}</p></article>`;
-    const m = o.metrics || {};
-    const pr = o.prUrl ? `<a href="${esc(o.prUrl)}" target="_blank" rel="noreferrer">PR ↗</a>` : (o.integration?.githubPublish?.reason ? `<span class="muted small">${esc(o.integration.githubPublish.reason)}</span>` : "");
-    const recoveryHtml = objectiveRecovery.renderObjectiveRecovery(o, { esc }) || "";
-    return `<article class="obj-card">
-      <div class="obj-card-head">
-        <div><strong>${esc(o.objective || o.objectiveId)}</strong>
-          <span class="muted small">${esc(o.project || "")} · ${esc(o.objectiveId)}${m.totalDurationMs != null ? ` · ${esc(fmtDuration(m.totalDurationMs))}` : ""}${m.maxParallelNodes ? ` · ${m.maxParallelNodes}× parallel` : ""}</span>
+  // Drill-down for one objective: the original prompt, the parts with their
+  // presenter-normalized status, and archive control. Opened from "Details".
+  function renderObjectiveDetails(o) {
+    if (!o) return `<p class="muted">Objective not found — reload Today.</p>`;
+    if (o.status === "invalid") return `<p class="danger-text">${esc(o.error || "invalid objective state")}</p>`;
+    const nodes = (o.nodeBriefs || []).map((n) => `
+      <div class="obj-node">
+        <div class="obj-node-main">
+          <strong>${esc(n.title || n.id)}</strong>
+          <span class="muted small">${esc(n.role || "—")}${n.stage ? ` · ${esc(n.stage)}` : ""}${n.elapsedMs != null ? ` · ${esc(fmtDuration(n.elapsedMs))}` : ""}${n.retries ? ` · ${n.retries} retr${n.retries === 1 ? "y" : "ies"}` : ""}${(n.waitingOn || []).length ? ` · needs ${esc(n.waitingOn.join(", "))}` : ""}</span>
+          ${n.blocker?.headline ? `<span class="danger-text small">${esc(n.blocker.headline)}</span>` : ""}
         </div>
-        ${pill(o.status, OBJ_STATUS_CLASS[o.status] || "badge-type")}
-      </div>
-      ${recoveryHtml}
-      ${o.blockedOn ? `<div class="obj-blocked">Waiting on you — see the Founder inbox above.</div>` : ""}
-      <div class="obj-nodes">
-        ${(o.nodes || []).map((n) => objectiveNodeRow(n, o.objectiveId)).join("")}
-        ${o.integration ? objectiveNodeRow({ ...o.integration, id: "integration" }, o.objectiveId) : ""}
-      </div>
-      <div class="obj-card-foot">
-        <button class="btn secondary tiny" data-report-objective="${esc(o.objectiveId)}">Objective report</button>
-        ${o.nextUp && o.nextUp.length ? `<span class="muted small">next: ${o.nextUp.map((id) => { const n = (o.nodes || []).find((x) => x.id === id); return esc(n?.title || id.replace(`${o.objectiveId}-`, "").replace(/-/g, " ")); }).join("; ")}</span>` : ""}
-        ${pr}
-      </div>
-    </article>`;
+        <span class="badge ${NODE_TONE[n.statusTone] || "badge-type"}">${esc(n.statusLabel || n.status)}</span>
+      </div>`).join("");
+    return `
+      <div class="obj-detail">
+        <p class="muted small">${esc(o.project || "")} · <code>${esc(o.objectiveId)}</code> · ${esc(o.statusLabel || o.status6 || o.status)}${o.archivedAt ? ` · archived ${esc(fmtTime(o.archivedAt))}` : ""}</p>
+        ${o.headline ? `<p>${esc(o.headline)}</p>` : ""}
+        ${objectiveRecovery.renderObjectiveRecovery(o, { esc }) || ""}
+        <h4>Original objective</h4>
+        <pre class="report-md obj-detail-prompt">${esc(o.description || o.objective || "")}</pre>
+        <h4>Parts (${(o.nodeBriefs || []).length})</h4>
+        ${nodes || `<p class="muted small">No parts recorded.</p>`}
+        <div class="row-actions">
+          <button class="btn secondary" data-report-objective="${esc(o.objectiveId)}">Full report</button>
+          ${o.lifecycle === "archived"
+            ? `<button class="btn" data-unarchive-objective="${esc(o.objectiveId)}">Unarchive</button>`
+            : `<button class="btn" data-archive-objective="${esc(o.objectiveId)}">Archive from Today</button>`}
+        </div>
+        <p class="muted small">Archiving changes only where this appears — its state, report, evidence, metrics, and GitHub history are kept.</p>
+      </div>`;
   }
 
   function bindFounderControls() {
@@ -782,8 +806,33 @@ import { costLimitsPanel } from "/cost-limits.mjs";
       };
     });
     document.getElementById("ask-agent").onclick = () => { openModal("Ask an agent", `<label class="field-label">Agent</label><input class="modal-input" id="question-agent" value="main"/><label class="field-label">Question</label><textarea class="editor" id="question-text" placeholder="What is blocking this project?"></textarea><button class="btn" id="send-question">Ask</button><div id="question-answer"></div>`); document.getElementById("send-question").onclick = async () => { const out = document.getElementById("question-answer"); out.innerHTML = `<p class="muted">Agent is thinking…</p>`; try { const j = await apiJson("/api/founder/questions", { method: "POST", body: JSON.stringify({ agentId: document.getElementById("question-agent").value, question: document.getElementById("question-text").value }) }); out.innerHTML = `<div class="card">${esc(j.question.answer)}</div>`; } catch (e) { out.innerHTML = `<p class="danger-text">${esc(e.message)}</p>`; } }; };
-    app.querySelectorAll("[data-report-task]").forEach((btn) => btn.onclick = () => openReportDrilldown("task", btn.dataset.reportTask));
-    app.querySelectorAll("[data-report-objective]").forEach((btn) => btn.onclick = () => openReportDrilldown("objective", btn.dataset.reportObjective));
+    bindObjectiveControls(app);
+  }
+
+  async function archiveObjective(id, archived) {
+    try {
+      await apiJson(`/api/founder/objectives/${id}/${archived ? "archive" : "unarchive"}`, { method: "POST" });
+      showToast(archived
+        ? "Archived. It's in the Archived section on Today — state, reports, and history are kept."
+        : "Restored to the active view.");
+      closeModal();
+      route();
+    } catch (e) { showToast(e.message, true); }
+  }
+
+  // Wire the objective card / history-row / details-modal controls within a
+  // scope (the page, or the modal body after a re-render).
+  function bindObjectiveControls(scope) {
+    scope.querySelectorAll("[data-report-task]").forEach((btn) => btn.onclick = () => openReportDrilldown("task", btn.dataset.reportTask));
+    scope.querySelectorAll("[data-report-objective]").forEach((btn) => btn.onclick = () => openReportDrilldown("objective", btn.dataset.reportObjective));
+    scope.querySelectorAll("[data-objective-details]").forEach((btn) => btn.onclick = () => {
+      const o = objectivesById[btn.dataset.objectiveDetails];
+      openModal(o?.title || "Objective", renderObjectiveDetails(o));
+      objectiveRecovery.bindObjectiveRecovery(modalBody, { request: apiJson, notify: showToast, refresh: route });
+      bindObjectiveControls(modalBody);
+    });
+    scope.querySelectorAll("[data-archive-objective]").forEach((btn) => btn.onclick = () => archiveObjective(btn.dataset.archiveObjective, true));
+    scope.querySelectorAll("[data-unarchive-objective]").forEach((btn) => btn.onclick = () => archiveObjective(btn.dataset.unarchiveObjective, false));
   }
 
   // Read the report, then drill into timeline / evidence / GitHub — no terminal.

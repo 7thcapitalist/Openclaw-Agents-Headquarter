@@ -63,6 +63,7 @@ import {
   buildObjectivesView,
   buildRolePolicy,
   discoverFactoryTasks,
+  findObjectiveStatePath,
   findTaskStatePath,
   handleObjectiveRetry,
   isProjectPaused,
@@ -75,6 +76,7 @@ import {
   resolveProjectRepo,
   resolveRepoInput,
   saveFounderJob,
+  setObjectiveArchived,
   setProjectPaused,
 } from "./lib/founderControlPlane.mjs";
 import { buildHqCostsPayload, buildHqPlanLimitsPayload } from "./lib/hq-cost-limits.mjs";
@@ -467,6 +469,24 @@ app.post("/api/founder/objectives/:id/retry", async (req, res) => {
     res.status(202).json(out);
   } catch (e) {
     res.status(e.statusCode || 400).json({ error: String(e.message || e) });
+  }
+});
+
+// Founder presentation control: dismiss a decomposed objective from the main
+// Today view (archive), or restore it (unarchive). Writes only the archive flag
+// in control-plane.json — the objective's state, metrics, report, evidence, and
+// GitHub history are never touched, and the action is fully reversible.
+app.post("/api/founder/objectives/:id/:action", (req, res) => {
+  try {
+    const action = req.params.action;
+    if (!new Set(["archive", "unarchive"]).has(action)) {
+      return res.status(400).json({ error: "Action must be archive or unarchive." });
+    }
+    if (!/^obj-[a-z0-9-]+$/i.test(req.params.id)) return res.status(400).json({ error: "Invalid objective id." });
+    if (!findObjectiveStatePath(ROOT, req.params.id)) return res.status(404).json({ error: "No such objective." });
+    res.json(setObjectiveArchived(ROOT, req.params.id, action === "archive", { reason: req.body?.reason }));
+  } catch (e) {
+    res.status(400).json({ error: String(e.message || e) });
   }
 });
 

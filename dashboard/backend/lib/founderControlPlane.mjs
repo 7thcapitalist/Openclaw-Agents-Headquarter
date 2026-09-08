@@ -100,9 +100,9 @@ function walkStateFiles(dir, out = []) {
 
 function readControl(root) {
   const path = join(factoryRoot(root), CONTROL_FILE);
-  if (!existsSync(path)) return { version: 1, projects: {}, questions: [], jobs: [] };
+  if (!existsSync(path)) return { version: 1, projects: {}, questions: [], jobs: [], archivedObjectives: {} };
   const value = JSON.parse(readFileSync(path, "utf8"));
-  return { version: 1, projects: {}, questions: [], jobs: [], ...value };
+  return { version: 1, projects: {}, questions: [], jobs: [], archivedObjectives: {}, ...value };
 }
 
 function writeControl(root, value) {
@@ -514,11 +514,43 @@ function readDecisionCard(state) {
   return null;
 }
 
+// ── objective lifecycle bucketing ───────────────────────────────────────────
+// Split the objective portfolio into what needs the founder's eyes now vs.
+// finished history vs. what the founder explicitly dismissed. Pure: derived
+// from the presenter's 6-value status, the objective's own freshness, its
+// pending recovery, and the founder's archive flag. Adds no state.
+const OBJ_ACTIVE_STALE_MS = Number(process.env.HQ_OBJECTIVE_ACTIVE_STALE_MS) || 12 * 60 * 60 * 1000;
+const OBJ_RECENT_COMPLETE_MS = Number(process.env.HQ_OBJECTIVE_RECENT_COMPLETE_MS) || 72 * 60 * 60 * 1000;
+
+export function objectiveLifecycle(obj, {
+  archived = false,
+  now = Date.now(),
+  staleMs = OBJ_ACTIVE_STALE_MS,
+  recentCompleteMs = OBJ_RECENT_COMPLETE_MS,
+} = {}) {
+  if (archived) return "archived";
+  const status = obj?.status6 || null;
+  const stampMs = Date.parse(obj?.updatedAt || obj?.createdAt || "") || 0;
+  const age = now - stampMs;
+  // Genuine open founder attention stays active until it's resolved or archived,
+  // no matter how old it is.
+  if (status === "WAITING_FOR_FOUNDER" || status === "BLOCKED") return "active";
+  if (status === "COMPLETE") return age <= recentCompleteMs ? "active" : "history";
+  // RUNNING / PENDING / FAILED: active only while there is recent movement or a
+  // recovery is still pending. Otherwise it's abandoned — send it to history.
+  if (status === "RUNNING" || status === "PENDING" || status === "FAILED") {
+    if ((obj?.recovery?.count || 0) > 0) return "active";
+    return age <= staleMs ? "active" : "history";
+  }
+  return "history";
+}
+
 // Read-only view of every decomposed objective (factory/lib/objective/) and its
 // live task graph, for the Headquarters dashboard/API. Joins each node to its
 // underlying factory task (already discovered above) so stage / status /
 // elapsed / blocker / retries / last result come for free.
-export function buildObjectivesView(root) {
+export function buildObjectivesView(root, { now = Date.now() } = {}) {
+  const archivedObjectives = readControl(root).archivedObjectives || {};
   const factoryDir = factoryRoot(root);
   const objectives = [];
   if (existsSync(factoryDir)) {
@@ -618,10 +650,20 @@ export function buildObjectivesView(root) {
       obj.recovery = { count: 0, nodes: [] };
     }
   }
+  // Founder-facing lifecycle bucket: needs-you-now vs. history vs. explicitly
+  // dismissed. Presentation only — the archive flag lives in control-plane.json,
+  // never in the objective's own state.
+  for (const obj of objectives) {
+    const archived = Boolean(archivedObjectives[obj.objectiveId]);
+    obj.archived = archived;
+    obj.archivedAt = archived ? (archivedObjectives[obj.objectiveId].archivedAt || null) : null;
+    obj.lifecycle = objectiveLifecycle(obj, { archived, now });
+  }
   const sorted = objectives.sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
   const real = sorted.filter((o) => !o.isSeed);
   const seed = sorted.filter((o) => o.isSeed);
   const countBy = (list, s) => list.filter((o) => o.status6 === s).length;
+  const countLc = (list, l) => list.filter((o) => o.lifecycle === l).length;
   return {
     objectives: real,
     seedObjectives: seed,
@@ -634,6 +676,9 @@ export function buildObjectivesView(root) {
       needsFounder: countBy(real, "WAITING_FOR_FOUNDER"),
       pending: countBy(real, "PENDING"),
       seed: seed.length,
+      active: countLc(real, "active"),
+      history: countLc(real, "history"),
+      archived: countLc(real, "archived"),
     },
   };
 }
@@ -928,6 +973,33 @@ export function setProjectPaused(root, projectId, paused) {
 
 export function isProjectPaused(root, projectId) {
   return readControl(root).projects[projectId]?.status === "paused";
+}
+
+// Founder-controlled presentation state for a decomposed objective. Archiving
+// moves it out of the main Today view into the "Archived" section; it never
+// touches the objective's objective-state.json, metrics, report, evidence, or
+// GitHub history, and it is fully reversible.
+export function setObjectiveArchived(root, objectiveId, archived, { reason = "" } = {}) {
+  const control = readControl(root);
+  control.archivedObjectives = control.archivedObjectives || {};
+  if (archived) {
+    control.archivedObjectives[objectiveId] = {
+      archivedAt: control.archivedObjectives[objectiveId]?.archivedAt || new Date().toISOString(),
+      reason: String(reason || "").slice(0, 500) || undefined,
+    };
+  } else {
+    delete control.archivedObjectives[objectiveId];
+  }
+  writeControl(root, control);
+  return {
+    objectiveId,
+    archived: Boolean(archived),
+    archivedAt: control.archivedObjectives[objectiveId]?.archivedAt || null,
+  };
+}
+
+export function listArchivedObjectives(root) {
+  return readControl(root).archivedObjectives || {};
 }
 
 export function recordQuestion(root, question) {

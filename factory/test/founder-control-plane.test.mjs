@@ -10,9 +10,12 @@ import {
   buildRecoveryPlan,
   discoverFactoryTasks,
   findObjectiveStatePath,
+  listArchivedObjectives,
   listFounderJobs,
+  objectiveLifecycle,
   resolveFounderDecision,
   saveFounderJob,
+  setObjectiveArchived,
   setProjectPaused,
 } from "../../dashboard/backend/lib/founderControlPlane.mjs";
 import { createState, writeState } from "../lib/task-workflow.mjs";
@@ -428,4 +431,103 @@ test("buildRecoveryPlan / buildObjectivesView: only hard/decision → recovery.c
   const shaped = view.objectives.find((o) => o.objectiveId === objectiveId);
   assert.ok(shaped);
   assert.equal(shaped.recovery.count, 0);
+});
+
+// ── objective lifecycle bucketing + founder archive ─────────────────────────
+
+function writeObjectiveFixture(root, {
+  objectiveId = "obj-12345678",
+  project = "app",
+  objective = "Add a dependency-free health endpoint with tests so ops can watch uptime",
+  status = "active",
+  status6Hint = "running", // node status that drives the presenter status
+  updatedAt = "2026-09-08T11:30:00.000Z",
+} = {}) {
+  const dir = join(root, "dashboard/backend/data/factory", project, "objectives", objectiveId);
+  mkdirSync(dir, { recursive: true });
+  const obj = {
+    version: 1, objectiveId, objective, project, repo: join(root, "repo"),
+    status, createdAt: "2026-09-08T00:00:00.000Z", updatedAt,
+    nodes: {
+      [`${objectiveId}-a`]: {
+        id: `${objectiveId}-a`, role: "backend-builder", status: status6Hint,
+        dependsOn: [], contract: { outcome: "Build the endpoint" },
+      },
+    },
+    integration: { id: `${objectiveId}-integration`, role: "integration", status: "pending" },
+    events: [],
+  };
+  const path = join(dir, "objective-state.json");
+  writeFileSync(path, `${JSON.stringify(obj, null, 2)}\n`);
+  return { dir, path };
+}
+
+test("objectiveLifecycle: presenter status + freshness + archive decide the bucket", () => {
+  const now = Date.parse("2026-09-08T12:00:00.000Z");
+  const fresh = "2026-09-08T11:00:00.000Z";
+  const old = "2026-09-01T00:00:00.000Z";
+
+  // Open founder attention stays active regardless of age.
+  assert.equal(objectiveLifecycle({ status6: "WAITING_FOR_FOUNDER", updatedAt: old }, { now }), "active");
+  assert.equal(objectiveLifecycle({ status6: "BLOCKED", updatedAt: old }, { now }), "active");
+
+  // Running/pending: active only while fresh, or while a recovery is pending.
+  assert.equal(objectiveLifecycle({ status6: "RUNNING", updatedAt: fresh }, { now }), "active");
+  assert.equal(objectiveLifecycle({ status6: "RUNNING", updatedAt: old }, { now }), "history");
+  assert.equal(objectiveLifecycle({ status6: "RUNNING", updatedAt: old, recovery: { count: 2 } }, { now }), "active");
+  assert.equal(objectiveLifecycle({ status6: "FAILED", updatedAt: old }, { now }), "history");
+
+  // Completed: active only if recent.
+  assert.equal(objectiveLifecycle({ status6: "COMPLETE", updatedAt: fresh }, { now }), "active");
+  assert.equal(objectiveLifecycle({ status6: "COMPLETE", updatedAt: old }, { now }), "history");
+
+  // Founder archive always wins.
+  assert.equal(objectiveLifecycle({ status6: "WAITING_FOR_FOUNDER", updatedAt: fresh }, { now, archived: true }), "archived");
+});
+
+test("archiving an objective is presentation-only, reflected in the view, and reversible", () => {
+  const root = mkdtempSync(join(tmpdir(), "founder-archive-"));
+  mkdirSync(join(root, "repo"), { recursive: true });
+  const { path } = writeObjectiveFixture(root, { objectiveId: "obj-aa11bb22", updatedAt: "2026-09-08T11:30:00.000Z" });
+  const stateBefore = readFileSync(path, "utf8");
+  const now = Date.parse("2026-09-08T12:00:00.000Z");
+
+  let view = buildObjectivesView(root, { now });
+  let shaped = view.objectives.find((o) => o.objectiveId === "obj-aa11bb22");
+  assert.equal(shaped.archived, false);
+  assert.equal(shaped.lifecycle, "active");
+  assert.equal(view.summary.active, 1);
+  assert.equal(view.summary.archived, 0);
+
+  const res = setObjectiveArchived(root, "obj-aa11bb22", true, { reason: "shipped another way" });
+  assert.equal(res.archived, true);
+  assert.ok(res.archivedAt);
+  assert.ok(listArchivedObjectives(root)["obj-aa11bb22"]);
+  // The objective's own state file is byte-for-byte untouched.
+  assert.equal(readFileSync(path, "utf8"), stateBefore);
+
+  view = buildObjectivesView(root, { now });
+  shaped = view.objectives.find((o) => o.objectiveId === "obj-aa11bb22");
+  assert.equal(shaped.archived, true);
+  assert.equal(shaped.archivedAt, res.archivedAt);
+  assert.equal(shaped.lifecycle, "archived");
+  assert.equal(view.summary.archived, 1);
+  assert.equal(view.summary.active, 0);
+
+  setObjectiveArchived(root, "obj-aa11bb22", false);
+  assert.equal(listArchivedObjectives(root)["obj-aa11bb22"], undefined);
+  assert.equal(readFileSync(path, "utf8"), stateBefore);
+  view = buildObjectivesView(root, { now });
+  assert.equal(view.objectives.find((o) => o.objectiveId === "obj-aa11bb22").lifecycle, "active");
+});
+
+test("an old untouched objective drops to history without being archived", () => {
+  const root = mkdtempSync(join(tmpdir(), "founder-history-"));
+  mkdirSync(join(root, "repo"), { recursive: true });
+  writeObjectiveFixture(root, { objectiveId: "obj-99887766", updatedAt: "2026-09-01T00:00:00.000Z" });
+  const view = buildObjectivesView(root, { now: Date.parse("2026-09-08T12:00:00.000Z") });
+  const shaped = view.objectives.find((o) => o.objectiveId === "obj-99887766");
+  assert.equal(shaped.archived, false);
+  assert.equal(shaped.lifecycle, "history");
+  assert.equal(view.summary.history, 1);
 });
