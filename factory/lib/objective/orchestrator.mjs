@@ -142,7 +142,10 @@ async function runNode({ hqRoot, objectivePath, nodeId, execute, agentIds, maxAt
     patchNode(objectivePath, nodeId, { statePath, worktree, branch: init.branch });
   }
 
-  const resp = await runToTerminal({ hqRoot, statePath, agentIds, maxAttemptsPerStage, concurrentGroups, execute, publish: NODE_NO_PUBLISH });
+  // Let the workflow publish the completed build branch once it reaches the
+  // merge-ready gate. The recorded result is then mirrored onto objective
+  // state so integration only starts from reviewable branches.
+  const resp = await runToTerminal({ hqRoot, statePath, agentIds, maxAttemptsPerStage, concurrentGroups, execute, publish });
   const state = readState(statePath);
   const attempts = (state.dispatches || []).length;
 
