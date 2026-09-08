@@ -100,6 +100,10 @@ async function runNode({ hqRoot, objectivePath, nodeId, execute, agentIds, maxAt
   const state = readState(init.state);
   const attempts = (state.dispatches || []).length;
 
+  if (resp.waiting) {
+    patchNode(objectivePath, nodeId, { status: "running", blocker: null }, { type: "node-waiting-for-delegate" });
+    return { nodeId, status: "running" };
+  }
   if (resp.status === "merge-ready") {
     // ensure the branch actually carries a commit even without a github remote
     try { ensureBranchHasCommit({ state }); } catch { /* recorded by the publish step if a remote exists */ }

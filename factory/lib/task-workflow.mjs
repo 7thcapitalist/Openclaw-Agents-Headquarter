@@ -161,7 +161,7 @@ export function resumeState(state, now = new Date().toISOString()) {
   return next;
 }
 
-const REVIEW_STAGES = new Set(["reviewer", "qa", "security"]);
+const REVIEW_STAGES = new Set(["reviewer", "qa", "security", "release"]);
 
 export function routeStageFailure(state, { failedStage, targetStage, maxAttemptsPerStage = 3, now = new Date().toISOString() }) {
   if (state.blocker?.outcome !== "fail") return state;
@@ -173,7 +173,8 @@ export function routeStageFailure(state, { failedStage, targetStage, maxAttempts
   // to fix — re-running builder + the whole review group for a dropped model
   // call is pure waste. Retry the failed review stage in place instead. A real
   // FAIL verdict still routes to the builder.
-  const infra = REVIEW_STAGES.has(failedStage) && classifyBlocker(state.blocker) === "infra";
+  const releaseConflict = failedStage === "release" && /merge conflict|conflict(?:ing|s)?(?:\/dirty)?|branch.*(?:out.of.date|behind)/i.test(state.blocker.summary || "");
+  const infra = REVIEW_STAGES.has(failedStage) && !releaseConflict && classifyBlocker(state.blocker) === "infra";
   const target = targetStage
     || (REVIEW_STAGES.has(failedStage) && !infra ? "builder" : failedStage);
   const next = structuredClone(state);

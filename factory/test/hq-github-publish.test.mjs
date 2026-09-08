@@ -244,3 +244,16 @@ test("buildPrBody skips stages that never ran", () => {
   const body = buildPrBody(state);
   assert.doesNotMatch(body, /qa: pending/);
 });
+
+test("publication reuses a builder-opened PR after the release gates pass", () => {
+  const hq = makeHq();
+  const state = mergeReadyState();
+  const url = "https://github.com/7thcapitalist/lifemax/pull/35";
+  const { exec, calls } = gitRunner({
+    "gh pr list --repo 7thcapitalist/lifemax --head task/onboarding --state open --json url,headRefName,isCrossRepository": () => ({ ok: true, out: JSON.stringify([{ url, headRefName: state.branch, isCrossRepository: false }]) }),
+  });
+  const result = publishMergeReadyTask({ hqRoot: hq, state, exec, ghAvailable: () => true });
+  assert.equal(result.published, true);
+  assert.equal(result.prUrl, url);
+  assert.equal(calls.filter((c) => c.args[0] === "gh").length, 1);
+});
