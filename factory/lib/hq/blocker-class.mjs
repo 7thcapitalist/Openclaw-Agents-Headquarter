@@ -45,6 +45,27 @@ export function classifyBlocker(blocker) {
   return "hard";
 }
 
+// Classify a decomposed-objective NODE blocker. Unlike classifyBlocker(), this
+// understands that the objective orchestrator relabels an infrastructure failure
+// as `decision-required` (see objective/orchestrator.mjs). "infra" here means
+// "safe for the system to retry without the founder".
+export function classifyObjectiveNodeBlocker(blocker) {
+  if (!blocker) return null;
+  // 1. Explicit tag written by the orchestrator on newly-synthesized blockers.
+  if (blocker.infra === true) return "infra";
+  // 2. Backfill for objective-state.json written before the tag existed: match
+  //    the orchestrator's exact synthesized sentence (specific enough to be safe).
+  if (blocker.outcome === "decision-required"
+      && /could not run/i.test(blocker.summary || "")
+      && /retry the objective later|adjust model routing/i.test(blocker.summary || "")) {
+    return "infra";
+  }
+  // 3. A genuine stage decision or a merge conflict stays with the founder.
+  if (blocker.outcome === "decision-required") return "decision";
+  // 4. fail → infra|hard via the existing regex; anything else → hard.
+  return classifyBlocker(blocker);
+}
+
 export function isInfraFailure(blocker) {
   return classifyBlocker(blocker) === "infra";
 }

@@ -11,10 +11,11 @@ import { execFileSync } from "child_process";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { initializeTask } from "../task-initializer.mjs";
-import { readState, validateTaskContract } from "../task-workflow.mjs";
+import { readState, resumeState, validateTaskContract, writeState } from "../task-workflow.mjs";
 import { executeOpenClaw, runToTerminal } from "../openclaw-runner.mjs";
 import { ensureBranchHasCommit } from "../hq/github-publish.mjs";
 import { assertAcyclic, buildNodesComplete, descendants, isDeadlocked, readyNodes, GATE_SATISFIED } from "./graph.mjs";
+import { classifyObjectiveNodeBlocker } from "../hq/blocker-class.mjs";
 
 const INTEGRATION_SYNTHETIC_STAGES = new Set(["product", "architect", "builder"]);
 
@@ -81,16 +82,26 @@ const NODE_NO_PUBLISH = () => ({ published: false, reason: "objective build node
 async function runNode({ hqRoot, objectivePath, nodeId, execute, agentIds, maxAttemptsPerStage, concurrentGroups, stateRoot }) {
   const obj = readObjState(objectivePath);
   const node = obj.nodes[nodeId];
-  const contractDir = join(dirname(objectivePath), "contracts");
-  mkdirSync(contractDir, { recursive: true });
-  const contractPath = join(contractDir, `${nodeId}.json`);
-  writeFileSync(contractPath, `${JSON.stringify(node.contract, null, 2)}\n`, "utf8");
+  let statePath = node.statePath;
+  let worktree = node.worktree;
 
-  const init = initializeTask({ hqRoot, contractPath, repo: obj.repo, branch: node.branch, stateRoot });
-  patchNode(objectivePath, nodeId, { statePath: init.state, worktree: init.worktree, branch: init.branch });
+  if (statePath && existsSync(statePath)) {
+    // Resume an already-initialized node. The recovery action (or runObjective's
+    // resume block) has already flipped state.json back to `active`.
+    // Nothing to initialize — reuse the existing single worktree for this branch.
+  } else {
+    const contractDir = join(dirname(objectivePath), "contracts");
+    mkdirSync(contractDir, { recursive: true });
+    const contractPath = join(contractDir, `${nodeId}.json`);
+    writeFileSync(contractPath, `${JSON.stringify(node.contract, null, 2)}\n`, "utf8");
+    const init = initializeTask({ hqRoot, contractPath, repo: obj.repo, branch: node.branch, stateRoot });
+    statePath = init.state;
+    worktree = init.worktree;
+    patchNode(objectivePath, nodeId, { statePath, worktree, branch: init.branch });
+  }
 
-  const resp = await runToTerminal({ hqRoot, statePath: init.state, agentIds, maxAttemptsPerStage, concurrentGroups, execute, publish: NODE_NO_PUBLISH });
-  const state = readState(init.state);
+  const resp = await runToTerminal({ hqRoot, statePath, agentIds, maxAttemptsPerStage, concurrentGroups, execute, publish: NODE_NO_PUBLISH });
+  const state = readState(statePath);
   const attempts = (state.dispatches || []).length;
 
   if (resp.status === "merge-ready") {
@@ -110,6 +121,7 @@ async function runNode({ hqRoot, objectivePath, nodeId, execute, agentIds, maxAt
     blocker = {
       ...blocker,
       outcome: "decision-required",
+      infra: true, // machine-readable; recovery classifies without prose matching
       summary: `The ${blocker.stage || "agent"} for this task could not run (${firstLine(blocker.summary)}). Retry the objective later, or adjust model routing for that role.`,
     };
   }
@@ -150,8 +162,16 @@ async function runIntegration({ hqRoot, objectivePath, execute, agentIds, maxAtt
   writeFileSync(contractPath, `${JSON.stringify(contract, null, 2)}\n`, "utf8");
 
   const base = defaultBranch(obj.repo);
-  const init = initializeTask({ hqRoot, contractPath, repo: obj.repo, branch: integ.branch, stateRoot });
-  patchNode(objectivePath, integ.id, { statePath: init.state, worktree: init.worktree, branch: init.branch, status: "running", startedAt: new Date().toISOString() },
+  let statePath = integ.statePath;
+  let worktree = integ.worktree;
+  if (statePath && existsSync(statePath)) {
+    // Re-entrant: reuse the existing integration worktree / task state.
+  } else {
+    const init = initializeTask({ hqRoot, contractPath, repo: obj.repo, branch: integ.branch, stateRoot });
+    statePath = init.state;
+    worktree = init.worktree;
+  }
+  patchNode(objectivePath, integ.id, { statePath, worktree, branch: integ.branch, status: "running", startedAt: new Date().toISOString() },
     { type: "integration-started", detail: `base ${base}, ${buildBranches.length} branch(es)` });
 
   const mergeLog = [];
@@ -162,14 +182,14 @@ async function runIntegration({ hqRoot, objectivePath, execute, agentIds, maxAtt
     const { dispatch } = args;
     if (!INTEGRATION_SYNTHETIC_STAGES.has(dispatch.stage)) return execute(args);
 
-    const evDir = join(init.worktree, "evidence");
+    const evDir = join(worktree, "evidence");
     mkdirSync(evDir, { recursive: true });
     let summary;
     if (dispatch.stage === "builder") {
       for (const branch of buildBranches) {
-        const r = git(init.worktree, ["merge", "--no-ff", "-m", `factory: integrate ${branch}`, branch]);
+        const r = git(worktree, ["merge", "--no-ff", "-m", `factory: integrate ${branch}`, branch]);
         mergeLog.push({ branch, ok: r.ok, out: r.out.slice(0, 800) });
-        if (!r.ok) { git(init.worktree, ["merge", "--abort"]); throw new MergeConflict(branch, r.out); }
+        if (!r.ok) { git(worktree, ["merge", "--abort"]); throw new MergeConflict(branch, r.out); }
       }
       writeFileSync(join(evDir, "integration-merge.md"), `# Integration merge\n\nBase: ${base}\n\n${mergeLog.map((m) => `- ${m.branch}: ${m.ok ? "merged" : "CONFLICT"}`).join("\n")}\n`, "utf8");
       summary = `merged ${buildBranches.length} sub-task branch(es) into ${integ.branch}`;
@@ -185,7 +205,7 @@ async function runIntegration({ hqRoot, objectivePath, execute, agentIds, maxAtt
 
   let resp;
   try {
-    resp = await runToTerminal({ hqRoot, statePath: init.state, agentIds, maxAttemptsPerStage, concurrentGroups, execute: integExecute, publish });
+    resp = await runToTerminal({ hqRoot, statePath, agentIds, maxAttemptsPerStage, concurrentGroups, execute: integExecute, publish });
   } catch (error) {
     if (error instanceof MergeConflict) {
       patchNode(objectivePath, integ.id, {
@@ -197,13 +217,22 @@ async function runIntegration({ hqRoot, objectivePath, execute, agentIds, maxAtt
     throw error;
   }
 
-  const state = readState(init.state);
+  const state = readState(statePath);
+  let blocker = resp.status === "merge-ready" ? null : (state.blocker || null);
+  if (blocker?.outcome === "fail" && isInfrastructureFailure(blocker.summary)) {
+    blocker = {
+      ...blocker,
+      outcome: "decision-required",
+      infra: true,
+      summary: `The ${blocker.stage || "agent"} for this task could not run (${firstLine(blocker.summary)}). Retry the objective later, or adjust model routing for that role.`,
+    };
+  }
   patchNode(objectivePath, integ.id, {
     mergeLog,
     status: resp.status === "merge-ready" ? GATE_SATISFIED : "blocked",
     finishedAt: new Date().toISOString(),
     githubPublish: state.githubPublish || null,
-    blocker: resp.status === "merge-ready" ? null : (state.blocker || null),
+    blocker,
   }, { type: resp.status === "merge-ready" ? "integration-gate-satisfied" : "integration-blocked" });
   return resp;
 }
@@ -302,6 +331,103 @@ function collectMetrics(objectivePath) {
     integration,
     generatedAt: new Date().toISOString(),
   };
+}
+
+// Resume safely-retryable objective nodes (infra-failed or restart-orphaned) so
+// runObjective can re-drive them. Never answers founder decisions or approvals.
+// Per-node try/catch: one bad node never aborts the batch.
+export function resumeObjectiveNodes({ objectivePath, nodeIds, now = () => new Date().toISOString() }) {
+  const at = typeof now === "function" ? now() : now;
+  const resumed = [];
+  const skipped = [];
+  const ids = [...new Set(nodeIds || [])];
+
+  for (const nodeId of ids) {
+    try {
+      const obj = readObjState(objectivePath);
+      const node = obj.nodes[nodeId] || (obj.integration?.id === nodeId ? obj.integration : null);
+      if (!node) { skipped.push({ id: nodeId, reason: "unknown node" }); continue; }
+      const kind = classifyObjectiveNodeBlocker(node.blocker);
+      if (kind === "decision" || kind === "hard") {
+        skipped.push({ id: nodeId, reason: kind === "decision" ? "needs founder decision" : "hard failure" });
+        continue;
+      }
+      if (!node.statePath || !existsSync(node.statePath)) {
+        skipped.push({ id: nodeId, reason: "no task state to resume" });
+        continue;
+      }
+      const state = readState(node.statePath);
+      let revived;
+      let reason;
+      if (state.status === "blocked") {
+        revived = resumeState(state, at);
+        reason = "infra-failed";
+      } else if (state.status === "active") {
+        // Restart-orphaned: drop stuck dispatch and re-arm current stage.
+        revived = structuredClone(state);
+        delete revived.currentDispatch;
+        if (revived.currentStage) revived.stages[revived.currentStage] = { status: "pending" };
+        revived.updatedAt = at;
+        revived.events.push({ at, type: "task-resumed", stage: revived.currentStage, actor: "system" });
+        reason = "restart-orphaned";
+      } else {
+        skipped.push({ id: nodeId, reason: `task is ${state.status}, not resumable` });
+        continue;
+      }
+      revived.autoRetries = state.autoRetries || 0;
+      writeState(node.statePath, revived);
+
+      mutate(objectivePath, (s) => {
+        const target = s.nodes[nodeId] || (s.integration?.id === nodeId ? s.integration : null);
+        if (!target) return;
+        target.status = "pending";
+        target.blocker = null;
+        target.finishedAt = null;
+        s.events.push({ at, type: "objective-node-retry", node: nodeId, reason });
+      });
+
+      resumed.push({
+        id: nodeId,
+        role: node.role || (obj.integration?.id === nodeId ? "integration" : null),
+        title: node.contract?.outcome || node.objective || node.role || nodeId,
+        reason,
+      });
+    } catch (error) {
+      skipped.push({ id: nodeId, reason: `cannot resume: ${error.message || error}` });
+    }
+  }
+
+  if (resumed.length) {
+    mutate(objectivePath, (s) => {
+      const live = new Set(Object.values(s.nodes).filter((n) => n.status !== "blocked" && n.status !== "failed").map((n) => n.id));
+      for (const node of Object.values(s.nodes)) {
+        if (node.status === "blocked-by-dep" && (node.dependsOn || []).every((d) => live.has(d))) {
+          node.status = "pending";
+          s.events.push({ at, type: "node-unblocked", node: node.id });
+        }
+      }
+      const prev = s.recovery || {};
+      s.recovery = {
+        ...prev,
+        requestedAt: at,
+        by: "founder",
+        nodes: resumed.map((r) => r.id),
+        attempts: (prev.attempts || 0) + 1,
+      };
+      s.events.push({ at, type: "objective-recovery-requested", by: "founder", nodes: resumed.map((r) => r.id) });
+      if (s.status !== "active") s.status = "active";
+    });
+  }
+
+  return { resumed, skipped };
+}
+
+export function setObjectiveRecoveryInFlight(objectivePath, inFlight) {
+  mutate(objectivePath, (s) => {
+    s.recovery = { ...(s.recovery || {}) };
+    if (inFlight) s.recovery.inFlight = inFlight;
+    else delete s.recovery.inFlight;
+  });
 }
 
 // ── the loop ─────────────────────────────────────────────────────────────────

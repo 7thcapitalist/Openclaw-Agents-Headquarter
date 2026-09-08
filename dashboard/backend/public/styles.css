@@ -1235,6 +1235,8 @@ pre,
 .obj-card-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
 .obj-card-head strong { display: block; color: var(--text); }
 .obj-blocked { margin: 8px 0; padding: 6px 10px; border-radius: 6px; background: rgba(243, 201, 105, 0.12); color: var(--amber); font-size: 13px; }
+.obj-recovery { margin: 8px 0; padding: 8px 10px; border-radius: 6px; background: rgba(94, 160, 180, 0.10); color: var(--text); font-size: 13px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; justify-content: space-between; }
+.obj-recovery-note { flex: 1 1 12rem; color: var(--muted, #6b7280); }
 .obj-nodes { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
 .obj-node { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 6px; background: var(--surface-2); border: 1px solid var(--border-soft); color: var(--text); }
 .obj-node-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }

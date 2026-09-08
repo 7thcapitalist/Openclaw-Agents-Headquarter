@@ -4,7 +4,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { buildFounderOverview, discoverFactoryTasks, listFounderJobs, resolveFounderDecision, saveFounderJob, setProjectPaused } from "../../dashboard/backend/lib/founderControlPlane.mjs";
+import {
+  buildFounderOverview,
+  buildObjectivesView,
+  buildRecoveryPlan,
+  discoverFactoryTasks,
+  findObjectiveStatePath,
+  listFounderJobs,
+  resolveFounderDecision,
+  saveFounderJob,
+  setProjectPaused,
+} from "../../dashboard/backend/lib/founderControlPlane.mjs";
 import { createState, writeState } from "../lib/task-workflow.mjs";
 
 function registerIntelligence(root, { key = "startup-ops", risks, openDecisions } = {}) {
@@ -241,4 +251,137 @@ test("task view carries derived elapsed / last-handoff / last-result", () => {
   assert.equal(task.lastResult.stage, "product");
   assert.equal(task.lastResult.outcome, "pass");
   assert.equal(task.lastResult.summary, "outcome normalized");
+});
+
+test("buildObjectivesView: infra recovery vs founder decision on mixed blockers", () => {
+  const root = mkdtempSync(join(tmpdir(), "founder-obj-view-"));
+  const repo = join(root, "repo");
+  mkdirSync(repo, { recursive: true });
+  const objectiveId = "obj-aabbccdd-mixed";
+  const idA = `${objectiveId}-auth-api`;
+  const idB = `${objectiveId}-storage-pick`;
+
+  const infra = {
+    stage: "builder", outcome: "decision-required", infra: true,
+    summary: "The builder for this task could not run (rate_limit). Retry the objective later, or adjust model routing for that role.",
+  };
+  const decision = {
+    stage: "architect", outcome: "decision-required",
+    summary: "Choose Postgres or SQLite",
+  };
+
+  for (const [id, blocker, outcome] of [
+    [idA, infra, "Ship auth API"],
+    [idB, decision, "Pick storage"],
+  ]) {
+    const wt = join(root, "wt", id);
+    mkdirSync(wt, { recursive: true });
+    const st = createState({
+      task: { id, issue: `local:${id}`, outcome, acceptanceCriteria: ["x"], project: "app", workType: "backend", risk: "low" },
+      repo, branch: `factory/${id}`, worktree: wt,
+    });
+    st.status = "blocked";
+    st.blocker = blocker;
+    st.currentStage = blocker.stage;
+    writeState(join(root, "dashboard/backend/data/factory/app/tasks", id, "state.json"), st);
+  }
+
+  const obj = {
+    version: 1, objectiveId, objective: "Mixed blockers", project: "app", repo,
+    status: "blocked", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    nodes: {
+      [idA]: {
+        id: idA, role: "backend-builder", status: "blocked", dependsOn: [],
+        contract: { outcome: "Ship auth API" }, blocker: infra,
+        statePath: join(root, "dashboard/backend/data/factory/app/tasks", idA, "state.json"),
+      },
+      [idB]: {
+        id: idB, role: "frontend-builder", status: "blocked", dependsOn: [],
+        contract: { outcome: "Pick storage" }, blocker: decision,
+        statePath: join(root, "dashboard/backend/data/factory/app/tasks", idB, "state.json"),
+      },
+    },
+    integration: { id: `${objectiveId}-integration`, role: "integration", status: "pending", dependsOn: [idA, idB] },
+    events: [],
+  };
+  const objDir = join(root, "dashboard/backend/data/factory/app/objectives", objectiveId);
+  mkdirSync(objDir, { recursive: true });
+  writeFileSync(join(objDir, "objective-state.json"), `${JSON.stringify(obj, null, 2)}\n`);
+
+  const plan = buildRecoveryPlan(obj);
+  assert.equal(plan.nodes.length, 1);
+  assert.equal(plan.nodes[0].role, "backend-builder");
+  assert.equal(plan.nodes[0].title, "Ship auth API");
+
+  const view = buildObjectivesView(root);
+  const shaped = view.objectives.find((o) => o.objectiveId === objectiveId);
+  assert.ok(shaped);
+  assert.equal(shaped.recovery.count, 1);
+  assert.equal(shaped.recovery.nodes[0].role, "backend-builder");
+  assert.equal(shaped.recovery.nodes[0].title, "Ship auth API");
+  assert.equal(shaped.recovery.nodes[0].id, undefined);
+  assert.ok(!JSON.stringify(shaped.recovery.nodes).includes(idA));
+  assert.equal(shaped.blockedOn, idB);
+  assert.equal(view.summary.needsFounder, 1);
+
+  assert.equal(findObjectiveStatePath(root, "../etc/passwd"), null);
+  assert.equal(findObjectiveStatePath(root, "not-an-obj"), null);
+  assert.equal(findObjectiveStatePath(root, "obj-missing-zzzz"), null);
+  assert.ok(findObjectiveStatePath(root, objectiveId)?.endsWith("objective-state.json"));
+});
+
+test("buildRecoveryPlan / buildObjectivesView: only hard/decision → recovery.count===0", () => {
+  const root = mkdtempSync(join(tmpdir(), "founder-obj-empty-"));
+  const repo = join(root, "repo");
+  mkdirSync(repo, { recursive: true });
+  const objectiveId = "obj-aabbccdd-empty";
+  const idB = `${objectiveId}-decide`;
+  const idC = `${objectiveId}-hard`;
+
+  const decision = { outcome: "decision-required", summary: "Choose Postgres or SQLite", stage: "architect" };
+  const hard = { outcome: "fail", summary: "QA: 3 tests fail", stage: "qa" };
+
+  for (const [id, blocker, outcome] of [
+    [idB, decision, "Pick storage"],
+    [idC, hard, "Fix tests"],
+  ]) {
+    const wt = join(root, "wt", id);
+    mkdirSync(wt, { recursive: true });
+    const st = createState({
+      task: { id, issue: `local:${id}`, outcome, acceptanceCriteria: ["x"], project: "app", workType: "backend", risk: "low" },
+      repo, branch: `factory/${id}`, worktree: wt,
+    });
+    st.status = "blocked";
+    st.blocker = blocker;
+    st.currentStage = blocker.stage;
+    writeState(join(root, "dashboard/backend/data/factory/app/tasks", id, "state.json"), st);
+  }
+
+  const obj = {
+    version: 1, objectiveId, objective: "No recovery", project: "app", repo,
+    status: "blocked", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    nodes: {
+      [idB]: {
+        id: idB, role: "architect", status: "blocked", dependsOn: [],
+        contract: { outcome: "Pick storage" }, blocker: decision,
+        statePath: join(root, "dashboard/backend/data/factory/app/tasks", idB, "state.json"),
+      },
+      [idC]: {
+        id: idC, role: "backend-builder", status: "failed", dependsOn: [],
+        contract: { outcome: "Fix tests" }, blocker: hard,
+        statePath: join(root, "dashboard/backend/data/factory/app/tasks", idC, "state.json"),
+      },
+    },
+    integration: { id: `${objectiveId}-integration`, role: "integration", status: "pending" },
+    events: [],
+  };
+  const objDir = join(root, "dashboard/backend/data/factory/app/objectives", objectiveId);
+  mkdirSync(objDir, { recursive: true });
+  writeFileSync(join(objDir, "objective-state.json"), `${JSON.stringify(obj, null, 2)}\n`);
+
+  assert.equal(buildRecoveryPlan(obj).nodes.length, 0);
+  const view = buildObjectivesView(root);
+  const shaped = view.objectives.find((o) => o.objectiveId === objectiveId);
+  assert.ok(shaped);
+  assert.equal(shaped.recovery.count, 0);
 });
