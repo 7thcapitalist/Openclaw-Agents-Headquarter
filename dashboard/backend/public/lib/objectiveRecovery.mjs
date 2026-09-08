@@ -17,3 +17,27 @@ export function renderObjectiveRecovery(o, { esc }) {
     <button class="btn secondary tiny" data-retry-objective="${esc(o.objectiveId)}">Retry recoverable work</button>
   </div>`;
 }
+
+export function bindObjectiveRecovery(root, {
+  request,
+  notify,
+  refresh,
+  schedule = setTimeout,
+}) {
+  for (const btn of root.querySelectorAll("[data-retry-objective]")) {
+    btn.onclick = async () => {
+      btn.disabled = true;
+      btn.textContent = "Recovering…";
+      try {
+        const result = await request(`/api/founder/objectives/${btn.dataset.retryObjective}/retry`, { method: "POST" });
+        const count = (result.nodes || []).length;
+        notify(`Retrying ${count} step${count === 1 ? "" : "s"}. Follow it in “Objectives”.`);
+        schedule(refresh, 800);
+      } catch (error) {
+        notify(error.message, true);
+        btn.disabled = false;
+        btn.textContent = "Retry recoverable work";
+      }
+    };
+  }
+}

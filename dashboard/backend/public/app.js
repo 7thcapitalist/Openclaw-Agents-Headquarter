@@ -665,14 +665,10 @@
         setTimeout(route, 800);
       } catch (e) { showToast(e.message, true); btn.disabled = false; btn.textContent = "Retry now"; }
     });
-    app.querySelectorAll("[data-retry-objective]").forEach((btn) => btn.onclick = async () => {
-      btn.disabled = true; btn.textContent = "Recovering…";
-      try {
-        const r = await apiJson(`/api/founder/objectives/${btn.dataset.retryObjective}/retry`, { method: "POST" });
-        const n = (r.nodes || []).length;
-        showToast(`Retrying ${n} step${n === 1 ? "" : "s"}. Follow it in “Objectives”.`);
-        setTimeout(route, 800);
-      } catch (e) { showToast(e.message, true); btn.disabled = false; btn.textContent = "Retry recoverable work"; }
+    window.__objectiveRecovery?.bindObjectiveRecovery?.(app, {
+      request: apiJson,
+      notify: showToast,
+      refresh: route,
     });
     app.querySelectorAll("[data-resolve-choice]").forEach((btn) => btn.onclick = async () => {
       btn.disabled = true;
