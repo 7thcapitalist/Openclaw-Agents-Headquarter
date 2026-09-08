@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { classifyBlocker, classifyObjectiveNodeBlocker, isInfraFailure, isFounderDecision } from "../lib/hq/blocker-class.mjs";
+import {
+  classifyBlocker, classifyObjectiveNodeBlocker, isInfraFailure, isFounderDecision,
+  isFounderApprovalSetupFailure, founderApprovalSetupBlocker,
+} from "../lib/hq/blocker-class.mjs";
 
 test("a decision-required blocker is a founder decision, nothing else", () => {
   const b = { outcome: "decision-required", stage: "architect", summary: "Pick a database." };
@@ -80,4 +83,24 @@ test("classifyObjectiveNodeBlocker: fail summaries → infra|hard", () => {
 
 test("classifyObjectiveNodeBlocker: null → null", () => {
   assert.equal(classifyObjectiveNodeBlocker(null), null);
+});
+
+test("a missing founder approval key is a founder decision, never infra or hard", () => {
+  // The exact string createState() throws.
+  assert.equal(isFounderApprovalSetupFailure("High-risk task initialization requires the configured founder public key."), true);
+  assert.equal(isFounderApprovalSetupFailure("Reviewer: acceptance criteria not met"), false);
+
+  const b = founderApprovalSetupBlocker({ at: "2026-09-08T19:39:00.000Z" });
+  assert.equal(b.outcome, "decision-required");
+  assert.equal(b.founderAction, true);
+  assert.equal(b.stage, "init");
+  assert.equal(classifyBlocker(b), "decision");
+  assert.equal(classifyObjectiveNodeBlocker(b), "decision");
+  assert.equal(isFounderDecision(b), true);
+  assert.equal(isInfraFailure(b), false);
+});
+
+test("a founderAction blocker with no outcome still classifies as a decision", () => {
+  assert.equal(classifyBlocker({ founderAction: true, summary: "needs you" }), "decision");
+  assert.equal(classifyObjectiveNodeBlocker({ founderAction: true, summary: "needs you" }), "decision");
 });

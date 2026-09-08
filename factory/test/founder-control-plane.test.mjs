@@ -330,6 +330,50 @@ test("buildObjectivesView: infra recovery vs founder decision on mixed blockers"
   assert.ok(findObjectiveStatePath(root, objectiveId)?.endsWith("objective-state.json"));
 });
 
+test("a high-risk objective blocked at init (no task file) reaches the Founder Inbox as an approval item", () => {
+  const root = mkdtempSync(join(tmpdir(), "founder-inbox-obj-"));
+  const repo = join(root, "repo");
+  mkdirSync(repo, { recursive: true });
+  const objectiveId = "obj-deadbeef-deploy";
+  const nodeId = `${objectiveId}-capability`;
+
+  const obj = {
+    version: 1, objectiveId, objective: "Make deployment a first-class capability and fix LifeMax on Vercel.",
+    project: "startup-ops", repo, status: "blocked",
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    nodes: {
+      [nodeId]: {
+        id: nodeId, role: "backend-builder", status: "blocked", dependsOn: [],
+        contract: { outcome: "Implement the deployment contract and Vercel adapter", risk: "high" },
+        statePath: null, branch: `factory/${nodeId}`,
+        blocker: {
+          stage: "init", outcome: "decision-required", founderAction: true,
+          summary: "This objective was assessed high-risk ... Set FACTORY_FOUNDER_PUBLIC_KEY (see docs/software-factory/SETUP.md) ...",
+          at: new Date().toISOString(),
+        },
+      },
+      [`${objectiveId}-ui`]: {
+        id: `${objectiveId}-ui`, role: "frontend-builder", status: "blocked-by-dep", dependsOn: [nodeId],
+        contract: { outcome: "Add the deployment observability UI" }, statePath: null, blocker: null,
+      },
+    },
+    integration: { id: `${objectiveId}-integration`, role: "integration", status: "pending", dependsOn: [nodeId] },
+    events: [],
+  };
+  const objDir = join(root, "dashboard/backend/data/factory/repo/objectives", objectiveId);
+  mkdirSync(objDir, { recursive: true });
+  writeFileSync(join(objDir, "objective-state.json"), `${JSON.stringify(obj, null, 2)}\n`);
+
+  const overview = buildFounderOverview(root, [{ id: "startup-ops", name: "Startup Ops", status: "active" }]);
+  const item = overview.inbox.find((i) => i.id === `${objectiveId}:${nodeId}`);
+  assert.ok(item, "the blocked high-risk objective node is in the inbox");
+  assert.equal(item.kind, "approval");
+  assert.equal(item.objectiveId, objectiveId);
+  assert.match(item.recommendation, /FACTORY_FOUNDER_PUBLIC_KEY/);
+  // It should also be the first item (approvals rank ahead of everything).
+  assert.equal(overview.inbox[0].id, item.id);
+});
+
 test("buildRecoveryPlan / buildObjectivesView: only hard/decision → recovery.count===0", () => {
   const root = mkdtempSync(join(tmpdir(), "founder-obj-empty-"));
   const repo = join(root, "repo");
