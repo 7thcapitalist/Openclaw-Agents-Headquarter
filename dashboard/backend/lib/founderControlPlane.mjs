@@ -316,6 +316,7 @@ export function buildObjectivesView(root) {
       const task = tasksById.get(node.id);
       node.model = modelForRole(node.role || "integration");
       if (task) Object.assign(node, {
+        title: task.objective || node.title || null,
         stage: task.stage, taskStatus: task.status, elapsedMs: task.elapsedMs,
         lastResult: task.lastResult, blocker: node.blocker || task.blocker,
         decisionRequired: (node.blocker || task.blocker)?.outcome === "decision-required",
@@ -351,6 +352,9 @@ function shapeObjective(root, obj, dir) {
   try { metrics = JSON.parse(readFileSync(join(dir, "metrics.json"), "utf8")); } catch { /* not finished yet */ }
   const nodeRow = (n) => ({
     id: n.id, role: n.role || "integration", harness: n.harness || null, dependsOn: n.dependsOn || [],
+    // Human one-liner from the decomposition contract, so the UI can show a
+    // real title instead of the slug id. Falls back to the task outcome later.
+    title: n.contract?.outcome || n.objective || null,
     status: n.status, branch: n.branch || null, worktree: n.worktree || null,
     startedAt: n.startedAt || null, finishedAt: n.finishedAt || null, attempts: n.attempts || 0,
     blocker: n.blocker || null,
@@ -439,6 +443,7 @@ export function buildFounderOverview(root, hqProjects = []) {
     })
     .map((task) => ({
       taskId: task.id,
+      objective: task.objective || null,
       project: task.project || null,
       stage: task.status === "blocked" ? (task.blocker?.stage || null) : (task.stage || null),
       detail: task.status === "blocked" ? (task.blocker?.summary || "") : "in-progress work interrupted by a restart — resuming",
@@ -476,6 +481,7 @@ function buildFounderInbox({ tasks, decisions, questions }) {
       kind: isApproval ? "approval" : "decision",
       id: d.id,
       taskId: d.taskId,
+      objective: task?.objective || null,
       project: d.project || null,
       statePath: d.statePath || null,
       title: d.question,
@@ -500,6 +506,7 @@ function buildFounderInbox({ tasks, decisions, questions }) {
       kind: "blocked",
       id: `${task.id}:${task.blocker.stage || "stage"}`,
       taskId: task.id,
+      objective: task.objective || null,
       project: task.project || null,
       statePath: task.statePath || null,
       title: `${task.blocker.stage || "A stage"} failed — needs a look`,

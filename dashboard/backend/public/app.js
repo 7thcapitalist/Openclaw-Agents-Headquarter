@@ -300,8 +300,8 @@
               ${finishedTasks.map((t) => `
                 <div class="company-agent">
                   <span class="activity-pulse"></span>
-                  <div><strong>${esc(t.id)}</strong><span>${esc(t.objective || "")}</span>
-                    <small class="muted">${esc(t.project || "—")} · ${esc(t.status)}${t.elapsedMs != null ? ` · ${esc(fmtDuration(t.elapsedMs))}` : ""}${t.branch ? ` · ${esc(t.branch)}` : ""}</small>
+                  <div><strong>${esc(t.objective || t.id)}</strong>
+                    <small class="muted">${esc(t.project || "—")} · ${esc(t.status)}${t.elapsedMs != null ? ` · ${esc(fmtDuration(t.elapsedMs))}` : ""} · <code>${esc(t.id)}</code></small>
                   </div>
                   <button class="btn secondary" data-report-task="${esc(t.id)}">View report</button>
                 </div>`).join("") || `<div class="empty-state">No task has finished in this environment yet.</div>`}
@@ -382,7 +382,9 @@
       for (const n of [...(o.nodes || []), o.integration].filter(Boolean)) {
         if (!["running", "blocked", "blocked-by-dep"].includes(n.status)) continue;
         rows.push({
-          kind: "objective-node", title: `${o.objective}`, sub: n.id.replace(`${o.objectiveId}-`, ""),
+          kind: "objective-node",
+          title: n.title || n.id.replace(`${o.objectiveId}-`, "").replace(/-/g, " "),
+          sub: `part of: ${String(o.objective).slice(0, 60)}${o.objective.length > 60 ? "…" : ""}`,
           role: n.role, agent: n.role, model: n.model, stage: n.stage, status: n.status,
           elapsedMs: n.elapsedMs, lastResult: n.lastResult, blocker: n.blocker,
           next: n.status === "running" && n.stage ? nextStage(n.stage) : null,
@@ -455,8 +457,8 @@
     return `<div class="run-row run-retrying">
       <span class="activity-pulse"></span>
       <div class="run-main">
-        <strong>${esc(r.taskId)}</strong>
-        <span class="muted small">${esc(r.project || "")} · ${esc(r.stage || "a stage")} hit an infrastructure hiccup</span>
+        <strong>${esc(r.objective || r.taskId)}</strong>
+        <span class="muted small">${esc(r.project || "")} · ${esc(r.stage || "a stage")} hit an infrastructure hiccup · <code>${esc(r.taskId)}</code></span>
         <span class="retry-note">Recovering automatically${r.autoRetries ? ` — attempt ${r.autoRetries}` : ""}. No action needed.</span>
       </div>
       <div class="run-meta"><button class="btn secondary tiny" data-retry-task="${esc(r.taskId)}">Retry now</button></div>
@@ -535,7 +537,8 @@
     // not real one-click answers — only offer buttons for substantive choices.
     const choices = (x.options || []).filter((o) => !/^(provide direction|keep paused|approve and resume|submit signed approval)$/i.test(String(o).trim()));
     return `<article class="decision-card">
-      <div class="decision-top"><span class="decision-icon">!</span><div><strong>${esc(x.question)}</strong><span>${esc(x.project || "company")}${x.taskId ? ` · ${esc(x.taskId)}` : ""}</span></div></div>
+      <div class="decision-top"><span class="decision-icon">!</span><div><strong>${esc(x.question)}</strong><span>${esc(x.project || "company")}${x.taskId ? ` · <code>${esc(x.taskId)}</code>` : ""}</span></div></div>
+      ${x.objective ? `<p class="muted small">Task: ${esc(x.objective)}</p>` : ""}
       <p>${esc(x.why || "")}</p>
       ${x.recommendation ? `<div class="decision-rec"><small>Recommendation</small>${esc(x.recommendation)}</div>` : ""}
       ${actionable
@@ -558,15 +561,16 @@
   function inboxItem(x) {
     if (x.kind === "decision" || x.kind === "approval") {
       return decisionCard({
-        question: x.title, why: x.detail, project: x.project, taskId: x.taskId,
+        question: x.title, why: x.detail, project: x.project, taskId: x.taskId, objective: x.objective,
         recommendation: x.recommendation, options: x.options, risk: x.risk, statePath: x.statePath,
       });
     }
     return `<article class="decision-card">
       <div class="decision-top">
         <span class="decision-icon">${x.kind === "blocked" ? "×" : "?"}</span>
-        <div><strong>${esc(x.title)}</strong><span>${pill(INBOX_KIND_LABEL[x.kind] || x.kind, INBOX_KIND_CLASS[x.kind] || "badge-type")} ${esc(x.project || "company")}${x.taskId ? ` · ${esc(x.taskId)}` : ""}</span></div>
+        <div><strong>${esc(x.title)}</strong><span>${pill(INBOX_KIND_LABEL[x.kind] || x.kind, INBOX_KIND_CLASS[x.kind] || "badge-type")} ${esc(x.project || "company")}${x.taskId ? ` · <code>${esc(x.taskId)}</code>` : ""}</span></div>
       </div>
+      ${x.objective ? `<p class="muted small">Task: ${esc(x.objective)}</p>` : ""}
       <p>${esc(x.detail || "")}</p>
       ${x.kind === "blocked" && x.taskId ? `<div class="decision-choices"><button class="btn" data-retry-task="${esc(x.taskId)}">Retry this task</button><button class="btn secondary" data-report-task="${esc(x.taskId)}">View report</button></div>` : ""}
       ${x.kind === "question" ? `<p class="muted small">Answered synchronously — see the Ask an agent history.</p>` : ""}
@@ -584,8 +588,8 @@
     return `<div class="obj-node">
       ${pulse}
       <div class="obj-node-main">
-        <strong>${esc(short(n.id))}</strong>
-        <span class="muted small">${esc(n.role || "—")} · ${esc(n.model || "model?")}${deps ? ` · needs ${esc(deps)}` : ""}</span>
+        <strong>${esc(n.title || short(n.id).replace(/-/g, " "))}</strong>
+        <span class="muted small">${esc(n.role || "—")} · ${esc(n.model || "model?")}${deps ? ` · needs ${esc(deps)}` : ""} · <code>${esc(short(n.id))}</code></span>
         ${n.blocker ? `<span class="danger-text small">${esc(n.blocker.summary || n.blocker.outcome || "blocked")}</span>` : ""}
       </div>
       <div class="obj-node-meta">
@@ -614,7 +618,7 @@
       </div>
       <div class="obj-card-foot">
         <button class="btn secondary tiny" data-report-objective="${esc(o.objectiveId)}">Objective report</button>
-        ${o.nextUp && o.nextUp.length ? `<span class="muted small">next: ${o.nextUp.map((id) => esc(id.replace(`${o.objectiveId}-`, ""))).join(", ")}</span>` : ""}
+        ${o.nextUp && o.nextUp.length ? `<span class="muted small">next: ${o.nextUp.map((id) => { const n = (o.nodes || []).find((x) => x.id === id); return esc(n?.title || id.replace(`${o.objectiveId}-`, "").replace(/-/g, " ")); }).join("; ")}</span>` : ""}
         ${pr}
       </div>
     </article>`;
