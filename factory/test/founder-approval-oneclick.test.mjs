@@ -229,6 +229,70 @@ test("a task created under an older key is re-keyed, then approves one-click", a
   assert.equal(out.status, "active");
 });
 
+// ── objective-node lookup (regression for the "Not found" report) ────────────
+//
+// obj-039f0f5a-deployment-capability-core reached the Founder Inbox and Approve
+// returned "Not found". Root cause was a stale dashboard process (the routes
+// didn't exist yet in the running server) — but it also exposed that the
+// approval endpoints re-derived the task path by walking every state file and
+// matching `task.id`, instead of using the exact `statePath` the inbox carries.
+// These lock in direct-path resolution for objective-node tasks.
+
+function seedObjectiveNode(root, objectiveId, slug, keyPem) {
+  const nodeId = `${objectiveId}-${slug}`;
+  const { path, worktree } = seedTask(root, nodeId, keyPem, { project: "Openclaw-Agents-Headquarter" });
+  const objPath = join(root, "dashboard", "backend", "data", "factory", "Openclaw-Agents-Headquarter", "objectives", objectiveId, "objective-state.json");
+  mkdirSync(dirname(objPath), { recursive: true });
+  writeFileSync(objPath, JSON.stringify({ version: 1, objectiveId, nodes: { [nodeId]: { id: nodeId, statePath: path } }, integration: {}, events: [] }));
+  return { nodeId, statePath: path, worktree, objPath };
+}
+
+test("objective-node approval resolves from the inbox-provided statePath and resumes the objective", async () => {
+  const root = newRoot();
+  const browser = await makeBrowserKey();
+  enrollFounderKey(root, { publicKeyPem: browser.pem });
+  const { nodeId, statePath } = seedObjectiveNode(root, "obj-039f0f5a", "deployment-capability-core", getEnrolledFounderKey(root).pem);
+
+  const prep = prepareFounderApproval(root, nodeId, { statePath }); // exactly what the card now sends
+  assert.equal(prep.unsigned.taskId, nodeId);
+  assert.equal(JSON.stringify(prep.unsigned), prep.payloadToSign);
+
+  const signature = await browserSign(browser.pair, JSON.stringify(prep.unsigned));
+  const runObjective = mock();
+  const out = await submitFounderApproval(root, root, nodeId, { assertion: { ...prep.unsigned, signature }, statePath }, { runObjective, runTask: mock() });
+  assert.equal(out.status, "active");
+  assert.equal(runObjective.calls.length, 1, "the owning objective is resumed");
+  assert.match(runObjective.calls[0][0].objectivePath, /obj-039f0f5a[/\\]objective-state\.json$/);
+  assert.equal(isAwaitingFounderApproval(readState(statePath)), false);
+});
+
+test("objective-node approval still resolves with NO statePath (id fallback / CLI break-glass)", async () => {
+  const root = newRoot();
+  const b = await makeBrowserKey();
+  enrollFounderKey(root, { publicKeyPem: b.pem });
+  const { nodeId } = seedObjectiveNode(root, "obj-abcd1234", "capability-core", getEnrolledFounderKey(root).pem);
+  const prep = prepareFounderApproval(root, nodeId); // no hint
+  assert.equal(prep.unsigned.taskId, nodeId);
+});
+
+test("a statePath hint that escapes the factory dir or mismatches task.id is ignored", async () => {
+  const root = newRoot();
+  const browser = await makeBrowserKey();
+  enrollFounderKey(root, { publicKeyPem: browser.pem });
+  const { nodeId } = seedObjectiveNode(root, "obj-eeee1111", "node", getEnrolledFounderKey(root).pem);
+
+  // escapes containment -> ignored, falls back to the id walk (which succeeds)
+  assert.equal(prepareFounderApproval(root, nodeId, { statePath: "/etc/passwd" }).unsigned.taskId, nodeId);
+
+  // points at a real state file for a DIFFERENT task -> task.id check fails -> fallback
+  const other = seedObjectiveNode(root, "obj-ffff2222", "other", getEnrolledFounderKey(root).pem);
+  assert.equal(prepareFounderApproval(root, nodeId, { statePath: other.statePath }).unsigned.taskId, nodeId);
+
+  // genuinely unknown id, unusable hint -> 404
+  assert.throws(() => prepareFounderApproval(root, "obj-0000dead-missing", { statePath: "/tmp/nope/state.json" }),
+    (e) => e.statusCode === 404);
+});
+
 // ── helpers ─────────────────────────────────────────────────────────────────
 
 function mock() {

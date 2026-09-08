@@ -566,7 +566,7 @@ import { costLimitsPanel } from "/cost-limits.mjs";
   // unchanged gate and resumes the work.
   function approvalCard(x) {
     const a = x.approval || {};
-    return `<article class="decision-card approval-card" data-approval-task="${esc(x.taskId || "")}">
+    return `<article class="decision-card approval-card" data-approval-task="${esc(x.taskId || "")}" data-approval-statepath="${esc(x.statePath || "")}">
       <div class="decision-top"><span class="decision-icon">◆</span>
         <div><strong>${esc(x.title || "Approve a high-risk build")}</strong>
         <span>${pill("Approval", "badge-warn")} ${esc(x.project || "company")}${x.taskId ? ` · <code>${esc(x.taskId)}</code>` : ""}</span></div>
@@ -607,18 +607,21 @@ import { costLimitsPanel } from "/cost-limits.mjs";
     return pair;
   }
 
-  async function runOneClickApproval(taskId, statusEl) {
+  async function runOneClickApproval(taskId, statePath, statusEl) {
     const setStatus = (msg, err) => { statusEl.hidden = false; statusEl.textContent = msg; statusEl.classList.toggle("danger-text", !!err); };
+    // statePath is the exact task-state path the Founder Inbox already knows for
+    // this item (objective nodes included); the server prefers it over an id walk.
+    const body = (extra = {}) => JSON.stringify({ ...(statePath ? { statePath } : {}), ...extra });
     setStatus("Preparing…");
     const pair = await ensureApprovalKey();
     let prep;
-    const res = await api(`/api/founder/approvals/${encodeURIComponent(taskId)}/prepare`, { method: "POST", body: JSON.stringify({}) });
+    const res = await api(`/api/founder/approvals/${encodeURIComponent(taskId)}/prepare`, { method: "POST", body: body() });
     prep = await res.json().catch(() => ({}));
     if (!res.ok) {
       if (prep.code === "KEY_MISMATCH") {
         setStatus("This task predates your current key. Re-keying…");
-        await apiJson(`/api/founder/approvals/${encodeURIComponent(taskId)}/rekey`, { method: "POST", body: "{}" });
-        return runOneClickApproval(taskId, statusEl);
+        await apiJson(`/api/founder/approvals/${encodeURIComponent(taskId)}/rekey`, { method: "POST", body: body() });
+        return runOneClickApproval(taskId, statePath, statusEl);
       }
       throw new Error(prep.error || `Prepare failed (${res.status})`);
     }
@@ -627,7 +630,7 @@ import { costLimitsPanel } from "/cost-limits.mjs";
     const signature = await founderApproval.signPayloadString(pair, JSON.stringify(prep.unsigned));
     setStatus("Recording…");
     const out = await apiJson(`/api/founder/approvals/${encodeURIComponent(taskId)}/submit`, {
-      method: "POST", body: JSON.stringify({ assertion: { ...prep.unsigned, signature } }),
+      method: "POST", body: body({ assertion: { ...prep.unsigned, signature } }),
     });
     setStatus(`Approved — ${out.currentStage ? `resuming at ${out.currentStage}` : "resumed"}.`);
     return out;
@@ -787,7 +790,7 @@ import { costLimitsPanel } from "/cost-limits.mjs";
       const statusEl = card?.querySelector("[data-approve-status]") || document.createElement("div");
       card?.querySelectorAll("button").forEach((b) => b.disabled = true);
       try {
-        await runOneClickApproval(btn.dataset.approve, statusEl);
+        await runOneClickApproval(btn.dataset.approve, card?.dataset.approvalStatepath || "", statusEl);
         showToast("Approved — the factory is resuming.");
         setTimeout(route, 900);
       } catch (e) {
@@ -797,10 +800,11 @@ import { costLimitsPanel } from "/cost-limits.mjs";
       }
     });
     app.querySelectorAll("[data-reject]").forEach((btn) => btn.onclick = () => {
+      const statePath = btn.closest("[data-approval-task]")?.dataset.approvalStatepath || "";
       openModal("Reject this high-risk build", `<p class="muted small">The task stops here. It will not resume.</p><label class="field-label">Reason (optional, recorded)</label><textarea class="editor" id="reject-reason" placeholder="Not now — revisit after the infra work lands"></textarea><button class="btn" id="submit-reject">Reject</button>`);
       document.getElementById("submit-reject").onclick = async () => {
         try {
-          await apiJson(`/api/founder/approvals/${encodeURIComponent(btn.dataset.reject)}/reject`, { method: "POST", body: JSON.stringify({ reason: document.getElementById("reject-reason").value }) });
+          await apiJson(`/api/founder/approvals/${encodeURIComponent(btn.dataset.reject)}/reject`, { method: "POST", body: JSON.stringify({ reason: document.getElementById("reject-reason").value, ...(statePath ? { statePath } : {}) }) });
           closeModal(); showToast("Rejected. The task has stopped."); route();
         } catch (e) { showToast(e.message, true); }
       };

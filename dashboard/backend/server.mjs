@@ -558,17 +558,20 @@ app.post("/api/founder/approval-key", (req, res) => {
   } catch (e) { approvalError(res, e); }
 });
 
+// `statePath` is the absolute task-state path the Founder Inbox already carries
+// for this approval item; the lib containment-checks it and confirms task.id,
+// falling back to an id lookup when absent. See founderApproval.locateTask().
 app.post("/api/founder/approvals/:taskId/prepare", (req, res) => {
   try {
     if (!APPROVAL_ID.test(req.params.taskId)) return res.status(400).json({ error: "Invalid task id." });
-    res.json(prepareFounderApproval(ROOT, req.params.taskId, { note: req.body?.note || "" }));
+    res.json(prepareFounderApproval(ROOT, req.params.taskId, { note: req.body?.note || "", statePath: req.body?.statePath }));
   } catch (e) { approvalError(res, e); }
 });
 
 app.post("/api/founder/approvals/:taskId/submit", async (req, res) => {
   try {
     if (!APPROVAL_ID.test(req.params.taskId)) return res.status(400).json({ error: "Invalid task id." });
-    const out = await submitFounderApproval(ROOT, ROOT, req.params.taskId, { assertion: req.body?.assertion },
+    const out = await submitFounderApproval(ROOT, ROOT, req.params.taskId, { assertion: req.body?.assertion, statePath: req.body?.statePath },
       { runObjective: approvalRunObjective, runTask: approvalRunTask });
     res.json(out);
   } catch (e) { approvalError(res, e); }
@@ -577,14 +580,14 @@ app.post("/api/founder/approvals/:taskId/submit", async (req, res) => {
 app.post("/api/founder/approvals/:taskId/reject", (req, res) => {
   try {
     if (!APPROVAL_ID.test(req.params.taskId)) return res.status(400).json({ error: "Invalid task id." });
-    res.json(rejectFounderApproval(ROOT, req.params.taskId, { reason: req.body?.reason || "" }));
+    res.json(rejectFounderApproval(ROOT, req.params.taskId, { reason: req.body?.reason || "", statePath: req.body?.statePath }));
   } catch (e) { approvalError(res, e); }
 });
 
 app.post("/api/founder/approvals/:taskId/rekey", (req, res) => {
   try {
     if (!APPROVAL_ID.test(req.params.taskId)) return res.status(400).json({ error: "Invalid task id." });
-    res.json(rekeyPendingApproval(ROOT, req.params.taskId));
+    res.json(rekeyPendingApproval(ROOT, req.params.taskId, { statePath: req.body?.statePath }));
   } catch (e) { approvalError(res, e); }
 });
 

@@ -150,8 +150,28 @@ function safeVerify(payload, publicKeyPem, signatureB64) {
 
 // ── locate the task behind an inbox approval item ────────────────────────────
 
-function locateTask(root, taskId) {
+// The Founder Inbox already knows the absolute state path of the task behind an
+// approval item (`item.statePath`). Objective-node tasks live at
+// <factory>/<project>/tasks/<node-id>/state.json — a `findTaskStatePath` walk
+// that matches on `task.id` also finds them, but it is O(all state files) and
+// silently depends on `task.id` being byte-equal to the URL id. Prefer the
+// path the inbox hands us: containment-checked, existence-checked, and its
+// `task.id` confirmed against the URL id. Fall back to the id walk when no hint
+// is supplied (e.g. the CLI break-glass).
+function locateTask(root, taskId, hintPath) {
   if (!/^[a-z0-9][a-z0-9-]*$/.test(String(taskId || ""))) throw badRequest("Invalid task id.");
+
+  if (hintPath) {
+    const abs = resolve(String(hintPath));
+    const inside = resolve(factoryDataDir(root));
+    if ((abs === inside || abs.startsWith(`${inside}/`)) && abs.endsWith("/state.json") && existsSync(abs)) {
+      let state = null;
+      try { state = readState(abs); } catch { state = null; }
+      if (state?.task?.id === taskId) return { statePath: abs, state };
+      // A hint that doesn't line up is ignored, not trusted — fall through.
+    }
+  }
+
   const statePath = findTaskStatePath(root, taskId);
   if (!statePath) throw notFound("No such task.");
   return { statePath, state: readState(statePath) };
@@ -165,8 +185,8 @@ function conflict(message) { const e = new Error(message); e.statusCode = 409; r
 
 // Write the approval evidence into the task worktree and return the exact
 // unsigned assertion the browser must sign. Authorises nothing on its own.
-export function prepareFounderApproval(root, taskId, { note = "", at = new Date().toISOString() } = {}) {
-  const { statePath, state } = locateTask(root, taskId);
+export function prepareFounderApproval(root, taskId, { note = "", statePath: hintPath, at = new Date().toISOString() } = {}) {
+  const { statePath, state } = locateTask(root, taskId, hintPath);
   if (!isAwaitingFounderApproval(state)) throw conflict("This task is not waiting for a founder approval.");
 
   const enrolled = getEnrolledFounderKey(root);
@@ -230,8 +250,8 @@ function renderEvidence(state, { note, at }) {
 // Verify the browser signature through the EXISTING gate, record it, and resume
 // the owning objective/task. `runObjective` / `runTask` are injected so the
 // caller (server) owns the background execution and tests stay synchronous.
-export async function submitFounderApproval(root, hqRoot, taskId, { assertion } = {}, { runObjective, runTask } = {}) {
-  const { statePath, state } = locateTask(root, taskId);
+export async function submitFounderApproval(root, hqRoot, taskId, { assertion, statePath: hintPath } = {}, { runObjective, runTask } = {}) {
+  const { statePath, state } = locateTask(root, taskId, hintPath);
   if (!isAwaitingFounderApproval(state)) throw conflict("This task is not waiting for a founder approval.");
   if (!assertion || typeof assertion !== "object") throw badRequest("A signed assertion is required.");
 
@@ -281,8 +301,8 @@ async function resumeAfterApproval(root, hqRoot, statePath, state, { runObjectiv
 // Declining authorises nothing, so it needs no signature — just the
 // authenticated session. The task stops, visibly and auditably; it does not
 // resume.
-export function rejectFounderApproval(root, taskId, { reason = "", at = new Date().toISOString() } = {}) {
-  const { statePath, state } = locateTask(root, taskId);
+export function rejectFounderApproval(root, taskId, { reason = "", statePath: hintPath, at = new Date().toISOString() } = {}) {
+  const { statePath, state } = locateTask(root, taskId, hintPath);
   if (!isAwaitingFounderApproval(state)) throw conflict("This task is not waiting for a founder approval.");
 
   const clean = String(reason || "").replace(/\s+/g, " ").trim().slice(0, 500);
@@ -307,8 +327,8 @@ export function rejectFounderApproval(root, taskId, { reason = "", at = new Date
 // authority. This repoints it (authenticated founder action, logged) so it can
 // be approved one-click. It does NOT weaken the gate: the new key still has to
 // produce a valid signature.
-export function rekeyPendingApproval(root, taskId, { at = new Date().toISOString() } = {}) {
-  const { statePath, state } = locateTask(root, taskId);
+export function rekeyPendingApproval(root, taskId, { statePath: hintPath, at = new Date().toISOString() } = {}) {
+  const { statePath, state } = locateTask(root, taskId, hintPath);
   if (!isAwaitingFounderApproval(state)) throw conflict("This task is not waiting for a founder approval.");
   if (state.founderApproval) throw conflict("This task is already approved.");
 
