@@ -1,9 +1,9 @@
 import { readFileSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
-import { assembleContextPack } from "./intel/assemble.mjs";
+import { assembleAgentContext } from "./hq/company-context.mjs";
 import { buildKnowledgeBlock } from "./learning/handoff-inject.mjs";
 
-export function writeHandoff({ hqRoot, statePath, state, resultPath = null, dispatchId = null, stage: stageOverride = null }) {
+export function writeHandoff({ hqRoot, statePath, state, companyState = null, resultPath = null, dispatchId = null, stage: stageOverride = null }) {
   // `stageOverride` lets the concurrent review fan-out write a handoff for a
   // group member that is not yet `state.currentStage`. Defaults to the normal
   // linear behaviour.
@@ -30,7 +30,7 @@ export function writeHandoff({ hqRoot, statePath, state, resultPath = null, disp
     : "";
   let contextBlock;
   try {
-    contextBlock = `${assembleContextPack({ hqRoot, state }).text}\n\n`;
+    contextBlock = `${assembleAgentContext({ hqRoot, state, companyState }).text}\n\n`;
   } catch (error) {
     contextBlock = "## Factory context (global)\n\n" +
       `- project & factory context assembly unavailable: ${error.message}\n` +
