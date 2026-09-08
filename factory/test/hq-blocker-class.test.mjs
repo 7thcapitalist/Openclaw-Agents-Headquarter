@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { classifyBlocker, isInfraFailure, isFounderDecision } from "../lib/hq/blocker-class.mjs";
+import { classifyBlocker, classifyObjectiveNodeBlocker, isInfraFailure, isFounderDecision } from "../lib/hq/blocker-class.mjs";
 
 test("a decision-required blocker is a founder decision, nothing else", () => {
   const b = { outcome: "decision-required", stage: "architect", summary: "Pick a database." };
@@ -42,4 +42,42 @@ test("a real FAIL reason classifies as hard (worth a founder look)", () => {
 test("no blocker -> null", () => {
   assert.equal(classifyBlocker(null), null);
   assert.equal(classifyBlocker(undefined), null);
+});
+
+test("classifyObjectiveNodeBlocker: infra:true tag on decision-required → infra", () => {
+  assert.equal(classifyObjectiveNodeBlocker({
+    outcome: "decision-required",
+    infra: true,
+    summary: "The builder for this task could not run (rate_limit). Retry the objective later, or adjust model routing for that role.",
+  }), "infra");
+});
+
+test("classifyObjectiveNodeBlocker: backfill synthesized sentence without tag → infra", () => {
+  assert.equal(classifyObjectiveNodeBlocker({
+    outcome: "decision-required",
+    summary: "The qa for this task could not run (ECONNRESET). Retry the objective later, or adjust model routing for that role.",
+  }), "infra");
+});
+
+test("classifyObjectiveNodeBlocker: merge conflict stays decision", () => {
+  assert.equal(classifyObjectiveNodeBlocker({
+    outcome: "decision-required",
+    summary: "merge conflict integrating factory/obj-x-a",
+  }), "decision");
+});
+
+test("classifyObjectiveNodeBlocker: genuine stage decision stays decision", () => {
+  assert.equal(classifyObjectiveNodeBlocker({
+    outcome: "decision-required",
+    summary: "Choose Postgres or SQLite",
+  }), "decision");
+});
+
+test("classifyObjectiveNodeBlocker: fail summaries → infra|hard", () => {
+  assert.equal(classifyObjectiveNodeBlocker({ outcome: "fail", summary: "ECONNRESET" }), "infra");
+  assert.equal(classifyObjectiveNodeBlocker({ outcome: "fail", summary: "tests fail" }), "hard");
+});
+
+test("classifyObjectiveNodeBlocker: null → null", () => {
+  assert.equal(classifyObjectiveNodeBlocker(null), null);
 });

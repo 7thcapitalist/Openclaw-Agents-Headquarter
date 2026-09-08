@@ -137,7 +137,8 @@ export function assertResumableObjective(obj) {
 
 async function runRound({ project, repo, dryRun, resumePath }) {
   const objective = readFileSync(DIRECTIVE_PATH, "utf8").trim();
-  const obj = resumePath ? readObjState(resumePath) : await decomposeObjective({ hqRoot: HQ_ROOT, objective, project, repo });
+  const cfg = JSON.parse(readFileSync(join(HQ_ROOT, "factory", "factory.config.json"), "utf8"));
+  const obj = resumePath ? readObjState(resumePath) : await decomposeObjective({ hqRoot: HQ_ROOT, objective, project, repo, decomposeAgentId: cfg.openclawIntegration?.agentIds?.decompose });
   if (obj.repo !== resolve(repo) || obj.project !== project) throw new Error("Resume objective does not match the selected project/repository");
   if (resumePath) assertResumableObjective(obj);
   const dir = join(defaultStateRoot(HQ_ROOT, repo), "objectives", obj.objectiveId);
@@ -147,7 +148,6 @@ async function runRound({ project, repo, dryRun, resumePath }) {
   logRound({ event: resumePath ? "objective-resumed" : "objective-created", objectiveId: obj.objectiveId, objectivePath });
   if (dryRun) return { objectiveId: obj.objectiveId, status: "dry-run", nodeCount: Object.keys(obj.nodes).length };
 
-  const cfg = JSON.parse(readFileSync(join(HQ_ROOT, "factory", "factory.config.json"), "utf8"));
   const result = await runObjective({
     hqRoot: HQ_ROOT,
     objectivePath,

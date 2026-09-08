@@ -59,7 +59,9 @@ Confirm:
 agent --version
 ```
 
-Current Cursor CLI can run non-interactively and supports worktrees. Use it primarily for UI/product implementation and visual QA.
+Cursor remains useful as the founder's interactive IDE. The automated factory
+does not route UI work to it until `scripts/probe-cursor-harness.mjs` proves the
+CLI exposes an ACP server mode; the active `frontend-builder` route uses Codex.
 
 ## 4. Clone project repositories
 

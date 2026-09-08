@@ -27,9 +27,10 @@ entries. When a decision changes, add a new entry and mark the old one
 - Date: 2026-09-03
 - Status: Accepted
 - Decision: OpenClaw is the orchestration/control plane. Claude defaults to
-  architecture, independent review, and security; Codex defaults to backend and
-  general implementation plus QA; Cursor defaults to frontend/UI implementation,
-  visual QA, and the founder's interactive development environment.
+  planning, architecture, independent review, and security; Codex defaults to
+  backend and frontend/UI implementation. Cursor remains the founder's
+  interactive development environment and a planned visual harness, but is not
+  an autonomous route until its capability probe proves ACP support.
 - Rationale: Explicit responsibilities make routing predictable while retaining
   cross-model checks.
 - Consequences: One primary builder owns each writable task workspace. A model
@@ -114,7 +115,7 @@ entries. When a decision changes, add a new entry and mark the old one
   verification, learning, and research on Claude gives them an auth path
   independent of the shared OpenAI seat used by the other agents, and matches the
   factory's intent that review/verification/security run on a different model
-  family from the (codex/cursor) builders.
+  family from the Codex-backed builders.
 - Consequences: SFD-2026-006 is unchanged — the Learning Agent stays read-only
   and proposal-driven. Each acpx-Claude agent still resolves a base OpenClaw
   gateway model to start its turn, so all agents remain dependent on that base

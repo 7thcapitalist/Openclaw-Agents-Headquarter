@@ -5,7 +5,8 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 
 import { join } from "path";
 import { tmpdir } from "os";
 import { buildObjectiveStateFromNodes } from "../lib/objective/decompose.mjs";
-import { runObjective, readObjState } from "../lib/objective/orchestrator.mjs";
+import { runObjective, readObjState, resumeObjectiveNodes } from "../lib/objective/orchestrator.mjs";
+import { readState, writeState } from "../lib/task-workflow.mjs";
 
 const HQ = process.cwd();
 
@@ -165,8 +166,81 @@ test("runObjective: an infrastructure failure becomes an actionable decision, no
   const node = Object.values(obj.nodes)[0];
   assert.equal(node.status, "blocked", "an infra failure blocks (needs the founder), it does not just die");
   assert.equal(node.blocker.outcome, "decision-required");
+  assert.equal(node.blocker.infra, true, "synthesized blocker carries an explicit infra tag");
   assert.match(node.blocker.summary, /could not run|Retry the objective later|adjust model routing/i);
   assert.notEqual(res.status, "complete");
+});
+
+test("resumeObjectiveNodes + re-run: infra-blocked node reuses worktree and can complete", async () => {
+  const root = mkdtempSync(join(tmpdir(), "objective-resume-"));
+  const { repo } = makeRepo(root);
+  const { objectivePath } = writeObjective(root, repo, NODES.slice(0, 1));
+  const stateRoot = join(root, "factory-state");
+  const base = makeExecute();
+  let failBuilder = true;
+  const failThenPass = async (args) => {
+    if (args.dispatch.stage === "builder" && failBuilder) {
+        mkdirSync(join(args.dispatch.cwd, "evidence"), { recursive: true });
+        writeFileSync(join(args.dispatch.cwd, "evidence", "builder.md"), "rl\n");
+        writeFileSync(args.dispatch.resultPath, JSON.stringify({
+          version: 1, dispatchId: args.dispatch.dispatchId, stage: "builder", actor: args.dispatch.actor,
+          outcome: "fail", summary: "[openclaw] Could not start the CLI. Reason: rate_limit", evidence: ["evidence/builder.md"],
+        }));
+        return;
+    }
+    return base(args);
+  };
+
+  await runObjective({ hqRoot: HQ, objectivePath, maxConcurrent: 2, stateRoot, execute: failThenPass, publish: () => ({ published: false }) });
+  let obj = readObjState(objectivePath);
+  const nodeId = Object.keys(obj.nodes)[0];
+  const worktreeBefore = obj.nodes[nodeId].worktree;
+  assert.equal(obj.nodes[nodeId].status, "blocked");
+  assert.equal(obj.nodes[nodeId].blocker.infra, true);
+
+  failBuilder = false;
+  const out = resumeObjectiveNodes({ objectivePath, nodeIds: [nodeId] });
+  assert.equal(out.resumed.length, 1);
+  assert.equal(out.resumed[0].id, nodeId);
+
+  const res2 = await runObjective({ hqRoot: HQ, objectivePath, maxConcurrent: 2, stateRoot, execute: failThenPass, publish: () => ({ published: false }) });
+  obj = readObjState(objectivePath);
+  assert.equal(obj.nodes[nodeId].worktree, worktreeBefore, "reuses existing worktree");
+  assert.equal(obj.nodes[nodeId].status, "gate-satisfied");
+  assert.equal(res2.status, "complete");
+});
+
+test("resumeObjectiveNodes: orphaned running node re-arms task dispatch", async () => {
+  const root = mkdtempSync(join(tmpdir(), "objective-orphan-"));
+  const { repo } = makeRepo(root);
+  const { objectivePath } = writeObjective(root, repo, NODES.slice(0, 1));
+  const stateRoot = join(root, "factory-state");
+  // Seed by running once to create state, then stop mid-flight by mutating.
+  await runObjective({ hqRoot: HQ, objectivePath, maxConcurrent: 2, stateRoot, execute: makeExecute(), publish: () => ({ published: false }) });
+  const obj0 = readObjState(objectivePath);
+  const nodeId = Object.keys(obj0.nodes)[0];
+  // Force an orphaned shape: node running + task active with stale updatedAt.
+  const st = readState(obj0.nodes[nodeId].statePath);
+  st.status = "active";
+  st.currentStage = "builder";
+  st.currentDispatch = { dispatchId: "stuck", stage: "builder" };
+  st.stages.builder = { status: "running" };
+  st.updatedAt = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+  writeState(obj0.nodes[nodeId].statePath, st);
+  // Patch objective node to running
+  const raw = JSON.parse(readFileSync(objectivePath, "utf8"));
+  raw.nodes[nodeId].status = "running";
+  raw.nodes[nodeId].blocker = null;
+  raw.status = "active";
+  writeFileSync(objectivePath, `${JSON.stringify(raw, null, 2)}\n`);
+
+  const out = resumeObjectiveNodes({ objectivePath, nodeIds: [nodeId] });
+  assert.equal(out.resumed.length, 1);
+  assert.equal(out.resumed[0].reason, "restart-orphaned");
+  const revived = readState(obj0.nodes[nodeId].statePath);
+  assert.equal(revived.stages.builder.status, "pending");
+  assert.equal(revived.currentDispatch, undefined);
+  assert.equal(readObjState(objectivePath).nodes[nodeId].status, "pending");
 });
 
 test("runObjective: report.md is written next to metrics.json", async () => {
@@ -180,6 +254,178 @@ test("runObjective: report.md is written next to metrics.json", async () => {
   assert.match(report, /## Integration/);
 });
 
+test("resumeObjectiveNodes: skips decision nodes when mixed with infra", async () => {
+  const root = mkdtempSync(join(tmpdir(), "objective-skip-dec-"));
+  const { repo } = makeRepo(root);
+  const { objectivePath } = writeObjective(root, repo, NODES.slice(0, 2));
+  const stateRoot = join(root, "factory-state");
+  const base = makeExecute();
+  const execute = async (args) => {
+    if (args.dispatch.taskId.endsWith("-a") && args.dispatch.stage === "builder") {
+      mkdirSync(join(args.dispatch.cwd, "evidence"), { recursive: true });
+      writeFileSync(join(args.dispatch.cwd, "evidence", "builder.md"), "rl\n");
+      writeFileSync(args.dispatch.resultPath, JSON.stringify({
+        version: 1, dispatchId: args.dispatch.dispatchId, stage: "builder", actor: args.dispatch.actor,
+        outcome: "fail", summary: "[openclaw] Could not start the CLI. Reason: rate_limit", evidence: ["evidence/builder.md"],
+      }));
+      return;
+    }
+    return base(args);
+  };
+  await runObjective({ hqRoot: HQ, objectivePath, maxConcurrent: 2, stateRoot, execute, publish: () => ({ published: false }) });
+  const obj = readObjState(objectivePath);
+  const aId = `${obj.objectiveId}-a`;
+  const bId = `${obj.objectiveId}-b`;
+  const bst = readState(obj.nodes[bId].statePath);
+  bst.status = "blocked";
+  bst.blocker = { stage: "architect", outcome: "decision-required", summary: "Choose Postgres or SQLite" };
+  writeState(obj.nodes[bId].statePath, bst);
+  obj.nodes[bId].status = "blocked";
+  obj.nodes[bId].blocker = bst.blocker;
+  writeFileSync(objectivePath, `${JSON.stringify(obj, null, 2)}\n`);
+
+  const out = resumeObjectiveNodes({ objectivePath, nodeIds: [aId, bId] });
+  assert.equal(out.resumed.map((r) => r.id).join(","), aId);
+  assert.ok(out.skipped.some((s) => s.id === bId && /decision/i.test(s.reason)));
+  assert.equal(readState(obj.nodes[bId].statePath).status, "blocked");
+  assert.equal(readState(obj.nodes[aId].statePath).status, "active");
+});
+
+test("resumeObjectiveNodes + integration infra: reuses worktree and completes", async () => {
+  const root = mkdtempSync(join(tmpdir(), "objective-integ-rec-"));
+  const { repo } = makeRepo(root);
+  const { objectivePath } = writeObjective(root, repo, NODES.slice(0, 1));
+  const stateRoot = join(root, "factory-state");
+  const base = makeExecute();
+  let failReview = true;
+  const execute = async (args) => {
+    if (failReview && String(args.dispatch.taskId).includes("integration") && args.dispatch.stage === "reviewer") {
+      mkdirSync(join(args.dispatch.cwd, "evidence"), { recursive: true });
+      writeFileSync(join(args.dispatch.cwd, "evidence", "reviewer.md"), "rl\n");
+      writeFileSync(args.dispatch.resultPath, JSON.stringify({
+        version: 1, dispatchId: args.dispatch.dispatchId, stage: "reviewer", actor: args.dispatch.actor,
+        outcome: "fail", summary: "[openclaw] Could not start the CLI. Reason: provider unavailable", evidence: ["evidence/reviewer.md"],
+      }));
+      return;
+    }
+    return base(args);
+  };
+
+  await runObjective({ hqRoot: HQ, objectivePath, maxConcurrent: 1, stateRoot, execute, publish: () => ({ published: false }) });
+  let obj = readObjState(objectivePath);
+  assert.equal(obj.integration.status, "blocked");
+  assert.equal(obj.integration.blocker.infra, true);
+  const wt = obj.integration.worktree;
+
+  const out = resumeObjectiveNodes({ objectivePath, nodeIds: [obj.integration.id] });
+  assert.equal(out.resumed.length, 1);
+
+  failReview = false;
+  const res = await runObjective({ hqRoot: HQ, objectivePath, maxConcurrent: 1, stateRoot, execute, publish: () => ({ published: false }) });
+  obj = readObjState(objectivePath);
+  assert.equal(res.status, "complete");
+  assert.equal(obj.integration.status, "gate-satisfied");
+  assert.equal(obj.integration.worktree, wt);
+});
+test("runObjective: publishes and records one PR per build node before publishing integration", async () => {
+  const root = mkdtempSync(join(tmpdir(), "objective-publish-"));
+  const { repo } = makeRepo(root);
+  const { objectivePath } = writeObjective(root, repo, NODES);
+  const calls = [];
+  const publish = ({ state }) => {
+    calls.push(state.task.id);
+    return {
+      published: true,
+      pushed: true,
+      ownerRepo: "objective-smoke/app",
+      prUrl: `https://github.com/objective-smoke/app/pull/${calls.length}`,
+    };
+  };
+
+  const res = await runObjective({
+    hqRoot: HQ, objectivePath, maxConcurrent: 3,
+    stateRoot: join(root, "factory-state"), execute: makeExecute(), publish,
+  });
+
+  assert.equal(res.status, "complete");
+  const obj = readObjState(objectivePath);
+  assert.equal(calls.length, NODES.length + 1, "one publication per node plus integration");
+  for (const node of Object.values(obj.nodes)) {
+    assert.equal(calls.filter((id) => id === node.id).length, 1, `${node.id} published once`);
+    assert.match(node.prUrl, /^https:\/\/github\.com\/objective-smoke\/app\/pull\/\d+$/);
+    assert.equal(node.githubPublish.prUrl, node.prUrl);
+    const taskState = JSON.parse(readFileSync(node.statePath, "utf8"));
+    assert.equal(taskState.githubPublish.prUrl, node.prUrl, "task and objective record the same PR");
+  }
+  assert.equal(calls.filter((id) => id === obj.integration.id).length, 1, "integration published once");
+  assert.match(obj.integration.githubPublish.prUrl, /^https:\/\/github\.com\/objective-smoke\/app\/pull\/\d+$/);
+});
+
+test("runObjective: a configured node publication failure blocks the objective and withholds integration", async () => {
+  const root = mkdtempSync(join(tmpdir(), "objective-publish-fail-"));
+  const { repo } = makeRepo(root);
+  const { objectivePath } = writeObjective(root, repo, NODES.slice(0, 1));
+  const calls = [];
+  const publish = ({ state }) => {
+    calls.push(state.task.id);
+    return { published: false, pushed: false, ownerRepo: "objective-smoke/app", reason: "git push failed: permission denied" };
+  };
+
+  const res = await runObjective({
+    hqRoot: HQ, objectivePath, stateRoot: join(root, "factory-state"),
+    execute: makeExecute(), publish,
+  });
+
+  const obj = readObjState(objectivePath);
+  const node = Object.values(obj.nodes)[0];
+  assert.equal(res.status, "blocked");
+  assert.equal(node.status, "blocked");
+  assert.equal(node.blocker.stage, "publish");
+  assert.equal(node.blocker.outcome, "decision-required");
+  assert.match(node.blocker.summary, /permission denied.*Fix GitHub access/i);
+  assert.equal(node.githubPublish.reason, "git push failed: permission denied");
+  assert.equal(obj.integration.status, "pending", "integration never started");
+  assert.deepEqual(calls, [node.id], "only the build node attempted publication");
+});
+
+test("runObjective: rerun retries only a publish-blocked node, then integrates", async () => {
+  const root = mkdtempSync(join(tmpdir(), "objective-publish-resume-"));
+  const { repo } = makeRepo(root);
+  const { objectivePath } = writeObjective(root, repo, NODES.slice(0, 1));
+  const executed = [];
+  const baseExecute = makeExecute();
+  const execute = async (args) => {
+    executed.push(`${args.dispatch.taskId}:${args.dispatch.stage}`);
+    return baseExecute(args);
+  };
+  const calls = [];
+  const publish = ({ state }) => {
+    calls.push(state.task.id);
+    if (calls.length === 1) {
+      return { published: false, pushed: false, ownerRepo: "objective-smoke/app", reason: "temporary GitHub outage" };
+    }
+    return {
+      published: true, pushed: true, ownerRepo: "objective-smoke/app",
+      prUrl: `https://github.com/objective-smoke/app/pull/${calls.length}`,
+    };
+  };
+
+  const options = {
+    hqRoot: HQ, objectivePath, stateRoot: join(root, "factory-state"), execute, publish,
+  };
+  const first = await runObjective(options);
+  assert.equal(first.status, "blocked");
+  const nodeId = Object.keys(first.objective.nodes)[0];
+  const nodeExecutions = executed.filter((entry) => entry.startsWith(`${nodeId}:`)).length;
+
+  const second = await runObjective(options);
+  assert.equal(second.status, "complete");
+  const obj = readObjState(objectivePath);
+  assert.equal(executed.filter((entry) => entry.startsWith(`${nodeId}:`)).length, nodeExecutions, "seven node stages were not rerun");
+  assert.equal(calls.filter((id) => id === nodeId).length, 2, "node publication was retried once");
+  assert.equal(calls.filter((id) => id === obj.integration.id).length, 1, "integration published once after node PR existed");
+  assert.match(obj.nodes[nodeId].prUrl, /^https:\/\/github\.com\/objective-smoke\/app\/pull\/2$/);
+});
 
 test("resuming an infrastructure-blocked node reuses its task and passed stages", async () => {
   const { resumeState, readState, writeState } = await import("../lib/task-workflow.mjs");

@@ -1,5 +1,10 @@
 # Review-side model routing
 
+> Historical routing note. The current policy is
+> [`MODEL_POLICY.md`](MODEL_POLICY.md); active frontend work is Codex-backed,
+> and `scripts/probe-cursor-harness.mjs` remains the authority on whether Cursor
+> can be promoted from a planned harness.
+
 ## Why
 
 Every factory agent resolves to `openai/gpt-5.6-sol` on one OAuth seat

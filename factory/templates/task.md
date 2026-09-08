@@ -22,7 +22,7 @@ Why does this matter to the product/project?
 - Project:
 - Work type: ui | backend | architecture | bugfix | research | ops
 - Risk: low | medium | high
-- Preferred builder: codex | claude | cursor | auto
+- Preferred builder: codex | claude | frontend | auto
 
 ## Human decisions already made
 List product choices the agents must treat as settled.

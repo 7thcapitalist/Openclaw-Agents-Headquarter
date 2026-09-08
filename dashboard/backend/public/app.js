@@ -1,3 +1,4 @@
+import * as objectiveRecovery from "/lib/objectiveRecovery.mjs";
 import { costLimitsPanel } from "/cost-limits.mjs";
 
 (function () {
@@ -609,6 +610,7 @@ import { costLimitsPanel } from "/cost-limits.mjs";
     if (o.status === "invalid") return `<article class="obj-card"><strong>${esc(o.objectiveId)}</strong><p class="danger-text small">${esc(o.error || "invalid objective state")}</p></article>`;
     const m = o.metrics || {};
     const pr = o.prUrl ? `<a href="${esc(o.prUrl)}" target="_blank" rel="noreferrer">PR ↗</a>` : (o.integration?.githubPublish?.reason ? `<span class="muted small">${esc(o.integration.githubPublish.reason)}</span>` : "");
+    const recoveryHtml = objectiveRecovery.renderObjectiveRecovery(o, { esc }) || "";
     return `<article class="obj-card">
       <div class="obj-card-head">
         <div><strong>${esc(o.objective || o.objectiveId)}</strong>
@@ -616,6 +618,7 @@ import { costLimitsPanel } from "/cost-limits.mjs";
         </div>
         ${pill(o.status, OBJ_STATUS_CLASS[o.status] || "badge-type")}
       </div>
+      ${recoveryHtml}
       ${o.blockedOn ? `<div class="obj-blocked">Waiting on you — see the Founder inbox above.</div>` : ""}
       <div class="obj-nodes">
         ${(o.nodes || []).map((n) => objectiveNodeRow(n, o.objectiveId)).join("")}
@@ -667,6 +670,11 @@ import { costLimitsPanel } from "/cost-limits.mjs";
         showToast("Retrying now.");
         setTimeout(route, 800);
       } catch (e) { showToast(e.message, true); btn.disabled = false; btn.textContent = "Retry now"; }
+    });
+    objectiveRecovery.bindObjectiveRecovery(app, {
+      request: apiJson,
+      notify: showToast,
+      refresh: route,
     });
     app.querySelectorAll("[data-resolve-choice]").forEach((btn) => btn.onclick = async () => {
       btn.disabled = true;

@@ -53,7 +53,7 @@ deploy.
 | Task source and delivery record | GitHub Issues, branches, and PRs | Durable work state and audit trail. |
 | Architecture, independent review, security | Claude | Read-mostly architecture challenge and default review of Codex work; writes only when explicitly assigned as builder. |
 | Backend/general implementation and QA | Codex | Primary builder for backend, general, and bug-fix work; may perform QA or review work it did not author. |
-| Frontend/UI implementation | Cursor | Primary UI/product builder and visual iteration harness. |
+| Frontend/UI implementation | Codex (`frontend-builder`) | Dedicated UI/product builder route with responsive and visual evidence requirements. |
 | Personal interactive development | Cursor | Founder's hands-on development environment; follows the same branch, review, QA, and human-merge rules. |
 | Release readiness | Deterministic gates plus OpenClaw | Check acceptance criteria, verification, independent review, QA evidence, and unresolved decisions; cannot merge in V1. |
 | Final merge authority | Human founder | Approves and performs/authorizes merges and all high-risk actions. |
@@ -63,16 +63,17 @@ for a task when the task contract says so, but reviewer independence and human
 merge authority do not change. The detailed cross-review rules are in
 `OPERATING_RULES.md`; executable defaults are in `factory/factory.config.json`.
 
-## Cursor in the system
+## Frontend tooling
 
-Cursor has two deliberate uses. As an agent harness it owns frontend/UI
-implementation and visual QA when routed by OpenClaw. As the founder's personal
-interactive IDE it is the operator's direct workspace for exploration and
-hands-on development. Interactive work is not an exception to the factory: use
-an issue and isolated branch for deliverable work, preserve the `./run.sh`
-boundary, collect suitable verification, obtain independent review, and leave
-the final merge to the founder. Repository-wide Cursor instructions live in
-`.cursor/rules/factory.mdc`.
+OpenClaw routes frontend/UI implementation to the dedicated Codex-backed
+`frontend-builder` agent. Cursor remains the founder's personal interactive IDE
+and a planned visual-iteration harness, but its CLI does not currently expose an
+ACP server mode that OpenClaw can drive. Re-run
+`scripts/probe-cursor-harness.mjs` before changing that route. Interactive work
+is not an exception to the factory: use an issue and isolated branch for
+deliverable work, preserve the `./run.sh` boundary, collect suitable
+verification, obtain independent review, and leave the final merge to the
+founder. Repository-wide Cursor instructions live in `.cursor/rules/factory.mdc`.
 
 ## Safety and approval boundaries
 

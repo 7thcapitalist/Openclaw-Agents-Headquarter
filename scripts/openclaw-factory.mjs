@@ -72,6 +72,7 @@ export async function handleRequest(request, dependencies = {}) {
 
 async function startFromObjective(request, dependencies) {
   if (!request.repo) throw new Error("start requires repo.");
+  const config = JSON.parse(readFileSync(resolve(hqRoot, "factory", "factory.config.json"), "utf8"));
   const stateRoot = resolve(request.stateRoot || defaultStateRoot(hqRoot, request.repo));
   const intake = await createContractFromObjective({
     objective: request.objective,
@@ -80,6 +81,7 @@ async function startFromObjective(request, dependencies) {
     project: request.project,
     stateRoot,
     hqRoot,
+    intakeAgentId: config.openclawIntegration?.agentIds?.intake,
     execute: dependencies.executeChiefOfStaff,
   });
   const decisionAdvisory = intake.advisory?.decisionClassification;
@@ -87,7 +89,6 @@ async function startFromObjective(request, dependencies) {
     console.warn(`[decision-advisory] ${intake.contract.id}: ${decisionAdvisory.surfacedAs} / ${decisionAdvisory.trigger} — advisory only, not blocking`);
   }
   const created = initialize({ ...request, action: "init", contractPath: intake.contractPath, stateRoot }, dependencies.initializeTask || initializeTask);
-  const config = JSON.parse(readFileSync(resolve(hqRoot, "factory", "factory.config.json"), "utf8"));
   const result = await runToTerminal({
     hqRoot,
     statePath: created.statePath,
