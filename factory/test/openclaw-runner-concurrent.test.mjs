@@ -55,6 +55,19 @@ function makeExecute({ failStage = null, delayMs = 40, windows = [] } = {}) {
       summary: `${dispatch.stage} ${outcome}`,
       evidence: [evidence],
     }));
+    return {
+      stdout: JSON.stringify({
+        meta: {
+          agentMeta: {
+            provider: "openai",
+            model: "gpt-5.6-sol",
+            usage: { tokensIn: 10, tokensOut: 20 },
+            durationMs: end - start,
+          },
+        },
+      }),
+      stderr: "",
+    };
   };
 }
 
@@ -82,6 +95,7 @@ test("reviewer + qa + security run concurrently, then the engine reaches merge-r
   for (const stage of ["product", "architect", "builder", "reviewer", "qa", "security", "release"]) {
     assert.equal(state.stages[stage].status, "pass", `${stage} should have passed`);
   }
+  assert.ok(state.dispatches.every((d) => d.usage?.provider === "openai"), "every recorded dispatch keeps usage metadata");
 
   // The three review stages overlapped in wall-clock time.
   const review = ["reviewer", "qa", "security"].map((s) => windows.find((w) => w.stage === s));

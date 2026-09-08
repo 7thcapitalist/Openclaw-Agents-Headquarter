@@ -8,7 +8,11 @@
 
 import { execFile } from "child_process";
 import { promisify } from "util";
-import { resolve } from "path";
+import { resolve, join } from "path";
+import { mkdtempSync, writeFileSync, rmSync } from "fs";
+import { tmpdir } from "os";
+import { setTimeout as delay } from "timers/promises";
+import { sanitizeExcerpt } from "../common/redact.mjs";
 import { randomUUID } from "crypto";
 import { validateTaskContract } from "../task-workflow.mjs";
 import { assertAcyclic } from "./graph.mjs";
@@ -23,16 +27,49 @@ const RISKS = new Set(["low", "medium", "high"]);
 
 const HARNESS_FOR_ROLE = { "backend-builder": "codex", "frontend-builder": "cursor" };
 
-export async function executeDecomposition({ prompt, repo, objectiveId }) {
-  const { stdout } = await execFileAsync("openclaw", [
-    "agent", "--agent", "main", "--session-key", `agent:main:factory-decompose-${objectiveId}`,
-    "--message", prompt, "--json", "--timeout", "900",
-  ], { cwd: resolve(repo), timeout: 15 * 60 * 1000, maxBuffer: 8 * 1024 * 1024 });
-  const envelope = JSON.parse(stdout);
-  if (envelope.status !== "ok") throw new Error(`decomposition call failed: ${envelope.summary || envelope.status}`);
-  const text = envelope.result?.payloads?.map((p) => p.text).filter(Boolean).join("\n");
-  if (!text) throw new Error("decomposition returned no text");
-  return text;
+export function decompositionError(error) {
+  // execFile's message embeds its full command; never persist the founder prompt.
+  const detail = error?.stderr?.trim() || error?.stdout?.trim()
+    || (error?.killed ? `process killed (${error.signal || "timeout"})` : error?.code)
+    || error?.message || String(error);
+  const safe = sanitizeExcerpt(detail, { maxLength: 1800 }).text;
+  const failure = new Error(`decomposition call failed: ${safe}`);
+  failure.transient = /network connection|fetch failed|idle timeout|timed out|timeout|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|rate.?limit|429|quota|temporarily unavailable|overloaded|usage limit/i.test(safe);
+  return failure;
+}
+
+export async function executeDecomposition({ prompt, repo, objectiveId, run = execFileAsync, wait = delay }) {
+  const dir = mkdtempSync(join(tmpdir(), "factory-decompose-"));
+  const messageFile = join(dir, "prompt.txt");
+  writeFileSync(messageFile, prompt, { mode: 0o600 });
+  try {
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      let stdout;
+      try {
+        ({ stdout } = await run("openclaw", [
+          "agent", "--agent", "main", "--session-key", `agent:main:factory-decompose-${objectiveId}`,
+          "--message-file", messageFile, "--json", "--timeout", "900",
+        ], { cwd: resolve(repo), timeout: 16 * 60 * 1000, maxBuffer: 8 * 1024 * 1024 }));
+      } catch (error) {
+        const failure = decompositionError(error);
+        if (!failure.transient || attempt === 3) throw failure;
+        await wait(attempt * 15_000);
+        continue;
+      }
+      const envelope = JSON.parse(stdout);
+      if (envelope.status !== "ok") {
+        const failure = decompositionError(new Error(envelope.summary || envelope.status || "unsuccessful response"));
+        if (!failure.transient || attempt === 3) throw failure;
+        await wait(attempt * 15_000);
+        continue;
+      }
+      const text = envelope.result?.payloads?.map((p) => p.text).filter(Boolean).join("\n");
+      if (!text) throw new Error("decomposition returned no text");
+      return text;
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 function buildPrompt({ objective, project, repo, objectiveId }) {
@@ -41,6 +78,7 @@ function buildPrompt({ objective, project, repo, objectiveId }) {
     "the SMALLEST set of build sub-tasks that can be implemented in parallel where safe.",
     "",
     "Rules:",
+    "- Planning only: return the JSON graph. Do not dispatch agents, start objectives, edit files, or execute the proposed tasks.",
     "- 1 to 4 nodes. Prefer 2 (e.g. one backend, one frontend) when the objective spans both.",
     "- Only these roles: backend-builder, frontend-builder.",
     "- `dependsOn` lists node ids that must fully finish (pass review/QA/security) before this one starts. Independent nodes have [].",

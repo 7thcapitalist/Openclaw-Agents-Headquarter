@@ -58,7 +58,7 @@ export function markDispatchRunning({ statePath, dispatchId, now = new Date().to
   });
 }
 
-export function ingestResult({ statePath, result, maxAttemptsPerStage = 3, now = new Date().toISOString() }) {
+export function ingestResult({ statePath, result, agentMeta = null, maxAttemptsPerStage = 3, now = new Date().toISOString() }) {
   validateAgentResult(result);
   const state = readState(statePath);
   assertCurrentDispatch(state, result.dispatchId);
@@ -76,6 +76,9 @@ export function ingestResult({ statePath, result, maxAttemptsPerStage = 3, now =
     now,
   });
   const finished = { ...dispatch, status: "completed", outcome: result.outcome, summary: result.summary, completedAt: now };
+  if (agentMeta) {
+    finished.usage = sanitizeUsage(agentMeta);
+  }
   next.dispatches = [...(state.dispatches || []), finished];
   delete next.currentDispatch;
   if (result.outcome === "fail") next = routeStageFailure(next, { failedStage: result.stage, maxAttemptsPerStage, now });
@@ -141,6 +144,25 @@ function terminalResponse(state) {
     currentStage: state.currentStage,
     blocker: state.blocker || null,
   };
+}
+
+function sanitizeUsage(agentMeta) {
+  if (!agentMeta || typeof agentMeta !== "object" || Array.isArray(agentMeta)) return null;
+  const provider = typeof agentMeta.provider === "string" && agentMeta.provider.trim() ? agentMeta.provider.trim() : null;
+  const model = typeof agentMeta.model === "string" && agentMeta.model.trim() ? agentMeta.model.trim() : null;
+  const tokensIn = toInteger(agentMeta.tokensIn);
+  const tokensOut = toInteger(agentMeta.tokensOut);
+  if (!provider || !model || tokensIn == null || tokensOut == null) return null;
+  const usage = { provider, model, tokensIn, tokensOut };
+  const durationMs = toInteger(agentMeta.durationMs);
+  if (durationMs != null) usage.durationMs = durationMs;
+  return usage;
+}
+
+function toInteger(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) return null;
+  return Math.trunc(parsed);
 }
 
 function withStateLock(statePath, action) {
