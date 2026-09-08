@@ -326,6 +326,7 @@ test("resumeObjectiveNodes + integration infra: reuses worktree and completes", 
   assert.equal(res.status, "complete");
   assert.equal(obj.integration.status, "gate-satisfied");
   assert.equal(obj.integration.worktree, wt);
+});
 test("runObjective: publishes and records one PR per build node before publishing integration", async () => {
   const root = mkdtempSync(join(tmpdir(), "objective-publish-"));
   const { repo } = makeRepo(root);
