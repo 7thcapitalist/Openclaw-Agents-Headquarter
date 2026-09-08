@@ -21,6 +21,12 @@ context; local OpenClaw state is not.
 
 ## Intended workflow
 
+The repository is main-only: `main` is the single canonical and permanent
+branch, every change (founder or agent) lands through a PR targeting `main` from
+a short-lived branch/worktree that is deleted after merge, and nobody pushes to
+`main` directly. This is a repository-wide invariant — see
+[`GIT_WORKFLOW.md`](GIT_WORKFLOW.md) and `DECISIONS.md` SFD-2026-008.
+
 1. The founder sets a goal and any settled product constraints.
 2. The Chief of Staff turns it into a GitHub issue using
    `factory/templates/task.md`, including outcome, acceptance criteria, scope,
@@ -28,7 +34,8 @@ context; local OpenClaw state is not.
 3. OpenClaw routes exactly one primary implementation owner to an isolated
    branch/worktree. Two agents must never share a writable branch.
 4. The assigned harness implements and verifies the smallest coherent change,
-   then opens a PR. GitHub preserves the issue-to-branch-to-PR trail.
+   then opens a PR targeting `main`. GitHub preserves the
+   issue-to-branch-to-PR trail.
 5. A different model reviews the work. The author cannot be the sole reviewer.
 6. QA tests acceptance criteria and failure cases and records evidence. UI work
    includes visual/responsive evidence when possible.
@@ -36,7 +43,9 @@ context; local OpenClaw state is not.
    blockers or required decisions.
 8. The founder alone authorizes the merge in V1. Merging is not delegated to an
    agent, even for low-risk work.
-9. After merge, durable decisions and relevant project context are updated.
+9. After merge, durable decisions and relevant project context are updated, and
+   the merged branch and its worktree are deleted. Later work starts from the
+   new `main`.
 
 The pipeline state is:
 

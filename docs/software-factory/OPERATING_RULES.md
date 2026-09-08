@@ -4,6 +4,24 @@
 
 Agents should resolve ordinary, reversible engineering choices without interrupting the founder. The founder owns direction; agents own execution.
 
+## Branch and PR lifecycle — non-negotiable
+
+`main` is the single canonical and permanent branch. Every change lands through
+a new Pull Request targeting `main`; never push directly to `main`. This applies
+to every actor — founder, Claude, Codex, Cursor, factory agents, automated
+recovery, QA, infrastructure jobs.
+
+```
+latest main -> ephemeral branch/worktree -> ONE coherent change
+  -> tests / QA / evidence -> PR targeting main -> review / gates
+  -> merge -> delete branch -> delete worktree -> next work starts from new main
+```
+
+No long-lived feature, development, integration, or per-agent branches, and no
+long-lived worktrees. Independent changes are separate PRs, never stacked on a
+shared branch. Do not add unrelated work to an existing PR — open a new one from
+the latest `main`. Full policy: `GIT_WORKFLOW.md` (SFD-2026-008).
+
 ## Do not escalate
 
 Do not ask the founder about:

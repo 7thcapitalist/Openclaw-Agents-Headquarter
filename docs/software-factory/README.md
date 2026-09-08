@@ -6,6 +6,11 @@ Start with [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md) for the durable context
 shared by every harness. Accepted decisions and their rationale live in
 [`DECISIONS.md`](DECISIONS.md). This document remains the operational overview.
 
+The repository is **main-only**: `main` is the single permanent branch and every
+change lands through a PR targeting it via a short-lived branch/worktree that is
+deleted after merge. This is a repository-wide invariant — see
+[`GIT_WORKFLOW.md`](GIT_WORKFLOW.md) (SFD-2026-008).
+
 ## Founder loop
 
 1. Founder discusses a goal with a strategy agent.
@@ -41,9 +46,9 @@ OpenClaw is the orchestrator. Codex and Claude are the active execution harnesse
 
 ## V1 safety model
 
-- Agents may read project repos and create branches/PRs.
+- Agents may read project repos and create short-lived branches/PRs.
 - Agents may run normal development commands inside isolated workspaces.
-- Agents do not push directly to `main`.
+- Agents do not push directly to `main`. Every change lands via a PR targeting `main`; the branch and worktree are deleted after merge (`GIT_WORKFLOW.md`).
 - Agents do not deploy production, delete production data, spend money, publish externally, or change secrets without human approval.
 - A model cannot be the sole reviewer of its own implementation.
 

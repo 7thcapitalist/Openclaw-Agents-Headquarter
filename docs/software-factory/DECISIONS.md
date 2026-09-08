@@ -124,3 +124,33 @@ entries. When a decision changes, add a new entry and mark the old one
   would need founder-supplied credentials. Reverting is
   `openclaw agents delete learning research` plus restoring
   `~/.openclaw/openclaw.json.before-learning-research-agents`.
+
+## SFD-2026-008 — Repository is main-only; every change lands via a PR
+
+- Date: 2026-09-08
+- Status: Accepted
+- Decision: `main` is the single canonical and permanent branch. Every
+  repository change, from any actor (founder/manual, Claude Code, Codex, Cursor,
+  OpenClaw factory agents, automated recovery, QA agents, infrastructure/
+  maintenance jobs), MUST be delivered through a new Pull Request targeting
+  `main`. Direct pushes to `main` are prohibited. Ephemeral PR branches and
+  worktrees are permitted but must stay short-lived — one coherent change, then
+  PR, review/gates, merge, delete branch, delete worktree, and the next task
+  starts from the new `main`. No feature, development, integration, per-agent, or
+  otherwise long-lived branches or worktrees are kept as part of normal
+  operation. Independent changes are separate PRs, not accumulated on a shared
+  branch; unrelated work is never added to an existing PR. The full policy is
+  `docs/software-factory/GIT_WORKFLOW.md`.
+- Rationale: A single permanent branch with mandatory PRs keeps every change
+  reviewable, auditable, and recoverable across tools, agents, and sessions, and
+  removes the stale-branch and divergent-worktree failures the factory has hit
+  during recovery runs.
+- Consequences: Strengthens SFD-2026-001 (GitHub is the durable record) and is
+  bounded by SFD-2026-003 (V1 human-merge mode) — agents still only declare work
+  merge-ready and the founder merges. `factory.config.json` keeps `push-to-main`
+  in `prohibitedAutonomousActions` and adds a machine-readable `gitWorkflow`
+  block. The factory must track, per change, the base `main` commit, the owning
+  PR and its state, whether the worktree still exists, and whether cleanup
+  completed. After merge, the branch and worktree are disposable and no work
+  continues from them. Agents synchronize with the latest `main` before starting
+  new work.

@@ -4,6 +4,21 @@
   "controlPlane": "github",
   "orchestrator": "openclaw",
   "taskSource": "github-issues",
+  "gitWorkflow": {
+    "_doc": "Repository-wide invariant (SFD-2026-008, docs/software-factory/GIT_WORKFLOW.md). Applies to every actor: founder, Claude, Codex, Cursor, factory agents, automated recovery, QA, infra jobs.",
+    "model": "main-only",
+    "permanentBranch": "main",
+    "changeUnit": "pull-request",
+    "prTarget": "main",
+    "directPushToMain": false,
+    "ephemeralBranches": true,
+    "longLivedBranches": false,
+    "longLivedWorktrees": false,
+    "deleteBranchAfterMerge": true,
+    "deleteWorktreeAfterMerge": true,
+    "startFromLatestMain": true,
+    "policyDoc": "docs/software-factory/GIT_WORKFLOW.md"
+  },
   "openclawIntegration": {
     "protocolVersion": 1,
     "maxAttemptsPerStage": 3,
