@@ -375,7 +375,8 @@ import { costLimitsPanel } from "/cost-limits.mjs";
         <button class="btn" type="submit" ${running ? "disabled" : ""}>Add to tonight</button>
       </form>
       <div class="company-feed">${(plan.items || []).map((item, i) => `<div class="company-agent"><span class="activity-pulse ${item.status === "running" ? "pulse-live" : item.status === "failed" ? "pulse-error" : ""}"></span><div><strong>${i + 1}. ${esc(item.objective)}</strong><small class="muted">${esc(item.projectId)} · ${esc(item.status)}${item.exitCode != null ? ` · exit ${esc(item.exitCode)}` : ""}</small></div>${!running && item.status !== "complete" ? `<button class="btn secondary tiny" data-remove-night="${esc(item.id)}">Remove</button>` : ""}</div>`).join("") || `<div class="empty-state">Nothing planned yet.</div>`}</div>
-      <div class="row-actions">${running ? `<button class="btn secondary" id="stop-overnight">Stop after the current objective</button>` : `<button class="btn founder-launch" id="start-overnight" ${!(plan.items || []).some((x) => x.status === "queued" || x.status === "failed") ? "disabled" : ""}>Start overnight work →</button>`}</div>
+      ${plan.status === "needs-attention" ? `<p role="alert">Some overnight work stopped before delivery. Review the Founder Inbox before retrying it. Failed requests are not automatically submitted again.</p>` : ""}
+      <div class="row-actions">${running ? `<button class="btn secondary" id="stop-overnight" ${plan.stopRequested ? "disabled" : ""}>${plan.stopRequested ? "Stopping after this objective…" : "Stop after the current objective"}</button>` : `<button class="btn founder-launch" id="start-overnight" ${!(plan.items || []).some((x) => x.status === "queued") ? "disabled" : ""}>Start overnight work →</button>`}</div>
     </section>`;
   }
 
