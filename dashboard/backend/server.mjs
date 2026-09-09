@@ -61,22 +61,41 @@ import { buildReadinessReport } from "./lib/readiness.mjs";
 import {
   buildFounderOverview,
   buildObjectivesView,
+  buildObjectiveExecutionView,
+  buildTaskExecutionView,
   buildRolePolicy,
   discoverFactoryTasks,
+  findQuestion,
+  findObjectiveStatePath,
   findTaskStatePath,
+  handleObjectiveRetry,
   isProjectPaused,
   listFounderJobs,
   readObjectiveReport,
   readTaskCompletionReport,
   readTaskEvidence,
   recordQuestion,
+  updateQuestion,
+  listPendingQuestions,
   resolveFounderDecision,
   resolveProjectRepo,
   resolveRepoInput,
   saveFounderJob,
+  finishFounderJob,
+  setInboxItemDismissed,
+  setObjectiveArchived,
   setProjectPaused,
 } from "./lib/founderControlPlane.mjs";
 import { buildHqCostsPayload, buildHqPlanLimitsPayload } from "./lib/hq-cost-limits.mjs";
+import { deriveObjectiveTitle } from "../../factory/lib/hq/presenter.mjs";
+import {
+  enrollFounderKey,
+  getEnrolledFounderKey,
+  prepareFounderApproval,
+  rejectFounderApproval,
+  rekeyPendingApproval,
+  submitFounderApproval,
+} from "./lib/founderApproval.mjs";
 import { readAutonomy } from "../../factory/lib/hq/autonomy.mjs";
 import { retryStuckTasks } from "../../factory/lib/hq/auto-retry.mjs";
 import { resumeState as resumeTaskState, readState as readTaskState, writeState as writeTaskState } from "../../factory/lib/task-workflow.mjs";
@@ -86,13 +105,17 @@ import { readLearningFindings } from "../../factory/lib/hq/chief-of-staff.mjs";
 import { handleRequest as handleFactoryRequest } from "../../scripts/openclaw-factory.mjs";
 import { decomposeObjective } from "../../factory/lib/objective/decompose.mjs";
 import { runObjective } from "../../factory/lib/objective/orchestrator.mjs";
+import { founderApprovalSetupBlocker } from "../../factory/lib/hq/blocker-class.mjs";
 import { defaultStateRoot } from "../../factory/lib/natural-language-intake.mjs";
+import { readDeploymentStatus } from "../../factory/lib/deploy/status.mjs";
+import { addOvernightItem, readOvernightQueue, removeOvernightItem, startOvernight, stopOvernight, overnightLimit } from "./lib/overnightQueue.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const execFileAsync = promisify(execFile);
 
 const ROOT = labRoot(process.env.AGENT_LAB_ROOT);
 dotenv.config({ path: join(ROOT, ".env") });
+const FOUNDER_QUESTION_TIMEOUT_MS = Math.max(10_000, Number(process.env.FOUNDER_QUESTION_TIMEOUT_MS) || 90_000);
 
 const PORT = Number(process.env.DASHBOARD_PORT || 3000);
 const HOST = process.env.DASHBOARD_HOST || "127.0.0.1";
@@ -239,6 +262,31 @@ app.get("/api/founder/objectives", (_req, res) => {
   }
 });
 
+// One objective's durable execution record: objective events joined with the
+// underlying task states for every node. The browser may poll this while work
+// is active; it never creates or mutates execution state.
+app.get("/api/founder/objectives/:id/execution", (req, res) => {
+  try {
+    if (!/^obj-[a-z0-9-]+$/i.test(req.params.id)) return res.status(400).json({ error: "Invalid objective id." });
+    const execution = buildObjectiveExecutionView(ROOT, req.params.id);
+    if (!execution) return res.status(404).json({ error: "No such objective." });
+    res.json(execution);
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+app.get("/api/founder/tasks/:id/execution", (req, res) => {
+  try {
+    if (!/^[a-z0-9][a-z0-9-]*$/i.test(req.params.id)) return res.status(400).json({ error: "Invalid task id." });
+    const execution = buildTaskExecutionView(ROOT, req.params.id);
+    if (!execution) return res.status(404).json({ error: "No such factory task." });
+    res.json(execution);
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
 // Headquarters Integration Layer — one read-only "state of the company" object.
 // Additive: composes the unified project registry, the agent registry + live
 // activity, founder decisions, risks, and (with ?github=1) read-only GitHub
@@ -274,7 +322,7 @@ app.get("/api/hq/learning", (_req, res) => {
 
 app.get("/api/hq/costs", async (_req, res) => {
   try {
-    res.json(await buildHqCostsPayload({ hqRoot: ROOT }));
+    res.json(await buildHqCostsPayload({ hqRoot: ROOT, authoritativeSource: PLAN_LIMITS_SOURCE }));
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
   }
@@ -344,11 +392,68 @@ app.post("/api/founder/tasks", (req, res) => {
   } catch (e) {
     return res.status(500).json({ error: String(e.message || e) });
   }
+  // The 202 is already out; this promise is the only thing that knows how the
+  // run really ended. Both settlements land in finishFounderJob so the outcome
+  // is typed, classified, and reachable from the Founder Inbox — a rejection
+  // here used to be recorded as a raw string no view read.
   handleFactoryRequest({ version: 1, action: "start", repo: job.repo, objective: job.objective, project: job.projectId, issue: req.body?.issue || undefined })
-    .then((result) => saveFounderJob(ROOT, Object.assign(job, { status: result.status, result, updatedAt: new Date().toISOString() })))
-    .catch((error) => saveFounderJob(ROOT, Object.assign(job, { status: "error", error: error.message || String(error), updatedAt: new Date().toISOString() })));
+    .then((result) => finishFounderJob(ROOT, Object.assign(job, { result, taskId: result?.taskId || result?.task?.id || job.taskId }), {
+      result,
+      whatFailed: `Your request "${deriveObjectiveTitle(job.objective)}"`,
+      whatTheFactoryTried: "Chief of Staff intake, then the seven-stage pipeline",
+    }))
+    .catch((error) => finishFounderJob(ROOT, job, {
+      error,
+      whatFailed: `Your request "${deriveObjectiveTitle(job.objective)}"`,
+      whatTheFactoryTried: "Chief of Staff intake",
+    }));
   res.status(202).json({ job });
 });
+
+// Chief of Staff preflight. Most requests return ready immediately; only a
+// genuinely material ambiguity returns one short question before work starts.
+app.post("/api/founder/intake", async (req, res) => {
+  try {
+    const objective = String(req.body?.objective || "").trim();
+    const projectId = String(req.body?.projectId || "").trim();
+    const repo = resolveLaunchRepo(req, projectId) || "";
+    if (!objective || !repo || !projectId) return res.status(400).json({ error: "objective and projectId are required (repo is auto-resolved for registered projects)." });
+    if (isProjectPaused(ROOT, projectId)) return res.status(409).json({ error: "Resume this project before starting work." });
+    if (!existsSync(join(repo, ".git"))) return res.status(400).json({ error: `Not a git working tree: ${repo}` });
+    const result = await handleFactoryRequest({
+      version: 1, action: "intake", repo, objective, project: projectId,
+      issue: req.body?.issue || undefined,
+      answers: Array.isArray(req.body?.answers) ? req.body.answers : [],
+    });
+    res.json(result);
+  } catch (e) {
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+// Founder-planned overnight work. The queue is persisted separately from task
+// state, runs objectives one at a time, and delegates every objective to the
+// normal factory gates. Stop leaves the current worktree/state inspectable.
+app.get("/api/founder/overnight", (_req, res) => res.json({ ...readOvernightQueue(ROOT), limit: overnightLimit }));
+app.post("/api/founder/overnight/items", (req, res) => {
+  try {
+    const projectId = String(req.body?.projectId || "").trim();
+    const repo = resolveLaunchRepo(req, projectId) || "";
+    if (!existsSync(join(repo, ".git"))) return res.status(400).json({ error: "Choose a registered project with a valid git repository." });
+    res.status(201).json(addOvernightItem(ROOT, { objective: req.body?.objective, projectId, repo }));
+  } catch (e) { res.status(400).json({ error: String(e.message || e) }); }
+});
+app.delete("/api/founder/overnight/items/:id", (req, res) => {
+  try { res.json(removeOvernightItem(ROOT, req.params.id)); }
+  catch (e) { res.status(409).json({ error: String(e.message || e) }); }
+});
+app.post("/api/founder/overnight/start", (req, res) => {
+  try {
+    const scriptPath = join(ROOT, "scripts", "factory-objective.mjs");
+    res.status(202).json(startOvernight(ROOT, { scriptPath }));
+  } catch (e) { res.status(409).json({ error: String(e.message || e) }); }
+});
+app.post("/api/founder/overnight/stop", (_req, res) => res.json(stopOvernight(ROOT)));
 
 // Decompose one founder objective into a dependency-aware task graph and run the
 // independent parts concurrently. Detached, tracked as a founder job — same
@@ -376,27 +481,137 @@ app.post("/api/founder/objectives", async (req, res) => {
 
   (async () => {
     try {
-      const graph = await decomposeObjective({ hqRoot: ROOT, objective, project: projectId, repo });
+      const graph = await decomposeObjective({ hqRoot: ROOT, objective, project: projectId, repo, decomposeAgentId: cfg.openclawIntegration?.agentIds?.decompose });
       const dir = join(defaultStateRoot(ROOT, repo), "objectives", graph.objectiveId);
       mkdirSync(dir, { recursive: true });
       const objectivePath = join(dir, "objective-state.json");
+
+      // Preflight: a high-risk node cannot initialize without the founder
+      // approval key. Rather than let the orchestrator hard-fail on the first
+      // node, record the objective as blocked on a founder action so it lands
+      // in the Founder Inbox immediately with the exact remediation.
+      const highRiskNodes = Object.values(graph.nodes).filter((n) => n.contract?.risk === "high");
+      if (highRiskNodes.length && !process.env.FACTORY_FOUNDER_PUBLIC_KEY) {
+        const at = new Date().toISOString();
+        for (const n of highRiskNodes) {
+          n.status = "blocked";
+          n.finishedAt = at;
+          n.blocker = founderApprovalSetupBlocker({ at });
+        }
+        for (const n of Object.values(graph.nodes)) {
+          if (n.status === "pending" && (n.dependsOn || []).some((d) => highRiskNodes.find((h) => h.id === d))) {
+            n.status = "blocked-by-dep";
+          }
+        }
+        graph.status = "blocked";
+        graph.events.push({ at, type: "objective-blocked", detail: "high-risk objective needs founder approval key" });
+        writeFileSync(objectivePath, `${JSON.stringify(graph, null, 2)}\n`, "utf8");
+        saveFounderJob(ROOT, Object.assign(job, {
+          status: "blocked", objectiveId: graph.objectiveId, nodeCount: Object.keys(graph.nodes).length,
+          note: "High-risk objective — configure FACTORY_FOUNDER_PUBLIC_KEY, then continue it from the Founder Inbox.",
+          updatedAt: at,
+        }));
+        return;
+      }
+
       writeFileSync(objectivePath, `${JSON.stringify(graph, null, 2)}\n`, "utf8");
       saveFounderJob(ROOT, Object.assign(job, { status: "running", objectiveId: graph.objectiveId, nodeCount: Object.keys(graph.nodes).length, updatedAt: new Date().toISOString() }));
-      const result = await runObjective({
-        hqRoot: ROOT, objectivePath,
-        maxConcurrent: Number(process.env.FACTORY_MAX_CONCURRENT) || 3,
-        agentIds: cfg.openclawIntegration?.agentIds || {},
-        maxAttemptsPerStage: cfg.openclawIntegration?.maxAttemptsPerStage || 3,
-        concurrentGroups: cfg.openclawIntegration?.concurrentGroups,
-        stateRoot: defaultStateRoot(ROOT, repo),
+      const result = await runObjectiveJob(job, { objectivePath, cfg });
+      finishFounderJob(ROOT, Object.assign(job, { objectiveId: graph.objectiveId }), {
+        result,
+        whatFailed: `Your objective "${deriveObjectiveTitle(job.objective)}"`,
+        whatTheFactoryTried: `${Object.keys(graph.nodes).length} build node(s) through the seven-stage pipeline`,
+        evidencePaths: [objectivePath],
       });
-      saveFounderJob(ROOT, Object.assign(job, { status: result.status, objectiveId: graph.objectiveId, updatedAt: new Date().toISOString() }));
     } catch (error) {
-      saveFounderJob(ROOT, Object.assign(job, { status: "error", error: error.message || String(error), updatedAt: new Date().toISOString() }));
+      // Decomposition is a first-class failure site: when the planning call
+      // fails there is no objective state file at all, so this record is the
+      // ONLY thing standing between the founder and a silently dead request.
+      finishFounderJob(ROOT, job, {
+        error,
+        whatFailed: job.objectiveId
+          ? `Your objective "${deriveObjectiveTitle(job.objective)}"`
+          : `Planning your objective "${deriveObjectiveTitle(job.objective)}"`,
+        whatTheFactoryTried: job.objectiveId
+          ? "decomposition succeeded, then the pipeline stopped"
+          : "3 planning attempts with backoff",
+      });
     }
   })();
 
   res.status(202).json({ job });
+});
+
+// Detached objective orchestrator — shared by create + recovery retry.
+async function runObjectiveJob(job, { objectivePath, cfg = {}, stateRoot, ...rest } = {}) {
+  return runObjective({
+    hqRoot: ROOT,
+    objectivePath,
+    maxConcurrent: Number(process.env.FACTORY_MAX_CONCURRENT) || 3,
+    agentIds: cfg.openclawIntegration?.agentIds || rest.agentIds || {},
+    maxAttemptsPerStage: cfg.openclawIntegration?.maxAttemptsPerStage || rest.maxAttemptsPerStage || 3,
+    concurrentGroups: cfg.openclawIntegration?.concurrentGroups || rest.concurrentGroups,
+    stateRoot: stateRoot || defaultStateRoot(ROOT, job?.repo || rest.repo),
+    ...rest,
+  });
+}
+
+// One click: retry every safely-retryable infrastructure failure in a blocked
+// objective and resume the orchestrator. Never touches decision / approval /
+// hard-fail / live nodes. Mirrors POST /api/founder/tasks/:id/retry.
+app.post("/api/founder/objectives/:id/retry", async (req, res) => {
+  try {
+    if (!/^obj-[a-z0-9-]+$/i.test(req.params.id)) return res.status(400).json({ error: "Invalid objective id." });
+    const out = await handleObjectiveRetry({
+      root: ROOT,
+      hqRoot: ROOT,
+      objectiveId: req.params.id,
+      // Options-shaped seam; runObjectiveJob also serves POST /objectives.
+      runObjective: (opts) => runObjectiveJob(null, {
+        objectivePath: opts.objectivePath,
+        stateRoot: opts.stateRoot,
+        agentIds: opts.agentIds,
+        maxAttemptsPerStage: opts.maxAttemptsPerStage,
+        concurrentGroups: opts.concurrentGroups,
+      }),
+    });
+    res.status(202).json(out);
+  } catch (e) {
+    res.status(e.statusCode || 400).json({ error: String(e.message || e) });
+  }
+});
+
+// Founder presentation control: dismiss a decomposed objective from the main
+// Today view (archive), or restore it (unarchive). Writes only the archive flag
+// in control-plane.json — the objective's state, metrics, report, evidence, and
+// GitHub history are never touched, and the action is fully reversible.
+app.post("/api/founder/objectives/:id/:action", (req, res) => {
+  try {
+    const action = req.params.action;
+    if (!new Set(["archive", "unarchive"]).has(action)) {
+      return res.status(400).json({ error: "Action must be archive or unarchive." });
+    }
+    if (!/^obj-[a-z0-9-]+$/i.test(req.params.id)) return res.status(400).json({ error: "Invalid objective id." });
+    if (!findObjectiveStatePath(ROOT, req.params.id)) return res.status(404).json({ error: "No such objective." });
+    res.json(setObjectiveArchived(ROOT, req.params.id, action === "archive", { reason: req.body?.reason }));
+  } catch (e) {
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+// Founder presentation control: dismiss a single Founder Inbox entry from
+// "Needs you" (it moves to the "Dismissed" fold), or restore it. Writes only
+// the dismissedInbox flag in control-plane.json — the underlying decision,
+// approval, or blocked task is never resolved, and the action is reversible.
+app.post("/api/founder/inbox/dismiss", (req, res) => {
+  try {
+    const id = String(req.body?.id || "").trim();
+    if (!/^[A-Za-z0-9][A-Za-z0-9:_.-]{0,200}$/.test(id)) return res.status(400).json({ error: "Invalid inbox item id." });
+    const restore = req.body?.restore === true;
+    res.json(setInboxItemDismissed(ROOT, id, !restore, { reason: req.body?.reason }));
+  } catch (e) {
+    res.status(400).json({ error: String(e.message || e) });
+  }
 });
 
 // role -> harness / model policy (the honest "what runs each role" table).
@@ -405,20 +620,50 @@ app.get("/api/hq/role-policy", (_req, res) => {
   catch (e) { res.status(500).json({ error: String(e.message || e) }); }
 });
 
-app.post("/api/founder/questions", async (req, res) => {
+function questionError(error) {
+  if (error?.killed || error?.code === "ETIMEDOUT") {
+    const seconds = Math.ceil(FOUNDER_QUESTION_TIMEOUT_MS / 1000);
+    return `OpenClaw did not answer within ${seconds} seconds. Check Today for active work before asking again.`;
+  }
+  if (error?.code) return `OpenClaw could not answer the question (process code ${String(error.code).slice(0, 40)}).`;
+  return "OpenClaw could not answer the question. Check the factory logs for details.";
+}
+
+async function runFounderQuestion(questionRecord) {
+  const question = updateQuestion(ROOT, questionRecord.id, { status: "running", startedAt: new Date().toISOString() });
+  if (!question) return;
+  try {
+    const { stdout } = await execFileAsync("openclaw", ["agent", "--agent", question.agentId, "--session-key", `agent:${question.agentId}:founder-control-plane`, "--message", question.question, "--json", "--timeout", String(Math.floor(FOUNDER_QUESTION_TIMEOUT_MS / 1000))], { timeout: FOUNDER_QUESTION_TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024 });
+    const envelope = JSON.parse(stdout);
+    const answer = envelope.result?.payloads?.map((item) => item.text).filter(Boolean).join("\n") || envelope.summary || "No answer returned.";
+    updateQuestion(ROOT, question.id, { status: "answered", answer, answeredAt: new Date().toISOString() });
+  } catch (error) {
+    updateQuestion(ROOT, question.id, { status: "failed", error: questionError(error), failedAt: new Date().toISOString() });
+  }
+}
+
+function resumePendingFounderQuestions() {
+  for (const question of listPendingQuestions(ROOT)) void runFounderQuestion(question);
+}
+
+app.post("/api/founder/questions", (req, res) => {
   try {
     const agentId = String(req.body?.agentId || "main").trim();
     const question = String(req.body?.question || "").trim();
     if (!/^[a-z0-9][a-z0-9-]*$/.test(agentId) || !question) return res.status(400).json({ error: "A valid agentId and question are required." });
-    const askedAt = new Date().toISOString();
-    const { stdout } = await execFileAsync("openclaw", ["agent", "--agent", agentId, "--session-key", `agent:${agentId}:founder-control-plane`, "--message", question, "--json", "--timeout", "600"], { timeout: 10 * 60 * 1000, maxBuffer: 8 * 1024 * 1024 });
-    const envelope = JSON.parse(stdout);
-    const answer = envelope.result?.payloads?.map((item) => item.text).filter(Boolean).join("\n") || envelope.summary || "No answer returned.";
-    const item = recordQuestion(ROOT, { id: `question-${Date.now().toString(36)}`, agentId, question, answer, askedAt, answeredAt: new Date().toISOString() });
-    res.json({ question: item });
+    const item = recordQuestion(ROOT, { id: `question-${Date.now().toString(36)}`, agentId, question, status: "queued", askedAt: new Date().toISOString() });
+    void runFounderQuestion(item);
+    res.status(202).json({ question: item });
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
   }
+});
+
+app.get("/api/founder/questions/:id", (req, res) => {
+  if (!/^question-[a-z0-9-]+$/i.test(req.params.id)) return res.status(400).json({ error: "Invalid question id." });
+  const question = findQuestion(ROOT, req.params.id);
+  if (!question) return res.status(404).json({ error: "Question not found." });
+  res.json({ question });
 });
 
 app.post("/api/founder/decisions/resolve", (req, res) => {
@@ -439,6 +684,65 @@ app.post("/api/founder/decisions/approve", async (req, res) => {
   } catch (e) {
     res.status(400).json({ error: String(e.message || e) });
   }
+});
+
+// ── One-click founder approval ──────────────────────────────────────────────
+// The founder enrolls a non-extractable Ed25519 key from their browser, then
+// Approve = prepare (server writes the evidence, returns the bytes to sign) →
+// browser signs with the browser-held key → submit (existing gate verifies +
+// records + resumes). The private key never reaches the server or the agents.
+
+const APPROVAL_ID = /^[a-z0-9][a-z0-9-]*$/;
+const approvalRunObjective = (opts) => runObjectiveJob(null, { objectivePath: opts.objectivePath, stateRoot: opts.stateRoot });
+const approvalRunTask = ({ statePath }) => handleFactoryRequest({ version: 1, action: "run", statePath });
+const approvalError = (res, e) => res.status(e.statusCode || 400).json({ error: String(e.message || e), code: e.code, details: e.details });
+
+app.get("/api/founder/approval-key", (_req, res) => {
+  try {
+    const k = getEnrolledFounderKey(ROOT);
+    res.json({ enrolled: k.enrolled, source: k.source, algorithm: "Ed25519", fingerprint: k.fingerprint, enrolledAt: k.enrolledAt });
+  } catch (e) { approvalError(res, e); }
+});
+
+app.post("/api/founder/approval-key", (req, res) => {
+  try {
+    const { publicKeyPem, rotationSignature } = req.body || {};
+    if (!publicKeyPem) return res.status(400).json({ error: "publicKeyPem is required." });
+    res.json(enrollFounderKey(ROOT, { publicKeyPem, rotationSignature }));
+  } catch (e) { approvalError(res, e); }
+});
+
+// `statePath` is the absolute task-state path the Founder Inbox already carries
+// for this approval item; the lib containment-checks it and confirms task.id,
+// falling back to an id lookup when absent. See founderApproval.locateTask().
+app.post("/api/founder/approvals/:taskId/prepare", (req, res) => {
+  try {
+    if (!APPROVAL_ID.test(req.params.taskId)) return res.status(400).json({ error: "Invalid task id." });
+    res.json(prepareFounderApproval(ROOT, req.params.taskId, { note: req.body?.note || "", statePath: req.body?.statePath }));
+  } catch (e) { approvalError(res, e); }
+});
+
+app.post("/api/founder/approvals/:taskId/submit", async (req, res) => {
+  try {
+    if (!APPROVAL_ID.test(req.params.taskId)) return res.status(400).json({ error: "Invalid task id." });
+    const out = await submitFounderApproval(ROOT, ROOT, req.params.taskId, { assertion: req.body?.assertion, statePath: req.body?.statePath },
+      { runObjective: approvalRunObjective, runTask: approvalRunTask });
+    res.json(out);
+  } catch (e) { approvalError(res, e); }
+});
+
+app.post("/api/founder/approvals/:taskId/reject", (req, res) => {
+  try {
+    if (!APPROVAL_ID.test(req.params.taskId)) return res.status(400).json({ error: "Invalid task id." });
+    res.json(rejectFounderApproval(ROOT, req.params.taskId, { reason: req.body?.reason || "", statePath: req.body?.statePath }));
+  } catch (e) { approvalError(res, e); }
+});
+
+app.post("/api/founder/approvals/:taskId/rekey", (req, res) => {
+  try {
+    if (!APPROVAL_ID.test(req.params.taskId)) return res.status(400).json({ error: "Invalid task id." });
+    res.json(rekeyPendingApproval(ROOT, req.params.taskId, { statePath: req.body?.statePath }));
+  } catch (e) { approvalError(res, e); }
 });
 
 // The founder-readable completion report for one factory task (markdown + html),
@@ -640,6 +944,14 @@ app.get("/api/hq/projects/:id", (req, res) => {
     const project = readProject(ROOT, req.params.id);
     if (!project) return res.status(404).json({ error: "Not found" });
     res.json({ project });
+  } catch (e) {
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+app.get("/api/hq/projects/:id/deployment", (req, res) => {
+  try {
+    res.json(readDeploymentStatus({ hqRoot: ROOT, projectKey: req.params.id }));
   } catch (e) {
     res.status(400).json({ error: String(e.message || e) });
   }
@@ -1149,6 +1461,7 @@ checkBootConfig();
 
 app.listen(PORT, HOST, () => {
   console.log(`[agent-lab] dashboard http://${HOST}:${PORT} (root=${ROOT})`);
+  resumePendingFounderQuestions();
 });
 
 // ── Auto-retry sweep ─────────────────────────────────────────────────────────

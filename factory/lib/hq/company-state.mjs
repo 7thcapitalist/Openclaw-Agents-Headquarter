@@ -17,6 +17,7 @@ import { readHqConfig } from "./config.mjs";
 import { readRepoAwareness, summariseRepoAwareness } from "./github.mjs";
 import { readOpenclawRuntime, readOpenclawActivity, reconcileRoster } from "./runtime.mjs";
 import { discoverProjects } from "./discovery.mjs";
+import { readDeploymentStatus } from "../deploy/status.mjs";
 
 const FOUNDER = { name: "João Vitor", headquarters: "OpenClaw Agents Headquarter" };
 
@@ -106,6 +107,11 @@ export async function buildCompanyState({
   // ---- final project rows (company projects only — never the Headquarters) ----
   const projects = companyProjects.map((p) => {
     const projectTasks = tasksByProject.get(p.key) || [];
+    const deployment = readDeploymentStatus({
+      hqRoot,
+      projectKey: p.key,
+      onError: (error) => warnings.push({ code: `deployment-status-failed:${p.key}`, message: error.message }),
+    });
     return {
       key: p.key,
       name: p.name,
@@ -128,6 +134,7 @@ export async function buildCompanyState({
       taskCount: projectTasks.length,
       externalSummary: externalByKey.get(p.key)?.summary || null,
       intelligenceWarnings: p.intelligence?.warnings || [],
+      deployment,
       // Full detail for a single-project view — the same data already
       // resolved above, not a second fetch or a second source of truth.
       intelligence: p.intelligence || null,
@@ -262,7 +269,7 @@ function groupTasksByProject(tasks, unifiedProjects) {
 }
 
 function deriveTaskDecisions(tasks) {
-  return tasks
+  const blocked = tasks
     .filter((t) => t.blocker?.outcome === "decision-required" || t.decisionCard)
     .map((t) => ({
       kind: "task-blocker",
@@ -278,6 +285,23 @@ function deriveTaskDecisions(tasks) {
       requestedAt: t.blocker?.at || null,
       resumable: Boolean(t.statePath),
     }));
+  const deferred = tasks
+    .filter((t) => ["merge-ready", "merged"].includes(t.status) && Array.isArray(t.deferredDecisions))
+    .flatMap((t) => t.deferredDecisions.map((d) => ({
+      kind: "post-task-decision",
+      id: `${t.id}:${d.id}`,
+      taskId: t.id,
+      project: t.project || null,
+      statePath: t.statePath || null,
+      question: d.question,
+      why: d.why,
+      recommendation: d.recommendation || "The agents completed the safe work; choose the option that best matches your intent.",
+      options: d.options,
+      risk: t.risk || null,
+      requestedAt: d.requestedAt || null,
+      resumable: false,
+    })));
+  return [...blocked, ...deferred];
 }
 
 function slimTask(task) {

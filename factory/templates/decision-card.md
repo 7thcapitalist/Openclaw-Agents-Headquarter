@@ -1,7 +1,7 @@
 # Decision Required
 
 ## Decision
-One sentence describing the strategic choice.
+Ask one short question in plain language. The founder should be able to answer with `A`, `B`, or `Other: ...`.
 
 ## Why this needs the founder
 Explain why the agent should not decide this autonomously.
@@ -14,6 +14,9 @@ Explain why the agent should not decide this autonomously.
 - Benefit:
 - Cost/risk:
 
+## Other
+The founder may describe another option in one sentence.
+
 ## Recommendation
 Choose A/B and give the shortest useful reason.
 
@@ -21,4 +24,4 @@ Choose A/B and give the shortest useful reason.
 State what work can safely continue and what must pause.
 
 ## Reply format
-`A`, `B`, or `discuss`.
+`A`, `B`, or `Other: ...`.

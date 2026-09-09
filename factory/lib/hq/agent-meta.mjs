@@ -43,8 +43,9 @@ export function parseAgentMeta(source, { durationMsFallback = null } = {}) {
     || asObject(envelope.result?.usage)
     || null;
 
-  const provider = pickString(meta?.provider, envelope.provider, envelope.modelProvider, envelope.result?.provider);
-  const model = pickString(meta?.model, envelope.model, envelope.result?.model);
+  const nested = findUsageEnvelope(envelope);
+  const provider = pickString(meta?.provider, envelope.provider, envelope.modelProvider, envelope.result?.provider, nested?.provider);
+  const model = pickString(meta?.model, envelope.model, envelope.result?.model, nested?.model);
   const tokensIn = pickInteger(
     usage?.tokensIn,
     usage?.input,
@@ -52,6 +53,7 @@ export function parseAgentMeta(source, { durationMsFallback = null } = {}) {
     envelope.inputTokens,
     envelope.result?.tokensIn,
     envelope.result?.inputTokens,
+    nested?.tokensIn,
   );
   const tokensOut = pickInteger(
     usage?.tokensOut,
@@ -60,6 +62,7 @@ export function parseAgentMeta(source, { durationMsFallback = null } = {}) {
     envelope.outputTokens,
     envelope.result?.tokensOut,
     envelope.result?.outputTokens,
+    nested?.tokensOut,
   );
   if (!provider || !model || tokensIn == null || tokensOut == null) return null;
 
@@ -71,4 +74,21 @@ export function parseAgentMeta(source, { durationMsFallback = null } = {}) {
   const record = { provider, model, tokensIn, tokensOut };
   if (durationMs != null) record.durationMs = durationMs;
   return record;
+}
+
+function findUsageEnvelope(value, depth = 0) {
+  if (!asObject(value) || depth > 5) return null;
+  const usage = asObject(value.usage) || asObject(value.tokenUsage) || asObject(value.usageStats);
+  if (usage) {
+    const provider = pickString(value.provider, value.modelProvider, value.model?.provider);
+    const model = pickString(value.model, value.modelId, value.modelName);
+    const tokensIn = pickInteger(usage.tokensIn, usage.input, usage.inputTokens, usage.promptTokens, usage.prompt_tokens);
+    const tokensOut = pickInteger(usage.tokensOut, usage.output, usage.outputTokens, usage.completionTokens, usage.completion_tokens);
+    if (provider && model && tokensIn != null && tokensOut != null) return { provider, model, tokensIn, tokensOut };
+  }
+  for (const child of Object.values(value)) {
+    const found = findUsageEnvelope(child, depth + 1);
+    if (found) return found;
+  }
+  return null;
 }

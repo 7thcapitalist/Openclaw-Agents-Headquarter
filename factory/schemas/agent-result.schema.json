@@ -9,8 +9,20 @@
     "dispatchId": { "type": "string", "minLength": 1 },
     "stage": { "enum": ["product", "architect", "builder", "reviewer", "qa", "security", "release"] },
     "actor": { "type": "string", "minLength": 1 },
-    "outcome": { "enum": ["pass", "fail", "decision-required"] },
+    "outcome": { "enum": ["pass", "fail", "decision-required", "decision-deferred"] },
     "summary": { "type": "string", "minLength": 1 },
+    "diagnosis": { "type": "object" },
+    "decision": {
+      "type": "object",
+      "required": ["question", "options"],
+      "properties": {
+        "question": { "type": "string", "minLength": 1 },
+        "why": { "type": "string" },
+        "options": { "type": "array", "minItems": 2, "maxItems": 3, "items": { "type": "string", "minLength": 1 } },
+        "recommendation": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
     "evidence": {
       "type": "array",
       "minItems": 1,

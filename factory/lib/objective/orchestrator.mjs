@@ -11,10 +11,13 @@ import { execFileSync } from "child_process";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { initializeTask } from "../task-initializer.mjs";
-import { readState, validateTaskContract } from "../task-workflow.mjs";
+import { readState, resumeState, validateTaskContract, writeState } from "../task-workflow.mjs";
 import { executeOpenClaw, runToTerminal } from "../openclaw-runner.mjs";
+import { publishAndRecord } from "../openclaw-runner.mjs";
 import { ensureBranchHasCommit } from "../hq/github-publish.mjs";
 import { assertAcyclic, buildNodesComplete, descendants, isDeadlocked, readyNodes, GATE_SATISFIED } from "./graph.mjs";
+import { classifyBlocker, classifyObjectiveNodeBlocker, founderApprovalSetupBlocker, isFounderApprovalSetupFailure } from "../hq/blocker-class.mjs";
+import { classifyFailure } from "../failure-classification.mjs";
 
 const INTEGRATION_SYNTHETIC_STAGES = new Set(["product", "architect", "builder"]);
 
@@ -55,6 +58,17 @@ function patchNode(path, nodeId, patch, event) {
   });
 }
 
+// Stop every pending node that transitively depends on a node that just
+// blocked / failed, so the loop deadlocks cleanly instead of spinning.
+function blockDescendants(objectivePath, nodeId, detail) {
+  for (const d of descendants(readObjState(objectivePath), nodeId)) {
+    const s = readObjState(objectivePath);
+    if (s.nodes[d]?.status === "pending") {
+      patchNode(objectivePath, d, { status: "blocked-by-dep" }, { type: "node-blocked-by-dep", detail: detail || `upstream ${nodeId}` });
+    }
+  }
+}
+
 // ── git ──────────────────────────────────────────────────────────────────────
 
 function git(cwd, args) {
@@ -74,31 +88,103 @@ function defaultBranch(repo) {
 
 // ── one build node ───────────────────────────────────────────────────────────
 
-// Build nodes never open their own PR — their branches are merged into the
-// integration branch, which is the single thing published.
-const NODE_NO_PUBLISH = () => ({ published: false, reason: "objective build node — delivered via the integration branch" });
+// A build node may proceed without a PR only when GitHub publication is not
+// configured for the project. Once a real target is resolved, the node must
+// have a reviewable PR URL before integration can start.
+export function classifyNodePublish(result) {
+  if (result?.published && result?.prUrl) return { status: "published", prUrl: result.prUrl };
+  if (!result?.ownerRepo) return { status: "skipped", reason: result?.reason || "GitHub publication is not configured" };
+  return { status: "failed", reason: result?.reason || `GitHub publication for ${result.ownerRepo} did not produce a PR URL` };
+}
 
-async function runNode({ hqRoot, objectivePath, nodeId, execute, agentIds, maxAttemptsPerStage, concurrentGroups, stateRoot }) {
+function blockNodePublish(objectivePath, nodeId, githubPublish, attempts) {
+  const classified = classifyNodePublish(githubPublish);
+  const blocker = {
+    stage: "publish",
+    outcome: "decision-required",
+    summary: `${classified.reason}. Fix GitHub access or repository publication configuration, then rerun the objective.`,
+    at: new Date().toISOString(),
+  };
+  patchNode(objectivePath, nodeId, {
+    status: "blocked", finishedAt: new Date().toISOString(), attempts,
+    githubPublish, prUrl: null, blocker,
+  }, { type: "node-blocked", detail: blocker.summary });
+  for (const d of descendants(readObjState(objectivePath), nodeId)) {
+    const state = readObjState(objectivePath);
+    if (state.nodes[d]?.status === "pending") {
+      patchNode(objectivePath, d, { status: "blocked-by-dep" }, { type: "node-blocked-by-dep", detail: `upstream ${nodeId}` });
+    }
+  }
+  return { nodeId, status: "blocked" };
+}
+
+function recordNodePublish(objectivePath, nodeId, githubPublish, attempts) {
+  const classified = classifyNodePublish(githubPublish);
+  if (classified.status === "failed") return blockNodePublish(objectivePath, nodeId, githubPublish, attempts);
+  patchNode(objectivePath, nodeId, {
+    status: GATE_SATISFIED, finishedAt: new Date().toISOString(), attempts,
+    githubPublish, prUrl: classified.prUrl || null, blocker: null,
+  }, { type: "node-gate-satisfied", detail: classified.prUrl || classified.reason });
+  return { nodeId, status: GATE_SATISFIED };
+}
+
+async function runNode({ hqRoot, objectivePath, nodeId, execute, agentIds, maxAttemptsPerStage, concurrentGroups, stateRoot, publish }) {
   const obj = readObjState(objectivePath);
   const node = obj.nodes[nodeId];
-  const contractDir = join(dirname(objectivePath), "contracts");
-  mkdirSync(contractDir, { recursive: true });
-  const contractPath = join(contractDir, `${nodeId}.json`);
-  writeFileSync(contractPath, `${JSON.stringify(node.contract, null, 2)}\n`, "utf8");
+  let statePath = node.statePath;
+  let worktree = node.worktree;
 
-  const init = initializeTask({ hqRoot, contractPath, repo: obj.repo, branch: node.branch, stateRoot });
-  patchNode(objectivePath, nodeId, { statePath: init.state, worktree: init.worktree, branch: init.branch });
+  const existing = statePath && existsSync(statePath) ? readState(statePath) : null;
+  if (existing) {
+    // Resume an already-initialized node without losing passed stages, dispatch
+    // history, or the original single worktree for this branch.
+    if (existing.task.id !== node.id || existing.branch !== node.branch || existing.repo !== obj.repo) {
+      throw new Error(`Existing task does not match objective node ${node.id}`);
+    }
+    worktree = existing.worktree;
+    patchNode(objectivePath, nodeId, { statePath, worktree, branch: existing.branch });
+  } else {
+    const contractDir = join(dirname(objectivePath), "contracts");
+    mkdirSync(contractDir, { recursive: true });
+    const contractPath = join(contractDir, `${nodeId}.json`);
+    writeFileSync(contractPath, `${JSON.stringify(node.contract, null, 2)}\n`, "utf8");
+    let init;
+    try {
+      init = initializeTask({ hqRoot, contractPath, repo: obj.repo, branch: node.branch, stateRoot });
+    } catch (error) {
+      // A high-risk node that cannot initialize because the founder approval key
+      // is not configured is a founder action, not a dead failure. Record it as
+      // a decision so it reaches the Founder Inbox and the objective shows
+      // "waiting for you" rather than a cryptic red "failed".
+      if (isFounderApprovalSetupFailure(error?.message)) {
+        const blocker = founderApprovalSetupBlocker({ at: new Date().toISOString() });
+        patchNode(objectivePath, nodeId, { status: "blocked", finishedAt: new Date().toISOString(), blocker },
+          { type: "node-blocked", detail: blocker.summary });
+        blockDescendants(objectivePath, nodeId);
+        return { nodeId, status: "blocked" };
+      }
+      throw error;
+    }
+    statePath = init.state;
+    worktree = init.worktree;
+    patchNode(objectivePath, nodeId, { statePath, worktree, branch: init.branch });
+  }
 
-  const resp = await runToTerminal({ hqRoot, statePath: init.state, agentIds, maxAttemptsPerStage, concurrentGroups, execute, publish: NODE_NO_PUBLISH });
-  const state = readState(init.state);
+  // Let the workflow publish the completed build branch once it reaches the
+  // merge-ready gate. The recorded result is then mirrored onto objective
+  // state so integration only starts from reviewable branches.
+  const resp = await runToTerminal({ hqRoot, statePath, agentIds, maxAttemptsPerStage, concurrentGroups, execute, publish });
+  const state = readState(statePath);
   const attempts = (state.dispatches || []).length;
 
+  if (resp.waiting) {
+    patchNode(objectivePath, nodeId, { status: "running", blocker: null }, { type: "node-waiting-for-delegate" });
+    return { nodeId, status: "running" };
+  }
   if (resp.status === "merge-ready") {
     // ensure the branch actually carries a commit even without a github remote
     try { ensureBranchHasCommit({ state }); } catch { /* recorded by the publish step if a remote exists */ }
-    patchNode(objectivePath, nodeId, { status: GATE_SATISFIED, finishedAt: new Date().toISOString(), attempts, blocker: null },
-      { type: "node-gate-satisfied" });
-    return { nodeId, status: GATE_SATISFIED };
+    return recordNodePublish(objectivePath, nodeId, state.githubPublish || resp.githubPublish || null, attempts);
   }
 
   let blocker = state.blocker || { stage: state.currentStage, outcome: "fail", summary: resp.blocker?.summary || "blocked" };
@@ -110,6 +196,7 @@ async function runNode({ hqRoot, objectivePath, nodeId, execute, agentIds, maxAt
     blocker = {
       ...blocker,
       outcome: "decision-required",
+      infra: true, // machine-readable; recovery classifies without prose matching
       summary: `The ${blocker.stage || "agent"} for this task could not run (${firstLine(blocker.summary)}). Retry the objective later, or adjust model routing for that role.`,
     };
   }
@@ -150,8 +237,16 @@ async function runIntegration({ hqRoot, objectivePath, execute, agentIds, maxAtt
   writeFileSync(contractPath, `${JSON.stringify(contract, null, 2)}\n`, "utf8");
 
   const base = defaultBranch(obj.repo);
-  const init = initializeTask({ hqRoot, contractPath, repo: obj.repo, branch: integ.branch, stateRoot });
-  patchNode(objectivePath, integ.id, { statePath: init.state, worktree: init.worktree, branch: init.branch, status: "running", startedAt: new Date().toISOString() },
+  let statePath = integ.statePath;
+  let worktree = integ.worktree;
+  if (statePath && existsSync(statePath)) {
+    // Re-entrant: reuse the existing integration worktree / task state.
+  } else {
+    const init = initializeTask({ hqRoot, contractPath, repo: obj.repo, branch: integ.branch, stateRoot });
+    statePath = init.state;
+    worktree = init.worktree;
+  }
+  patchNode(objectivePath, integ.id, { statePath, worktree, branch: integ.branch, status: "running", startedAt: new Date().toISOString() },
     { type: "integration-started", detail: `base ${base}, ${buildBranches.length} branch(es)` });
 
   const mergeLog = [];
@@ -162,14 +257,14 @@ async function runIntegration({ hqRoot, objectivePath, execute, agentIds, maxAtt
     const { dispatch } = args;
     if (!INTEGRATION_SYNTHETIC_STAGES.has(dispatch.stage)) return execute(args);
 
-    const evDir = join(init.worktree, "evidence");
+    const evDir = join(worktree, "evidence");
     mkdirSync(evDir, { recursive: true });
     let summary;
     if (dispatch.stage === "builder") {
       for (const branch of buildBranches) {
-        const r = git(init.worktree, ["merge", "--no-ff", "-m", `factory: integrate ${branch}`, branch]);
+        const r = git(worktree, ["merge", "--no-ff", "-m", `factory: integrate ${branch}`, branch]);
         mergeLog.push({ branch, ok: r.ok, out: r.out.slice(0, 800) });
-        if (!r.ok) { git(init.worktree, ["merge", "--abort"]); throw new MergeConflict(branch, r.out); }
+        if (!r.ok) { git(worktree, ["merge", "--abort"]); throw new MergeConflict(branch, r.out); }
       }
       writeFileSync(join(evDir, "integration-merge.md"), `# Integration merge\n\nBase: ${base}\n\n${mergeLog.map((m) => `- ${m.branch}: ${m.ok ? "merged" : "CONFLICT"}`).join("\n")}\n`, "utf8");
       summary = `merged ${buildBranches.length} sub-task branch(es) into ${integ.branch}`;
@@ -185,7 +280,7 @@ async function runIntegration({ hqRoot, objectivePath, execute, agentIds, maxAtt
 
   let resp;
   try {
-    resp = await runToTerminal({ hqRoot, statePath: init.state, agentIds, maxAttemptsPerStage, concurrentGroups, execute: integExecute, publish });
+    resp = await runToTerminal({ hqRoot, statePath, agentIds, maxAttemptsPerStage, concurrentGroups, execute: integExecute, publish });
   } catch (error) {
     if (error instanceof MergeConflict) {
       patchNode(objectivePath, integ.id, {
@@ -197,13 +292,22 @@ async function runIntegration({ hqRoot, objectivePath, execute, agentIds, maxAtt
     throw error;
   }
 
-  const state = readState(init.state);
+  const state = readState(statePath);
+  let blocker = resp.status === "merge-ready" ? null : (state.blocker || null);
+  if (blocker?.outcome === "fail" && isInfrastructureFailure(blocker.summary)) {
+    blocker = {
+      ...blocker,
+      outcome: "decision-required",
+      infra: true,
+      summary: `The ${blocker.stage || "agent"} for this task could not run (${firstLine(blocker.summary)}). Retry the objective later, or adjust model routing for that role.`,
+    };
+  }
   patchNode(objectivePath, integ.id, {
     mergeLog,
     status: resp.status === "merge-ready" ? GATE_SATISFIED : "blocked",
     finishedAt: new Date().toISOString(),
     githubPublish: state.githubPublish || null,
-    blocker: resp.status === "merge-ready" ? null : (state.blocker || null),
+    blocker,
   }, { type: resp.status === "merge-ready" ? "integration-gate-satisfied" : "integration-blocked" });
   return resp;
 }
@@ -304,6 +408,120 @@ function collectMetrics(objectivePath) {
   };
 }
 
+// Resume safely-retryable objective nodes (infra-failed or restart-orphaned) so
+// runObjective can re-drive them. Never answers founder decisions or approvals.
+// Per-node try/catch: one bad node never aborts the batch.
+export function resumeObjectiveNodes({ objectivePath, nodeIds, now = () => new Date().toISOString(), staleActiveMs = 90 * 60 * 1000 }) {
+  const at = typeof now === "function" ? now() : now;
+  const resumed = [];
+  const skipped = [];
+  const ids = [...new Set(nodeIds || [])];
+
+  for (const nodeId of ids) {
+    try {
+      const obj = readObjState(objectivePath);
+      const node = obj.nodes[nodeId] || (obj.integration?.id === nodeId ? obj.integration : null);
+      if (!node) { skipped.push({ id: nodeId, reason: "unknown node" }); continue; }
+      const kind = classifyObjectiveNodeBlocker(node.blocker);
+      if (kind === "decision" || kind === "hard") {
+        skipped.push({ id: nodeId, reason: kind === "decision" ? "needs founder decision" : "hard failure" });
+        continue;
+      }
+      if (!node.statePath || !existsSync(node.statePath)) {
+        skipped.push({ id: nodeId, reason: "no task state to resume" });
+        continue;
+      }
+      const state = readState(node.statePath);
+      if (state.currentDispatch?.yieldedAt || state.yieldedGroup) {
+        skipped.push({ id: nodeId, reason: "delegated worker still owns dispatch" }); continue;
+      }
+      // The task engine is authoritative; a stale presentation-level infra tag
+      // cannot override a newer real decision or substantive failure.
+      if (state.status === "blocked" && classifyBlocker(state.blocker) !== "infra") {
+        skipped.push({ id: nodeId, reason: "task requires a decision or substantive repair" }); continue;
+      }
+      if (state.status === "active") {
+        const age = Date.parse(at) - Date.parse(state.updatedAt);
+        if (!Number.isFinite(age) || age <= staleActiveMs) {
+          skipped.push({ id: nodeId, reason: "task is still live" }); continue;
+        }
+      }
+      let revived;
+      let reason;
+      if (state.status === "blocked") {
+        revived = resumeState(state, at);
+        reason = "infra-failed";
+      } else if (state.status === "active") {
+        // Restart-orphaned: drop stuck dispatch and re-arm current stage.
+        revived = structuredClone(state);
+        if (revived.currentDispatch) revived.dispatches = [...(revived.dispatches || []), {
+          ...revived.currentDispatch, status: "failed", error: "orphaned after runner restart", completedAt: at,
+        }];
+        delete revived.currentDispatch;
+        if (revived.currentStage) revived.stages[revived.currentStage] = { status: "pending" };
+        revived.updatedAt = at;
+        revived.events.push({ at, type: "task-resumed", stage: revived.currentStage, actor: "system" });
+        reason = "restart-orphaned";
+      } else {
+        skipped.push({ id: nodeId, reason: `task is ${state.status}, not resumable` });
+        continue;
+      }
+      revived.autoRetries = state.autoRetries || 0;
+      writeState(node.statePath, revived);
+
+      mutate(objectivePath, (s) => {
+        const target = s.nodes[nodeId] || (s.integration?.id === nodeId ? s.integration : null);
+        if (!target) return;
+        target.status = "pending";
+        target.blocker = null;
+        target.finishedAt = null;
+        s.events.push({ at, type: "objective-node-retry", node: nodeId, reason });
+      });
+
+      resumed.push({
+        id: nodeId,
+        role: node.role || (obj.integration?.id === nodeId ? "integration" : null),
+        title: node.contract?.outcome || node.objective || node.role || nodeId,
+        reason,
+      });
+    } catch (error) {
+      skipped.push({ id: nodeId, reason: `cannot resume: ${error.message || error}` });
+    }
+  }
+
+  if (resumed.length) {
+    mutate(objectivePath, (s) => {
+      const live = new Set(Object.values(s.nodes).filter((n) => n.status !== "blocked" && n.status !== "failed").map((n) => n.id));
+      for (const node of Object.values(s.nodes)) {
+        if (node.status === "blocked-by-dep" && (node.dependsOn || []).every((d) => live.has(d))) {
+          node.status = "pending";
+          s.events.push({ at, type: "node-unblocked", node: node.id });
+        }
+      }
+      const prev = s.recovery || {};
+      s.recovery = {
+        ...prev,
+        requestedAt: at,
+        by: "founder",
+        nodes: resumed.map((r) => r.id),
+        attempts: (prev.attempts || 0) + 1,
+      };
+      s.events.push({ at, type: "objective-recovery-requested", by: "founder", nodes: resumed.map((r) => r.id) });
+      if (s.status !== "active") s.status = "active";
+    });
+  }
+
+  return { resumed, skipped };
+}
+
+export function setObjectiveRecoveryInFlight(objectivePath, inFlight) {
+  mutate(objectivePath, (s) => {
+    s.recovery = { ...(s.recovery || {}) };
+    if (inFlight) s.recovery.inFlight = inFlight;
+    else delete s.recovery.inFlight;
+  });
+}
+
 // ── the loop ─────────────────────────────────────────────────────────────────
 
 export async function runObjective({ hqRoot, objectivePath, maxConcurrent = 3, execute = executeOpenClaw, agentIds = {}, maxAttemptsPerStage = 3, concurrentGroups, publish, stateRoot }) {
@@ -311,6 +529,17 @@ export async function runObjective({ hqRoot, objectivePath, maxConcurrent = 3, e
   assertAcyclic(obj.nodes);
   const nodeStateRoot = stateRoot || join(dirname(objectivePath), "..", "..");
   mkdirSync(dirname(objectivePath), { recursive: true });
+
+  // A publication failure happens after all seven stages reached merge-ready.
+  // Retry only that guarded external step on resume; never rerun the gates or
+  // rebuild the already-completed branch.
+  for (const node of Object.values(obj.nodes)) {
+    if (node.status !== "blocked" || node.blocker?.stage !== "publish" || !node.statePath || !existsSync(node.statePath)) continue;
+    const state = readState(node.statePath);
+    if (state.status !== "merge-ready") continue;
+    const githubPublish = publishAndRecord({ hqRoot, statePath: node.statePath, publish });
+    recordNodePublish(objectivePath, node.id, githubPublish, (state.dispatches || []).length);
+  }
 
   // Resume: a node the founder unblocked (its state.json is `active` again) and
   // its stalled descendants go back to `pending` so the loop re-runs them.
@@ -339,8 +568,31 @@ export async function runObjective({ hqRoot, objectivePath, maxConcurrent = 3, e
   const inFlight = new Map();
   const launch = (nodeId) => {
     patchNode(objectivePath, nodeId, { status: "running", startedAt: new Date().toISOString() }, { type: "node-started" });
-    const p = runNode({ hqRoot, objectivePath, nodeId, execute, agentIds, maxAttemptsPerStage, concurrentGroups, stateRoot: nodeStateRoot })
-      .catch((error) => patchNode(objectivePath, nodeId, { status: "failed", blocker: { summary: String(error?.message || error) } }, { type: "node-failed", detail: String(error?.message || error) }))
+    const p = runNode({ hqRoot, objectivePath, nodeId, execute, agentIds, maxAttemptsPerStage, concurrentGroups, stateRoot: nodeStateRoot, publish })
+      .catch((error) => {
+        const message = String(error?.message || error);
+        // A founder-setup failure that slipped past runNode's own guard still
+        // belongs with the founder, not on a dead "failed" card.
+        if (isFounderApprovalSetupFailure(message)) {
+          const blocker = founderApprovalSetupBlocker({ at: new Date().toISOString() });
+          patchNode(objectivePath, nodeId, { status: "blocked", finishedAt: new Date().toISOString(), blocker }, { type: "node-blocked", detail: blocker.summary });
+          blockDescendants(objectivePath, nodeId);
+          return;
+        }
+        const classification = classifyFailure({ error: message, source: "factory" });
+        patchNode(objectivePath, nodeId, {
+          status: "blocked",
+          blocker: {
+            stage: "orchestrator", outcome: "decision-required", founderAction: true, classification,
+            whatFailed: `The factory could not continue objective node ${nodeId}.`,
+            why: message,
+            whatFactoryTried: "Recorded the orchestration error and stopped before advancing dependent work.",
+            whatItNeedsFromFounder: "Review the factory error and approve or direct the repair if it is safe to continue.",
+            whatHappensAfterApproval: "The original objective node will resume from its last durable state.",
+            summary: `Factory error (${classification}): ${message}`,
+          },
+        }, { type: "node-blocked", detail: message });
+      })
       .finally(() => inFlight.delete(nodeId));
     inFlight.set(nodeId, p);
   };

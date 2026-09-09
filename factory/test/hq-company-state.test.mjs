@@ -4,6 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { buildCompanyState } from "../lib/hq/company-state.mjs";
+import { deploymentStatePath, writeDeploymentState } from "../lib/deploy/store.mjs";
 
 function makeHq() {
   const hq = mkdtempSync(join(tmpdir(), "hq-company-state-"));
@@ -63,6 +64,7 @@ test("buildCompanyState composes projects, agents, decisions and a summary", asy
   const factory = state.projects.find((p) => p.key === "openclaw-factory");
   assert.equal(factory.activeTasks.length, 1);
   assert.equal(factory.hasContext, true);
+  assert.equal(factory.deployment.state, "not_deployed");
 
   const lm = state.projects.find((p) => p.key === "lifemaxing");
   assert.equal(lm.repoExists, false);
@@ -81,6 +83,26 @@ test("buildCompanyState composes projects, agents, decisions and a summary", asy
   const claude = state.agents.agents.find((a) => a.id === "claude-main");
   assert.equal(claude.status, "blocked");
   assert.equal(state.summary.blockedAgents, 1);
+});
+
+test("company project rows expose deployment status and degrade malformed state to a warning", async () => {
+  const hq = makeHq();
+  writeDeploymentState({ hqRoot: hq, projectKey: "lifemaxing", state: {
+    version: 1,
+    projectKey: "lifemaxing",
+    state: "deployed",
+    productionUrl: "https://lifemaxing.example",
+    health: { checkedAt: "2026-09-08T12:00:00.000Z", ok: true, status: 200 },
+    lastDeploymentAt: "2026-09-08T12:00:00.000Z",
+    founderActionRequired: false,
+  } });
+  let state = await buildCompanyState({ hqRoot: hq, tasks: [] });
+  assert.equal(state.projects.find((p) => p.key === "lifemaxing").deployment.productionUrl, "https://lifemaxing.example");
+
+  writeFileSync(deploymentStatePath(hq, "lifemaxing"), "not json");
+  state = await buildCompanyState({ hqRoot: hq, tasks: [] });
+  assert.equal(state.projects.find((p) => p.key === "lifemaxing").deployment.state, "not_deployed");
+  assert.ok(state.warnings.some((warning) => warning.code === "deployment-status-failed:lifemaxing"));
 });
 
 test("withGithub pulls read-only awareness through the injected exec", async () => {

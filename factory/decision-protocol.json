@@ -1,7 +1,7 @@
 {
   "version": 1,
   "defaultOutcome": "continue",
-  "_doc": "Machine form of factory/context/DECISION_PROTOCOL.md. Evaluated by factory/lib/intel/classify.mjs. Outcomes: continue | decision-request | ask. A `block` is owned by the workflow engine's own gates and is not produced here.",
+  "_doc": "Machine form of factory/context/DECISION_PROTOCOL.md. Evaluated by factory/lib/intel/classify.mjs. Intake outcomes: continue | decision-request | ask. A `decision-deferred` is a stage result: safe work continues and the choice is shown after completion. A `block` is owned by the workflow engine's own gates and is not produced here.",
   "triggers": [
     {
       "id": "privacy",
@@ -52,6 +52,6 @@
       "reason": "Legal / compliance implications need the founder."
     }
   ],
-  "riskBinding": { "high": "decision-request" },
+  "riskBinding": { "high": "signed-approval-before-builder" },
   "sla": { "decisionRequestReminderHours": 24, "blockingQuestionTimeoutHours": 4 }
 }

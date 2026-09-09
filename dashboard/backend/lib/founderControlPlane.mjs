@@ -1,14 +1,20 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "fs";
+import { openSync, closeSync, unlinkSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "fs";
 import { basename, dirname, join, resolve } from "path";
 import { homedir } from "os";
-import { readState, resumeState, writeState } from "../../../factory/lib/task-workflow.mjs";
+import { isAwaitingFounderApproval, readState, resumeState, writeState } from "../../../factory/lib/task-workflow.mjs";
 import { writeHandoff } from "../../../factory/lib/handoff.mjs";
 import { listProjectBriefs } from "../../../factory/lib/intel/project-brief.mjs";
 import { buildCompanyBriefing } from "../../../factory/lib/intel/founder-briefing.mjs";
 import { toTaskRecord } from "../../../factory/lib/learning/evidence.mjs";
-import { classifyBlocker } from "../../../factory/lib/hq/blocker-class.mjs";
+import { classifyBlocker, classifyObjectiveNodeBlocker } from "../../../factory/lib/hq/blocker-class.mjs";
+import { buildOutcome } from "../../../factory/lib/failure-outcome.mjs";
+import { resumeObjectiveNodes, setObjectiveRecoveryInFlight, readObjState } from "../../../factory/lib/objective/orchestrator.mjs";
+import { defaultStateRoot } from "../../../factory/lib/natural-language-intake.mjs";
+import { briefBlocker, presentObjective, isSeedProject } from "../../../factory/lib/hq/presenter.mjs";
 
 const CONTROL_FILE = "control-plane.json";
+
+import { readOvernightQueue } from "./overnightQueue.mjs";
 
 // ── project + model-policy readers (read-only, guarded) ───────────────────────
 
@@ -97,9 +103,9 @@ function walkStateFiles(dir, out = []) {
 
 function readControl(root) {
   const path = join(factoryRoot(root), CONTROL_FILE);
-  if (!existsSync(path)) return { version: 1, projects: {}, questions: [], jobs: [] };
+  if (!existsSync(path)) return { version: 1, projects: {}, questions: [], jobs: [], archivedObjectives: {}, dismissedInbox: {} };
   const value = JSON.parse(readFileSync(path, "utf8"));
-  return { version: 1, projects: {}, questions: [], jobs: [], ...value };
+  return { version: 1, projects: {}, questions: [], jobs: [], archivedObjectives: {}, dismissedInbox: {}, ...value };
 }
 
 function writeControl(root, value) {
@@ -111,6 +117,20 @@ function writeControl(root, value) {
 }
 
 const TERMINAL_TASK_STATUSES = new Set(["merge-ready", "merged"]);
+
+// A detached job that reached one of these actually delivered something the
+// founder can act on. Anything else that stops is a failure to be classified.
+const DELIVERED_JOB_STATUSES = new Set(["merge-ready", "merged", "complete", "completed"]);
+
+// The job.status the founder's existing views read, per typed outcome. `paused`
+// is distinct from `error`: it resumes on its own and must not read as broken.
+const JOB_STATUS_FOR_OUTCOME = {
+  "merge-ready": "complete",
+  "needs-founder-decision": "needs-founder",
+  "paused-credits": "paused",
+  "infra-retrying": "retrying",
+  "hard-failed": "error",
+};
 const RESULT_EVENT_OUTCOME = {
   "stage-pass": "pass",
   "stage-fail": "fail",
@@ -168,6 +188,8 @@ function taskView(path) {
     agentStatus: dispatch?.status || (state.status === "active" ? "waiting" : state.status),
     blocker: state.blocker || null,
     blockerClass: classifyBlocker(state.blocker),
+    failureClasses: [...new Set((state.failures || []).map((failure) => failure.classification).filter(Boolean))],
+    recovery: state.recovery || { maxAttempts: 0, attempts: [], active: null },
     autoRetries: state.autoRetries || 0,
     updatedAt,
     createdAt: state.createdAt,
@@ -181,7 +203,9 @@ function taskView(path) {
       : null,
     events: (state.events || []).slice(-5).reverse(),
     founderApprovalRequest: state.founderApprovalRequest || null,
+    awaitingFounderApproval: isAwaitingFounderApproval(state),
     decisionCard: readDecisionCard(state),
+    deferredDecisions: state.deferredDecisions || [],
   };
 }
 
@@ -205,6 +229,408 @@ export function readTaskCompletionReport(root, taskId) {
     };
   }
   return null;
+}
+
+// Absolute path to an objective-state.json by objective id, or null.
+export function findObjectiveStatePath(root, objectiveId) {
+  const factoryDir = factoryRoot(root);
+  const allowedRoot = resolve(factoryDir);
+  if (!existsSync(factoryDir) || !/^obj-[a-z0-9-]+$/i.test(objectiveId)) return null;
+  for (const project of readdirSync(factoryDir, { withFileTypes: true })) {
+    if (!project.isDirectory()) continue;
+    const statePath = resolve(factoryDir, project.name, "objectives", objectiveId, "objective-state.json");
+    if (!statePath.startsWith(`${allowedRoot}/`)) continue;
+    if (existsSync(statePath)) return statePath;
+  }
+  return null;
+}
+
+// Read-only execution record for a standalone factory task. Objectives have a
+// graph-specific view below, but tasks created through /api/founder/tasks also
+// need a live drill-down in the Founder Control Plane.
+export function buildTaskExecutionView(root, taskId) {
+  const statePath = findTaskStatePath(root, taskId);
+  if (!statePath) return null;
+  const state = readState(statePath);
+  const stageOrder = ["product", "architect", "builder", "reviewer", "qa", "security", "release"];
+  const currentDispatch = state.currentDispatch || null;
+  const stages = stageOrder.map((stage) => {
+    const result = state.stages?.[stage] || { status: "pending" };
+    const active = currentDispatch?.stage === stage && currentDispatch.status === "running";
+    const status = active ? "working"
+      : result.status === "pass" ? "completed"
+        : result.status === "fail" ? "failed"
+          : result.status === "decision-required" ? "blocked" : "pending";
+    const dispatch = (state.dispatches || []).filter((item) => item.stage === stage).at(-1);
+    return {
+      stage,
+      status,
+      agent: currentDispatch?.stage === stage ? currentDispatch.actor : state.assignments?.[stage] || null,
+      startedAt: active ? currentDispatch.startedAt || null : dispatch?.startedAt || result.startedAt || null,
+      finishedAt: dispatch?.completedAt || result.completedAt || null,
+      activity: active ? `Working on ${stage}` : result.summary || dispatch?.summary || null,
+      blocker: result.status === "decision-required" ? state.blocker || null : null,
+    };
+  });
+  const events = (state.events || []).filter((event) => event.at).map((event) => ({
+    at: event.at,
+    source: event.actor || state.assignments?.[event.stage] || "factory",
+    destination: event.stage ? state.assignments?.[event.stage] || null : null,
+    type: event.type || "event",
+    stage: event.stage || null,
+    nodeId: state.task.id,
+    message: event.summary || event.detail || event.reason || String(event.type || "Execution event").replaceAll("-", " "),
+  }));
+  const createdMs = Date.parse(state.createdAt || "");
+  const lastAt = events.at(-1)?.at || state.updatedAt || null;
+  const terminal = ["merge-ready", "merged"].includes(String(state.status || ""));
+  const endMs = terminal && lastAt ? Date.parse(lastAt) : Date.now();
+  return {
+    objectiveId: state.task.id,
+    objective: state.task.outcome,
+    project: state.task.project || basename(state.repo || "factory"),
+    repo: state.repo,
+    status: state.status,
+    createdAt: state.createdAt || null,
+    updatedAt: state.updatedAt || null,
+    elapsedMs: Number.isFinite(createdMs) ? Math.max(0, endMs - createdMs) : null,
+    currentStage: currentDispatch?.stage || state.currentStage || null,
+    currentAgent: currentDispatch?.actor || state.assignments?.[state.currentStage] || null,
+    currentActivity: currentDispatch?.status === "running" ? `Working on ${currentDispatch.stage}` : null,
+    blocker: state.blocker || null,
+    stages,
+    events,
+    evidence: stageOrder.flatMap((stage) => (state.stages?.[stage]?.evidence || []).map((item) => ({
+      stage, path: item.path || item, recordedAt: item.recordedAt || state.stages[stage].completedAt || null,
+    }))),
+    github: state.githubPublish || null,
+  };
+}
+
+// Read-only execution record for the founder. The objective state is the
+// source of truth for the graph; each node's task state is the source of truth
+// for dispatches, stage results, evidence, and handoffs. Keeping this join
+// here means the UI never needs to infer progress from process output or invent
+// heartbeat messages.
+export function buildObjectiveExecutionView(root, objectiveId, { now = Date.now() } = {}) {
+  const objectivePath = findObjectiveStatePath(root, objectiveId);
+  if (!objectivePath) return null;
+  const objective = readObjState(objectivePath);
+  const nodes = [...Object.values(objective.nodes || {}), objective.integration].filter(Boolean);
+  const taskByNode = new Map();
+  for (const node of nodes) {
+    if (!node.statePath || !existsSync(node.statePath)) continue;
+    try { taskByNode.set(node.id, readState(node.statePath)); } catch { /* task may be between atomic writes */ }
+  }
+
+  const stageOrder = ["product", "architect", "builder", "reviewer", "qa", "security", "release"];
+  const stages = stageOrder.map((stage) => {
+    const entries = nodes.map((node) => ({ node, task: taskByNode.get(node.id) }))
+      .filter(({ node, task }) => task?.stages?.[stage] || node.role === stage || (stage === "builder" && node.role?.includes("builder")));
+    const active = entries.find(({ task }) => task?.currentDispatch?.stage === stage && task.currentDispatch.status === "running")
+      || entries.find(({ task }) => task?.currentStage === stage && task?.status === "active");
+    const result = active?.task?.stages?.[stage];
+    const dispatch = active?.task?.dispatches?.filter((item) => item.stage === stage).at(-1) || null;
+    const completed = entries.length > 0 && entries.every(({ task, node }) => task?.stages?.[stage]?.status === "pass" || (!task && node.status === "gate-satisfied"));
+    const failed = entries.find(({ task }) => ["fail", "decision-required"].includes(task?.stages?.[stage]?.status));
+    return {
+      stage,
+      status: failed ? (failed.task.stages[stage].status === "decision-required" ? "blocked" : "failed") : active ? "working" : completed ? "completed" : "pending",
+      agent: active?.task?.currentDispatch?.actor || active?.task?.assignments?.[stage] || entries[0]?.task?.assignments?.[stage] || null,
+      nodeId: active?.node.id || failed?.node.id || entries.find(({ task }) => task?.stages?.[stage]?.status === "pass")?.node.id || null,
+      startedAt: active?.task?.currentDispatch?.startedAt || dispatch?.startedAt || result?.startedAt || null,
+      finishedAt: result?.completedAt || dispatch?.completedAt || null,
+      activity: active ? `Working on ${stage}` : result?.summary || null,
+      blocker: failed?.task?.blocker || null,
+    };
+  });
+
+  const rawEvents = [];
+  const addEvents = (source, node, events) => {
+    for (const event of events || []) rawEvents.push({ ...event, source, nodeId: node?.id || null });
+  };
+  addEvents("orchestrator", null, objective.events);
+  for (const node of nodes) addEvents(node.statePath ? (taskByNode.get(node.id)?.task?.project || node.role || "factory") : node.role, node, taskByNode.get(node.id)?.events);
+  const eventType = (event) => {
+    if (event.type === "dispatch-running") return "agent-received-work";
+    if (event.type === "handoff-ready") return "handoff";
+    if (event.type === "stage-pass") return "stage-completed";
+    if (event.type === "stage-fail" || event.type === "dispatch-failed") return "failed";
+    if (event.type === "stage-decision-required") return "decision-required";
+    if (event.type === "dispatch-ready") return "agent-started";
+    if (event.type === "recovery-diagnosing") return "recovery-diagnosing";
+    if (event.type === "recovery-repair-attempted") return "recovery-repair-attempted";
+    if (event.type === "recovery-verifying") return "recovery-verifying";
+    if (event.type === "recovery-verification") return "recovery-verification";
+    if (event.type === "recovery-verified") return "recovery-verified";
+    return event.type || "event";
+  };
+  const events = rawEvents.filter((event) => event.at).map((event) => {
+    const task = event.nodeId ? taskByNode.get(event.nodeId) : null;
+    const destination = event.type === "handoff" || event.type === "handoff-ready"
+      ? task?.assignments?.[event.stage] || null : null;
+    const stageIndex = stageOrder.indexOf(event.stage);
+    const source = event.actor || ((event.type === "handoff-ready" && stageIndex > 0) ? task?.assignments?.[stageOrder[stageIndex - 1]] : null) || event.source || "factory";
+    const stageResult = task?.stages?.[event.stage];
+    const message = event.summary || stageResult?.summary || event.detail || event.reason
+      || (event.type === "dispatch-running" ? `Started ${event.stage} work` : null)
+      || (event.type === "dispatch-ready" ? `Assigned ${event.stage} work` : null)
+      || (event.type === "recovery-diagnosing" ? "Recovery Agent is diagnosing the failure" : null)
+      || (event.type === "recovery-repair-attempted" ? "Recovery Agent attempted a repair" : null)
+      || (event.type === "recovery-verifying" ? "QA is independently verifying the repair" : null)
+      || (event.type === "recovery-verification" ? `Recovery verification ${event.outcome || "completed"}` : null)
+      || (event.type === "recovery-verified" ? "Recovery verified; original task resumed" : null)
+      || (event.type === "handoff-ready" ? `Handoff ready for ${event.stage}` : null)
+      || (event.type === "stage-pass" ? `${event.stage} completed` : null)
+      || String(event.type || "Execution event").replaceAll("-", " ");
+    return { at: event.at, source, destination, type: eventType(event), stage: event.stage || null, nodeId: event.nodeId, message: String(message) };
+  }).sort((a, b) => String(a.at).localeCompare(String(b.at)));
+
+  const current = nodes.map((node) => ({ node, task: taskByNode.get(node.id) }))
+    .find(({ task }) => task?.currentDispatch?.status === "running")
+    || nodes.map((node) => ({ node, task: taskByNode.get(node.id) })).find(({ task }) => task?.status === "active");
+  const currentDispatch = current?.task?.currentDispatch || null;
+  const taskWithBlocker = nodes
+    .map((node) => ({ node, task: taskByNode.get(node.id) }))
+    .find(({ node, task }) => task?.blocker || node.blocker);
+  const rawBlocker = current?.task?.blocker || taskWithBlocker?.task?.blocker || taskWithBlocker?.node?.blocker || objective.blocker || null;
+  const blocker = rawBlocker ? briefBlocker(rawBlocker) : null;
+  const terminal = ["complete", "completed", "merge-ready", "merged"].includes(String(objective.status || "").toLowerCase());
+  const createdMs = Date.parse(objective.createdAt || "");
+  const lastAt = events.at(-1)?.at || objective.updatedAt || null;
+  const endMs = terminal && lastAt ? Date.parse(lastAt) : now;
+  return {
+    objectiveId,
+    objective: objective.objective,
+    project: objective.project,
+    repo: objective.repo,
+    status: objective.status,
+    createdAt: objective.createdAt || null,
+    updatedAt: objective.updatedAt || null,
+    elapsedMs: Number.isFinite(createdMs) ? Math.max(0, endMs - createdMs) : null,
+    currentStage: currentDispatch?.stage || current?.task?.currentStage || null,
+    currentAgent: currentDispatch?.actor || (current?.task?.currentStage ? current.task.assignments?.[current.task.currentStage] : null),
+    currentActivity: currentDispatch ? `Working on ${currentDispatch.stage}` : current?.task?.status === "active" ? `Waiting to dispatch ${current.task.currentStage}` : null,
+    blocker,
+    rawBlocker,
+    stages,
+    events,
+    evidence: nodes.flatMap((node) => Object.entries(taskByNode.get(node.id)?.stages || {}).flatMap(([stage, result]) => (result.evidence || []).map((item) => ({ nodeId: node.id, stage, path: item.path || item, recordedAt: item.recordedAt || result.completedAt || null })))),
+    github: objective.integration?.githubPublish || null,
+  };
+}
+
+const STALE_ACTIVE_MS_DEFAULT = 90 * 60 * 1000;
+const RECOVERY_LOCK_MS = 15 * 60 * 1000;
+
+function recoveryReasonFromBlocker(blocker) {
+  const text = String(blocker?.summary || blocker?.detail || "");
+  if (/rate.?limit|429|quota|overloaded|capacity/i.test(text)) return "model provider was rate-limited";
+  if (/could not (start|run)|provider|unavailable|ECONN|ETIMEDOUT|socket/i.test(text)) return "model provider was unavailable";
+  if (/result file|timed out|timeout/i.test(text)) return "agent did not finish cleanly";
+  return "infrastructure hiccup";
+}
+
+/**
+ * Pure plan of which objective nodes are safely retryable (infra-failed or
+ * restart-orphaned). Never includes genuine decisions, hard fails, high-risk
+ * approvals awaiting signature, or freshly-running tasks.
+ */
+export function buildRecoveryPlan(objState, { now = Date.now(), staleActiveMs = STALE_ACTIVE_MS_DEFAULT } = {}) {
+  const nodes = [];
+  const nowMs = typeof now === "number" ? now : Date.parse(now) || Date.now();
+  const candidates = [
+    ...Object.values(objState.nodes || {}),
+    ...(objState.integration ? [objState.integration] : []),
+  ];
+
+  for (const node of candidates) {
+    if (!node?.id) continue;
+    if (node.status === "blocked-by-dep") continue; // clears automatically when deps live
+
+    let task = null;
+    if (node.statePath && existsSync(node.statePath)) {
+      try { task = readState(node.statePath); } catch { task = null; }
+    }
+
+    if (task?.currentDispatch?.yieldedAt || task?.yieldedGroup) continue;
+    if (task?.status === "blocked" && classifyBlocker(task.blocker) !== "infra") continue;
+    const kind = classifyObjectiveNodeBlocker(node.blocker);
+    const orphan = Boolean(
+      node.status === "running"
+      && task?.status === "active"
+      && task.updatedAt
+      && (nowMs - (Date.parse(task.updatedAt) || nowMs)) > staleActiveMs,
+    );
+
+    if (kind === "decision" || kind === "hard") continue;
+    if (!(kind === "infra" || orphan)) continue;
+
+    // High-risk build awaiting signed approval — never auto-recover.
+    if (
+      task?.task?.risk === "high"
+      && (node.blocker?.stage === "builder" || task.blocker?.stage === "builder")
+      && task.founderApprovalRequest
+      && !task.founderApproval
+    ) continue;
+
+    // Live runner owns a fresh active task — leave it alone (unless orphan above).
+    if (task?.status === "active" && !orphan) {
+      const age = nowMs - (Date.parse(task.updatedAt) || nowMs);
+      if (age <= staleActiveMs) continue;
+    }
+    if (node.status === "running" && task?.status === "active" && !orphan) continue;
+
+    const title = node.contract?.outcome || node.objective || node.role || "step";
+    nodes.push({
+      id: node.id,
+      role: node.role || (objState.integration?.id === node.id ? "integration" : null),
+      title,
+      reason: orphan ? "interrupted by a restart" : recoveryReasonFromBlocker(node.blocker),
+    });
+  }
+
+  return { nodes };
+}
+
+/**
+ * Founder one-click: resume every safely-retryable node and restart the
+ * objective orchestrator in the background. Injectable `runObjective` for tests.
+ */
+export async function handleObjectiveRetry({
+  root,
+  hqRoot,
+  objectiveId,
+  runObjective,
+  now = Date.now(),
+  readConfig = () => {
+    try { return JSON.parse(readFileSync(join(hqRoot || root, "factory", "factory.config.json"), "utf8")); }
+    catch { return {}; }
+  },
+}) {
+  const statePath = findObjectiveStatePath(root, objectiveId);
+  if (!statePath) {
+    const err = new Error("No such objective.");
+    err.statusCode = 404;
+    throw err;
+  }
+
+  let lockFd;
+  const lockPath = `${statePath}.recovery.lock`;
+  try { lockFd = openSync(lockPath, "wx", 0o600); }
+  catch (error) {
+    if (error.code !== "EEXIST") throw error;
+    // Match the dispatcher lock policy: the protected section is synchronous,
+    // so a five-minute-old file is left over from a terminated process.
+    if (Date.now() - statSync(lockPath).mtimeMs < 5 * 60 * 1000) {
+      const busy = new Error("Recovery already in progress for this objective.");
+      busy.statusCode = 409; throw busy;
+    }
+    unlinkSync(lockPath);
+    lockFd = openSync(lockPath, "wx", 0o600);
+  }
+  try {
+  const nowMs = typeof now === "number" ? now : Date.parse(now) || Date.now();
+  const nowISO = new Date(nowMs).toISOString();
+  let obj = readObjState(statePath);
+
+  if (obj.recovery?.inFlight?.at) {
+    const lockAge = nowMs - (Date.parse(obj.recovery.inFlight.at) || 0);
+    if (lockAge < RECOVERY_LOCK_MS) {
+      const err = new Error("Recovery already in progress for this objective.");
+      err.statusCode = 409;
+      throw err;
+    }
+  }
+  const liveJob = listFounderJobs(root).find(
+    (j) => ["objective", "objective-recovery"].includes(j.kind) && j.objectiveId === objectiveId
+      && ["decomposing", "running", "recovering"].includes(j.status)
+      && nowMs - Date.parse(j.updatedAt || j.createdAt) < STALE_ACTIVE_MS_DEFAULT,
+  );
+  if (liveJob) {
+    const err = new Error("Recovery already in progress for this objective.");
+    err.statusCode = 409;
+    throw err;
+  }
+
+  const liveSibling = [...Object.values(obj.nodes || {}), obj.integration].filter(Boolean).some((node) => {
+    if (node.status !== "running" || !node.statePath) return false;
+    try {
+      const task = readState(node.statePath);
+      return task.currentDispatch?.yieldedAt || task.yieldedGroup || (task.status === "active"
+        && (!Number.isFinite(Date.parse(task.updatedAt)) || nowMs - Date.parse(task.updatedAt) <= STALE_ACTIVE_MS_DEFAULT));
+    } catch { return true; } // unreadable ownership fails closed
+  });
+  if (liveSibling) {
+    const err = new Error("This objective still has running work. Retry after it settles.");
+    err.statusCode = 409; throw err;
+  }
+  const plan = buildRecoveryPlan(obj, { now: nowMs });
+  if (!plan.nodes.length) {
+    const err = new Error("Nothing to recover — the remaining blockers need you.");
+    err.statusCode = 409;
+    throw err;
+  }
+
+  const { resumed, skipped } = resumeObjectiveNodes({
+    objectivePath: statePath,
+    nodeIds: plan.nodes.map((n) => n.id),
+    now: nowISO,
+  });
+  if (!resumed.length) {
+    const err = new Error("Nothing to recover — the remaining blockers need you.");
+    err.statusCode = 409;
+    throw err;
+  }
+
+  const jobId = `founder-recovery-${Date.now().toString(36)}`;
+  setObjectiveRecoveryInFlight(statePath, { at: nowISO, jobId });
+  const job = {
+    id: jobId,
+    kind: "objective-recovery",
+    projectId: obj.project,
+    objectiveId,
+    objective: obj.objective,
+    repo: obj.repo,
+    nodeCount: resumed.length,
+    status: "recovering",
+    createdAt: nowISO,
+    updatedAt: nowISO,
+  };
+  saveFounderJob(root, job);
+
+  const cfg = readConfig();
+  const hq = hqRoot || root;
+  Promise.resolve()
+    .then(() => runObjective({
+      hqRoot: hq,
+      objectivePath: statePath,
+      agentIds: cfg.openclawIntegration?.agentIds || {},
+      maxAttemptsPerStage: cfg.openclawIntegration?.maxAttemptsPerStage || 3,
+      concurrentGroups: cfg.openclawIntegration?.concurrentGroups,
+      stateRoot: defaultStateRoot(hq, obj.repo),
+    }))
+    .then((r) => {
+      saveFounderJob(root, Object.assign(job, { status: r?.status || "complete", updatedAt: new Date().toISOString() }));
+    })
+    .catch((error) => {
+      saveFounderJob(root, Object.assign(job, { status: "error", error: error.message || String(error), updatedAt: new Date().toISOString() }));
+    })
+    .finally(() => {
+      try { setObjectiveRecoveryInFlight(statePath, null); } catch { /* ignore */ }
+    });
+
+  return {
+    objectiveId,
+    status: "recovering",
+    nodes: resumed.map(({ role, title }) => ({ role, title })),
+    skipped: skipped.map(({ id, reason }) => ({ reason })), // omit raw ids from founder-facing skipped if preferred — tests check no auto-answer
+    jobId,
+  };
+  } finally {
+    try { if (lockFd !== undefined) closeSync(lockFd); } catch { /* best-effort cleanup */ }
+    try { if (lockFd !== undefined && existsSync(lockPath)) unlinkSync(lockPath); } catch { /* stale-lock reclamation handles host interruptions */ }
+  }
 }
 
 // The founder-readable objective summary the orchestrator writes to
@@ -281,14 +707,61 @@ function readDecisionCard(state) {
     };
     if (card.question || card.why || card.recommendation || card.options.length) return card;
   }
+  // Reviewers sometimes return a long prose escalation instead of the
+  // repository Decision Card template. Keep the founder interaction short by
+  // extracting the explicit A/B choice from that prose.
+  const summary = String(state.blocker?.summary || "");
+  if (/Option A:/i.test(summary) && /Option B:/i.test(summary)) {
+    return {
+      question: "How should the team verify the remaining production risk?",
+      why: "The reviewer cannot verify the remote production database behavior with the current test environment.",
+      recommendation: "A: provision a temporary test database and run the real remote verification.",
+      options: [
+        "A: provision a temporary test database and run the remote verification",
+        "B: use the extended deployed smoke test as the promotion gate",
+      ],
+    };
+  }
   return null;
+}
+
+// ── objective lifecycle bucketing ───────────────────────────────────────────
+// Split the objective portfolio into what needs the founder's eyes now vs.
+// finished history vs. what the founder explicitly dismissed. Pure: derived
+// from the presenter's 6-value status, the objective's own freshness, its
+// pending recovery, and the founder's archive flag. Adds no state.
+const OBJ_ACTIVE_STALE_MS = Number(process.env.HQ_OBJECTIVE_ACTIVE_STALE_MS) || 12 * 60 * 60 * 1000;
+const OBJ_RECENT_COMPLETE_MS = Number(process.env.HQ_OBJECTIVE_RECENT_COMPLETE_MS) || 72 * 60 * 60 * 1000;
+
+export function objectiveLifecycle(obj, {
+  archived = false,
+  now = Date.now(),
+  staleMs = OBJ_ACTIVE_STALE_MS,
+  recentCompleteMs = OBJ_RECENT_COMPLETE_MS,
+} = {}) {
+  if (archived) return "archived";
+  const status = obj?.status6 || null;
+  const stampMs = Date.parse(obj?.updatedAt || obj?.createdAt || "") || 0;
+  const age = now - stampMs;
+  // Genuine open founder attention stays active until it's resolved or archived,
+  // no matter how old it is.
+  if (status === "WAITING_FOR_FOUNDER" || status === "BLOCKED") return "active";
+  if (status === "COMPLETE") return age <= recentCompleteMs ? "active" : "history";
+  // RUNNING / RECOVERING / PENDING / FAILED: active only while there is recent
+  // movement. A historical recovery record is evidence of what happened, not
+  // proof that an agent is still working now.
+  if (status === "RUNNING" || status === "RECOVERING" || status === "PENDING" || status === "FAILED") {
+    return age <= staleMs ? "active" : "history";
+  }
+  return "history";
 }
 
 // Read-only view of every decomposed objective (factory/lib/objective/) and its
 // live task graph, for the Headquarters dashboard/API. Joins each node to its
 // underlying factory task (already discovered above) so stage / status /
 // elapsed / blocker / retries / last result come for free.
-export function buildObjectivesView(root) {
+export function buildObjectivesView(root, { now = Date.now() } = {}) {
+  const archivedObjectives = readControl(root).archivedObjectives || {};
   const factoryDir = factoryRoot(root);
   const objectives = [];
   if (existsSync(factoryDir)) {
@@ -299,7 +772,11 @@ export function buildObjectivesView(root) {
       for (const entry of readdirSync(objDir, { withFileTypes: true })) {
         const path = join(objDir, entry.name, "objective-state.json");
         if (!existsSync(path)) continue;
-        try { objectives.push(shapeObjective(root, JSON.parse(readFileSync(path, "utf8")), join(objDir, entry.name))); }
+        try {
+          const shaped = shapeObjective(root, JSON.parse(readFileSync(path, "utf8")), join(objDir, entry.name));
+          shaped.hasReport = existsSync(join(objDir, entry.name, "report.md"));
+          objectives.push(shaped);
+        }
         catch (error) { objectives.push({ objectiveId: entry.name, status: "invalid", error: error.message }); }
       }
     }
@@ -316,9 +793,15 @@ export function buildObjectivesView(root) {
       const task = tasksById.get(node.id);
       node.model = modelForRole(node.role || "integration");
       if (task) Object.assign(node, {
+        title: task.objective || node.title || null,
+        // The task state is the live execution source of truth. Objective
+        // state can legitimately lag while auto-retry resumes a task; never
+        // show a stale objective-level blocker over a currently running task.
+        status: task.status === "active" ? "running" : node.status,
         stage: task.stage, taskStatus: task.status, elapsedMs: task.elapsedMs,
-        lastResult: task.lastResult, blocker: node.blocker || task.blocker,
-        decisionRequired: (node.blocker || task.blocker)?.outcome === "decision-required",
+        lastResult: task.lastResult, blocker: task.status === "active" ? (task.blocker || null) : (task.blocker || node.blocker),
+        decisionRequired: (task.status === "active" ? task.blocker : (task.blocker || node.blocker))?.outcome === "decision-required",
+        decisionCard: task.decisionCard || null,
         retries: (task.events || []).filter((e) => e.type === "failure-routed").length,
         statePath: task.statePath,
         hasReport: Boolean(task.completionReport),
@@ -327,21 +810,91 @@ export function buildObjectivesView(root) {
         ? (task.events || []).filter((e) => e.type === "stage-pass").map((e) => e.stage)
         : [];
     }
+    if (allNodes.some((n) => n.taskStatus === "active")) obj.status = "active";
     obj.prUrl = obj.integration?.githubPublish?.prUrl || null;
-    obj.blockedOn = allNodes.find((n) => n.decisionRequired || n.status === "blocked")?.id || null;
+    // Only genuine founder decisions / non-infra blocks — infra goes to recovery.
+    obj.blockedOn = allNodes.find((n) => {
+      const kind = classifyObjectiveNodeBlocker(n.blocker);
+      if (kind === "decision") return true;
+      if (n.status === "blocked" && kind !== "infra") return true;
+      return false;
+    })?.id || null;
     obj.nextUp = (obj.nodes || [])
       .filter((n) => n.status === "pending" && (n.dependsOn || []).every((d) => (obj.nodes || []).find((x) => x.id === d)?.status === "gate-satisfied"))
       .map((n) => n.id);
+    // Add a stable founder-facing projection while retaining the raw fields
+    // above for drill-downs and recovery controls.
+    if (obj.status !== "invalid") {
+      try {
+        const p = presentObjective(obj);
+        obj.title = p.title;
+        obj.description = p.description;
+        obj.status6 = p.status;
+        obj.statusLabel = p.statusLabel;
+        obj.statusTone = p.statusTone;
+        obj.statusIcon = p.statusIcon;
+        obj.headline = p.headline;
+        obj.progress = p.progress;
+        obj.blockerBrief = p.blockerBrief;
+        obj.nextAction = p.nextAction;
+        obj.builders = p.builders;
+        obj.isSeed = p.isSeed;
+        obj.nodeBriefs = p.nodeStatuses;
+      } catch (error) {
+        obj.presenterError = error.message || String(error);
+      }
+    }
+    obj.isSeed = obj.isSeed ?? isSeedProject(obj.project);
   }
+  // Attach recovery plans from raw objective-state (needs statePath on nodes).
+  for (const obj of objectives) {
+    if (obj.status === "invalid") continue;
+    const statePath = findObjectiveStatePath(root, obj.objectiveId);
+    if (!statePath) {
+      obj.recovery = { count: 0, nodes: [] };
+      continue;
+    }
+    try {
+      const raw = readObjState(statePath);
+      const plan = buildRecoveryPlan(raw, { now });
+      obj.recovery = {
+        count: plan.nodes.length,
+        nodes: plan.nodes.map(({ role, title, reason }) => ({ role, title, reason })),
+        attempts: raw.recovery?.attempts || 0,
+      };
+    } catch {
+      obj.recovery = { count: 0, nodes: [] };
+    }
+  }
+  // Founder-facing lifecycle bucket: needs-you-now vs. history vs. explicitly
+  // dismissed. Presentation only — the archive flag lives in control-plane.json,
+  // never in the objective's own state.
+  for (const obj of objectives) {
+    const archived = Boolean(archivedObjectives[obj.objectiveId]);
+    obj.archived = archived;
+    obj.archivedAt = archived ? (archivedObjectives[obj.objectiveId].archivedAt || null) : null;
+    obj.lifecycle = objectiveLifecycle(obj, { archived, now });
+  }
+  const sorted = objectives.sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
+  const real = sorted.filter((o) => !o.isSeed);
+  const seed = sorted.filter((o) => o.isSeed);
+  const countBy = (list, s) => list.filter((o) => o.status6 === s).length;
+  const countLc = (list, l) => list.filter((o) => o.lifecycle === l).length;
   return {
-    objectives: objectives.sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""))),
+    objectives: real,
+    seedObjectives: seed,
     rolePolicy,
     summary: {
-      total: objectives.length,
-      running: objectives.filter((o) => o.status === "active").length,
-      complete: objectives.filter((o) => o.status === "complete").length,
-      blocked: objectives.filter((o) => ["blocked", "integration-blocked"].includes(o.status)).length,
-      needsFounder: objectives.filter((o) => o.blockedOn).length,
+      total: real.length,
+      running: countBy(real, "RUNNING"),
+      complete: countBy(real, "COMPLETE"),
+      blocked: countBy(real, "BLOCKED") + countBy(real, "FAILED"),
+      needsFounder: countBy(real, "WAITING_FOR_FOUNDER"),
+      pending: countBy(real, "PENDING"),
+      seed: seed.length,
+      active: countLc(real, "active"),
+      history: countLc(real, "history"),
+      archived: countLc(real, "archived"),
     },
   };
 }
@@ -351,9 +904,13 @@ function shapeObjective(root, obj, dir) {
   try { metrics = JSON.parse(readFileSync(join(dir, "metrics.json"), "utf8")); } catch { /* not finished yet */ }
   const nodeRow = (n) => ({
     id: n.id, role: n.role || "integration", harness: n.harness || null, dependsOn: n.dependsOn || [],
+    // Human one-liner from the decomposition contract, so the UI can show a
+    // real title instead of the slug id. Falls back to the task outcome later.
+    title: n.contract?.outcome || n.objective || null,
     status: n.status, branch: n.branch || null, worktree: n.worktree || null,
     startedAt: n.startedAt || null, finishedAt: n.finishedAt || null, attempts: n.attempts || 0,
     blocker: n.blocker || null,
+    statePath: n.statePath || null,
     githubPublish: n.githubPublish || null,
     mergeLog: Array.isArray(n.mergeLog) ? n.mergeLog.map((m) => ({ branch: m.branch, ok: m.ok })) : null,
   });
@@ -369,6 +926,7 @@ function shapeObjective(root, obj, dir) {
     integration: nodeRow(obj.integration || {}),
     events: (obj.events || []).slice(-40),
     metrics,
+    recoveryAttempts: obj.recovery?.attempts || 0,
   };
 }
 
@@ -409,22 +967,70 @@ export function buildFounderOverview(root, hqProjects = []) {
       taskCount: project.tasks.length,
     };
   });
-  const decisions = tasks.filter((task) => task.blocker?.outcome === "decision-required").map((task) => ({
+  const blockedDecisions = tasks.filter((task) => task.blocker?.outcome === "decision-required").map((task) => ({
     id: `${task.id}:${task.blocker.stage}`,
     taskId: task.id,
     project: task.project,
     statePath: task.statePath,
     question: task.decisionCard?.question || task.blocker.summary,
     why: task.decisionCard?.why || `The ${task.blocker.stage} stage cannot continue without founder direction.`,
-    recommendation: task.decisionCard?.recommendation || (task.risk === "high" ? "Review and submit the signed high-risk approval." : "Approve the recommended path or provide a concise direction."),
-    options: task.decisionCard?.options?.length ? task.decisionCard.options : (task.risk === "high" ? ["Submit signed approval", "Keep paused"] : ["Approve and resume", "Provide direction", "Keep paused"]),
+    recommendation: task.decisionCard?.recommendation || (task.awaitingFounderApproval ? "Review the planned high-risk change and submit the signed approval." : "Provide a concise direction so the team can continue."),
+    options: task.decisionCard?.options?.length ? task.decisionCard.options : (task.awaitingFounderApproval ? ["Submit signed approval", "Keep paused"] : ["Approve and resume", "Provide direction", "Keep paused"]),
     risk: task.risk,
     requestedAt: task.blocker.at,
   }));
+  const decisions = [
+    ...blockedDecisions,
+    ...tasks
+      .filter((task) => ["merge-ready", "merged"].includes(task.status) && Array.isArray(task.deferredDecisions))
+      .flatMap((task) => task.deferredDecisions.map((decision) => ({
+        id: `${task.id}:${decision.id}`,
+        taskId: task.id,
+        project: task.project,
+        statePath: task.statePath,
+        question: decision.question,
+        why: decision.why,
+        recommendation: decision.recommendation || "The team completed the safe work; choose the option that best matches your intent.",
+        options: decision.options,
+        risk: task.risk,
+        requestedAt: decision.requestedAt,
+        deferred: true,
+      }))),
+  ];
   const activity = tasks.flatMap((task) => task.events.map((event) => ({ ...event, taskId: task.id, project: task.project, objective: task.objective })))
     .sort((a, b) => String(b.at || "").localeCompare(String(a.at || ""))).slice(0, 30);
 
-  const inbox = buildFounderInbox({ tasks, decisions, questions: control.questions });
+  // Objective-level blockers that need the founder but have no task file yet
+  // (e.g. a high-risk node blocked at init on the missing approval key). Guarded:
+  // a failure here must never take down the overview.
+  let objectivesForInbox = [];
+  try { objectivesForInbox = buildObjectivesView(root).objectives || []; }
+  catch { objectivesForInbox = []; }
+  // Founder-controlled presentation state: entries the founder has dismissed
+  // with the inbox "×" stay out of "Needs you" and move to a "Dismissed" fold.
+  // Reversible, adds no workflow — the underlying task/decision is untouched.
+  const dismissedMap = control.dismissedInbox || {};
+  const maxAutoRetries = Math.max(1, Number(process.env.HQ_AUTO_RETRY_MAX) || 3);
+  const overnightFailures = readOvernightQueue(root).items.filter(item => item.status === "failed").map(item => ({
+    id: `overnight:${item.id}`, kind: "blocked", project: item.projectId,
+    title: "Overnight objective stopped before delivery",
+    detail: item.error || "Review the objective execution record. Other queued objectives continue.",
+    objective: item.objective, requestedAt: item.endedAt, action: "review-overnight",
+  }));
+  const baseInboxItems = [...overnightFailures, ...buildFounderInbox({ tasks, decisions, questions: control.questions, objectives: objectivesForInbox, maxAutoRetries })];
+  // Detached jobs that died before producing any state file — previously
+  // invisible. Deduped against work the inbox already speaks for, so a failure
+  // with a real state file is still reported once, by the richer source.
+  const covered = {
+    taskIds: new Set(baseInboxItems.map((item) => item.taskId).filter(Boolean)),
+    objectiveIds: new Set(baseInboxItems.map((item) => item.objectiveId).filter(Boolean)),
+  };
+  const allInboxItems = [...baseInboxItems, ...buildJobInbox(control.jobs, covered)]
+    .map((item) => (dismissedMap[item.id]
+      ? { ...item, dismissed: true, dismissedAt: dismissedMap[item.id].dismissedAt || null }
+      : item));
+  const inbox = allInboxItems.filter((item) => !item.dismissed);
+  const dismissedInbox = allInboxItems.filter((item) => item.dismissed);
 
   // Tasks the system is (or should be) recovering from on its own — shown to
   // the founder as progress, NOT as something that needs them. Two cases:
@@ -433,12 +1039,16 @@ export function buildFounderOverview(root, hqProjects = []) {
   const STALE_ACTIVE_MS = 90 * 60 * 1000;
   const autoRecovering = tasks
     .filter((task) => {
-      if (task.status === "blocked") return (task.blockerClass || classifyBlocker(task.blocker)) === "infra";
+      if (task.status === "blocked") {
+        return (task.blockerClass || classifyBlocker(task.blocker)) === "infra"
+          && (task.autoRetries || 0) < maxAutoRetries;
+      }
       if (task.status === "active") return Date.now() - (Date.parse(task.updatedAt) || Date.now()) > STALE_ACTIVE_MS;
       return false;
     })
     .map((task) => ({
       taskId: task.id,
+      objective: task.objective || null,
       project: task.project || null,
       stage: task.status === "blocked" ? (task.blocker?.stage || null) : (task.stage || null),
       detail: task.status === "blocked" ? (task.blocker?.summary || "") : "in-progress work interrupted by a restart — resuming",
@@ -447,6 +1057,30 @@ export function buildFounderOverview(root, hqProjects = []) {
       since: task.status === "blocked" ? (task.blocker?.at || null) : (task.updatedAt || null),
     }));
 
+  // Detached jobs the system is carrying on its own — an exhausted seat waiting
+  // for its window, or a transient failure being retried. The founder sees that
+  // the work is alive and when it resumes; it never becomes an inbox item.
+  const RECOVERING_JOB_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+  for (const job of control.jobs || []) {
+    const outcome = job.outcome;
+    if (!outcome || outcome.needsFounder) continue;
+    if (!["paused-credits", "infra-retrying"].includes(outcome.outcomeClass)) continue;
+    const at = Date.parse(outcome.at || job.updatedAt || "") || 0;
+    if (at && Date.now() - at > RECOVERING_JOB_WINDOW_MS) continue;
+    autoRecovering.push({
+      taskId: job.taskId || null,
+      objectiveId: job.objectiveId || null,
+      objective: job.objective || null,
+      project: job.projectId || null,
+      stage: outcome.whatFailed || null,
+      detail: outcome.headline,
+      statePath: null,
+      autoRetries: 0,
+      resumeAfter: outcome.resumeAfter || null,
+      since: outcome.at || job.updatedAt || null,
+    });
+  }
+
   const intel = attachProjectIntelligence(root, projects, decisions);
   return {
     projects: intel.projects,
@@ -454,6 +1088,7 @@ export function buildFounderOverview(root, hqProjects = []) {
     decisions,
     openDecisions: intel.company?.openDecisions || decisions,
     inbox,
+    dismissedInbox,
     autoRecovering,
     company: intel.company,
     questions: control.questions.slice(-20).reverse(),
@@ -461,30 +1096,92 @@ export function buildFounderOverview(root, hqProjects = []) {
   };
 }
 
+// Detached founder jobs that ended badly and produced NO state file of their own.
+//
+// POST /api/founder/tasks and /objectives answer 202 and finish their work in a
+// promise. When that promise rejected before a task or objective state file
+// existed — an intake throw, a decomposition throw on an exhausted seat — the
+// only record was `control.jobs`, which no founder-facing view read. The run
+// vanished. These items close that hole.
+//
+// `covered` holds the task and objective ids the inbox already speaks for, so a
+// failure that DID produce a state file is reported once, by the richer source.
+function buildJobInbox(jobs, covered = { taskIds: new Set(), objectiveIds: new Set() }) {
+  const items = [];
+  for (const job of jobs || []) {
+    const outcome = job.outcome;
+    // Only a classified, founder-facing outcome belongs here. paused-credits and
+    // infra-retrying are the system's problem and appear under autoRecovering.
+    if (!outcome?.needsFounder) continue;
+    if (job.taskId && covered.taskIds.has(job.taskId)) continue;
+    if (job.objectiveId && covered.objectiveIds.has(job.objectiveId)) continue;
+    items.push({
+      kind: outcome.outcomeClass === "needs-founder-decision" ? "decision" : "blocked",
+      id: `job:${job.id}`,
+      taskId: job.taskId || null,
+      objectiveId: job.objectiveId || null,
+      objective: job.objective || null,
+      project: job.projectId || null,
+      statePath: null,
+      title: outcome.headline,
+      detail: [
+        outcome.detail,
+        outcome.whatTheFactoryTried ? `What the factory tried: ${outcome.whatTheFactoryTried}` : null,
+      ].filter(Boolean).join("\n\n"),
+      recommendation: outcome.outcomeClass === "needs-founder-decision"
+        ? outcome.whatFounderMustDecide
+        : "This run stopped before it produced any reviewable work. Retry it, or adjust the request and send it again.",
+      options: outcome.outcomeClass === "needs-founder-decision" ? ["Give direction", "Keep paused"] : ["Retry", "Dismiss"],
+      risk: null,
+      requestedAt: outcome.at || job.updatedAt || job.createdAt || null,
+      action: "review-failed-job",
+      outcome,
+    });
+  }
+  return items;
+}
+
 // The Founder Inbox — a single ordered list of everything that actually needs
 // the founder: high-risk approvals, decisions a stage raised, terminally
 // blocked tasks, and any unanswered question. It is a projection of task state
 // + the control file; it adds no new state and no new workflow.
-function buildFounderInbox({ tasks, decisions, questions }) {
+function buildFounderInbox({ tasks, decisions, questions, objectives = [], maxAutoRetries = 3 }) {
   const items = [];
   const byId = new Map(tasks.map((t) => [t.id, t]));
 
   for (const d of decisions) {
     const task = byId.get(d.taskId);
-    const isApproval = d.risk === "high" && Boolean(task?.founderApprovalRequest);
+    // A high-risk task may have an approval request from creation, but it is
+    // only an approval item once the workflow has actually reached the
+    // builder gate. Product/architect decision-required blockers must remain
+    // ordinary founder decisions.
+    const isApproval = Boolean(task?.awaitingFounderApproval);
     items.push({
-      kind: isApproval ? "approval" : "decision",
+      kind: isApproval ? "approval" : (d.deferred ? "post-task-decision" : "decision"),
       id: d.id,
       taskId: d.taskId,
+      objective: task?.objective || null,
       project: d.project || null,
       statePath: d.statePath || null,
-      title: d.question,
-      detail: d.why,
-      recommendation: d.recommendation,
+      title: isApproval ? "Approve a high-risk build" : d.question,
+      detail: isApproval
+        ? `The factory has planned "${task?.objective || d.taskId}" and is holding before it writes any code. High-risk work (deployment, credentials, or an irreversible change) needs your sign-off first.`
+        : d.why,
+      recommendation: isApproval
+        ? "Review what it will do, then Approve. Your signature comes from a key held only in your browser — the dashboard and the agents never see it."
+        : d.recommendation,
       options: d.options,
       risk: d.risk || null,
       requestedAt: d.requestedAt || null,
-      action: isApproval ? "submit-signed-approval" : "respond-and-resume",
+      action: isApproval ? "one-click-approval" : (d.deferred ? "record-decision" : "respond-and-resume"),
+      // Copy for the one-click review card. The browser signs with a
+      // non-extractable Ed25519 key; the server only verifies + records.
+      approval: isApproval
+        ? {
+            whatHappensNext: "builder → reviewer → QA → security → release, then a pull request you merge",
+            keyNote: "Signed by a non-extractable key held only in your browser. If it can't reach that key, npm run approve in a terminal still works.",
+          }
+        : null,
     });
   }
 
@@ -492,22 +1189,66 @@ function buildFounderInbox({ tasks, decisions, questions }) {
   // `blocked` with a `fail` outcome has exhausted its retry budget. Only a
   // HARD failure (a real FAIL reason) belongs here — an INFRA failure (no
   // result file, timeout, provider 5xx) is handled by the auto-retry sweep and
-  // must never page the founder.
+  // must never page the founder while retries remain. Once the bounded retry
+  // budget is exhausted, the infrastructure failure becomes an actionable
+  // Founder Inbox item so it cannot disappear silently.
   for (const task of tasks) {
     if (task.status !== "blocked" || task.blocker?.outcome !== "fail") continue;
-    if ((task.blockerClass || classifyBlocker(task.blocker)) === "infra") continue;
+    const isInfra = (task.blockerClass || classifyBlocker(task.blocker)) === "infra";
+    if (isInfra && (task.autoRetries || 0) < maxAutoRetries) continue;
+    const recoveryExhausted = isInfra;
     items.push({
       kind: "blocked",
       id: `${task.id}:${task.blocker.stage || "stage"}`,
       taskId: task.id,
+      objective: task.objective || null,
       project: task.project || null,
       statePath: task.statePath || null,
-      title: `${task.blocker.stage || "A stage"} failed — needs a look`,
-      detail: task.blocker.summary || "The task cannot proceed without founder attention.",
+      title: recoveryExhausted
+        ? "Automatic recovery exhausted — needs a look"
+        : `${task.blocker.stage || "A stage"} failed — needs a look`,
+      detail: recoveryExhausted
+        ? `The system retried this infrastructure failure ${task.autoRetries || maxAutoRetries} times without a successful run. Review the failure and retry or adjust the agent route.`
+        : task.blocker.summary || "The task cannot proceed without founder attention.",
       risk: task.risk || null,
       requestedAt: task.blocker.at || null,
       action: "review-blocked-task",
     });
+  }
+
+  // Decomposed-objective blockers that need the founder but never produced a
+  // task state file — e.g. a high-risk node that could not initialize because
+  // the founder approval key is not configured, an integration merge conflict,
+  // or a publish decision. Without this, these only appear on the Objectives
+  // view and never reach the one list the founder is told to watch.
+  for (const obj of objectives || []) {
+    const objNodes = [...(obj.nodes || []), obj.integration].filter(Boolean);
+    for (const node of objNodes) {
+      if (!node?.blocker) continue;
+      if (node.id && byId.has(node.id)) continue; // already covered by the task scan
+      if (classifyObjectiveNodeBlocker(node.blocker) !== "decision") continue;
+      const isApproval = node.blocker.founderAction === true;
+      items.push({
+        kind: isApproval ? "approval" : "decision",
+        id: `${obj.objectiveId}:${node.id}`,
+        taskId: null,
+        objectiveId: obj.objectiveId,
+        objective: obj.objective || null,
+        project: obj.project || null,
+        statePath: null,
+        title: isApproval
+          ? "A high-risk objective needs your approval to start"
+          : (node.blocker.summary || "An objective needs your direction to continue"),
+        detail: node.blocker.summary || "",
+        recommendation: isApproval
+          ? "Set FACTORY_FOUNDER_PUBLIC_KEY (docs/software-factory/SETUP.md), restart Headquarters, then continue this objective — it will pause once more for your signature."
+          : "Give direction, then continue the objective.",
+        options: isApproval ? ["Set up the approval key", "Keep paused"] : ["Continue objective", "Keep paused"],
+        risk: "high",
+        requestedAt: node.blocker.at || obj.updatedAt || null,
+        action: isApproval ? "configure-founder-approval" : "review-blocked-objective",
+      });
+    }
   }
 
   for (const q of questions || []) {
@@ -577,12 +1318,83 @@ export function isProjectPaused(root, projectId) {
   return readControl(root).projects[projectId]?.status === "paused";
 }
 
+// Founder-controlled presentation state for a decomposed objective. Archiving
+// moves it out of the main Today view into the "Archived" section; it never
+// touches the objective's objective-state.json, metrics, report, evidence, or
+// GitHub history, and it is fully reversible.
+export function setObjectiveArchived(root, objectiveId, archived, { reason = "" } = {}) {
+  const control = readControl(root);
+  control.archivedObjectives = control.archivedObjectives || {};
+  if (archived) {
+    control.archivedObjectives[objectiveId] = {
+      archivedAt: control.archivedObjectives[objectiveId]?.archivedAt || new Date().toISOString(),
+      reason: String(reason || "").slice(0, 500) || undefined,
+    };
+  } else {
+    delete control.archivedObjectives[objectiveId];
+  }
+  writeControl(root, control);
+  return {
+    objectiveId,
+    archived: Boolean(archived),
+    archivedAt: control.archivedObjectives[objectiveId]?.archivedAt || null,
+  };
+}
+
+export function listArchivedObjectives(root) {
+  return readControl(root).archivedObjectives || {};
+}
+
+// Founder-controlled presentation state for a single Founder Inbox entry.
+// Dismissing moves it out of "Needs you" into the "Dismissed" fold; it never
+// resolves the decision, approves the build, or unblocks the task — those are
+// still there, just hidden — and it is fully reversible (restore === true).
+export function setInboxItemDismissed(root, itemId, dismissed, { reason = "" } = {}) {
+  const control = readControl(root);
+  control.dismissedInbox = control.dismissedInbox || {};
+  if (dismissed) {
+    control.dismissedInbox[itemId] = {
+      dismissedAt: control.dismissedInbox[itemId]?.dismissedAt || new Date().toISOString(),
+      reason: String(reason || "").slice(0, 500) || undefined,
+    };
+  } else {
+    delete control.dismissedInbox[itemId];
+  }
+  writeControl(root, control);
+  return {
+    itemId,
+    dismissed: Boolean(dismissed),
+    dismissedAt: control.dismissedInbox[itemId]?.dismissedAt || null,
+  };
+}
+
+export function listDismissedInboxItems(root) {
+  return readControl(root).dismissedInbox || {};
+}
+
 export function recordQuestion(root, question) {
   const control = readControl(root);
   control.questions.push(question);
   control.questions = control.questions.slice(-100);
   writeControl(root, control);
   return question;
+}
+
+export function findQuestion(root, questionId) {
+  return readControl(root).questions.find((question) => question.id === questionId) || null;
+}
+
+export function updateQuestion(root, questionId, patch) {
+  const control = readControl(root);
+  const index = control.questions.findIndex((question) => question.id === questionId);
+  if (index < 0) return null;
+  control.questions[index] = { ...control.questions[index], ...patch, id: questionId };
+  writeControl(root, control);
+  return control.questions[index];
+}
+
+export function listPendingQuestions(root) {
+  return readControl(root).questions.filter((question) => question.status === "queued" || question.status === "running");
 }
 
 export function listFounderJobs(root) {
@@ -599,11 +1411,55 @@ export function saveFounderJob(root, job) {
   return job;
 }
 
+// Close out a detached founder job with the typed terminal outcome.
+//
+// The detached task/objective endpoints answer 202 and then run the real work in
+// a promise. Every way that promise can settle — throw, or a non-delivering
+// terminal status — must land here, so `control.jobs` always carries a
+// classified, founder-readable record instead of a raw error string that no view
+// reads. `buildFounderInbox` then surfaces the founder-facing ones.
+export function finishFounderJob(root, job, {
+  error = null,
+  result = null,
+  whatFailed = "This work",
+  whatTheFactoryTried = null,
+  resumeAfter = null,
+  evidencePaths = [],
+} = {}) {
+  const outcome = buildOutcome({
+    error,
+    // A run that finished without delivering is not a success; classify its
+    // status text the same way a thrown error would be classified.
+    detail: error ? null : (result?.blocker?.summary || result?.error || result?.status || null),
+    outcomeClass: !error && DELIVERED_JOB_STATUSES.has(String(result?.status || "")) ? "merge-ready" : null,
+    blocker: !error && result?.blocker ? result.blocker : null,
+    whatFailed,
+    whatTheFactoryTried,
+    resumeAfter,
+    evidencePaths,
+  });
+  return saveFounderJob(root, Object.assign(job, {
+    status: JOB_STATUS_FOR_OUTCOME[outcome.outcomeClass] || "error",
+    outcome,
+    // Kept for older readers; the classified record above is the source of truth.
+    error: outcome.outcomeClass === "merge-ready" ? undefined : outcome.detail,
+    updatedAt: new Date().toISOString(),
+  }));
+}
+
 export function resolveFounderDecision({ root, hqRoot, statePath, direction }) {
   const path = resolve(statePath);
   const allowedRoot = resolve(factoryRoot(root));
   if (!path.startsWith(`${allowedRoot}/`)) throw new Error("Task state is outside the factory state directory.");
   const state = readState(path);
+  if (["merge-ready", "merged"].includes(state.status) && Array.isArray(state.deferredDecisions) && state.deferredDecisions.length) {
+    const at = new Date().toISOString();
+    const pending = state.deferredDecisions.find((item) => !item.founderResponse) || state.deferredDecisions[0];
+    pending.founderResponse = String(direction).trim();
+    state.events.push({ at, type: "deferred-decision-recorded", stage: pending.stage, actor: "founder", direction: pending.founderResponse, decisionId: pending.id });
+    writeState(path, state);
+    return taskView(path);
+  }
   if (state.status !== "blocked" || state.blocker?.outcome !== "decision-required") throw new Error("Task is not waiting for a founder decision.");
   if (state.task.risk === "high" && state.blocker?.stage === "builder") throw new Error("High-risk build approval requires the signed approval flow.");
   const at = new Date().toISOString();

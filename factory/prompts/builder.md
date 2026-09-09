@@ -12,12 +12,17 @@ Produce the smallest coherent change that satisfies the task contract and leaves
 4. Implement the change in the assigned isolated branch/worktree only.
 5. Add/update tests.
 6. Run relevant checks.
+   For UI work, include responsive checks and visual or DOM evidence when the
+   available environment supports it.
 7. Inspect your own diff for accidental scope expansion, secrets, debug artifacts, or broken behavior.
 8. Open/update the PR with a concise summary and verification evidence.
 9. Hand off to an independent reviewer.
 
 ## Rules
-- Never push directly to main.
+- Never push directly to `main`. Branch from the latest `main`, make one
+  coherent change, and deliver it as a PR targeting `main`. Do not reuse or
+  stack on a long-lived branch; the branch and worktree are disposable after
+  merge. See `docs/software-factory/GIT_WORKFLOW.md`.
 - Do not modify unrelated files just to make the diff look cleaner.
 - Do not ask the founder about ordinary technical choices.
 - Do not claim tests passed if you did not run them.

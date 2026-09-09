@@ -75,7 +75,7 @@ export const DEFAULT_PROTOCOL = {
       reason: "Legal / compliance implications need the founder.",
     },
   ],
-  riskBinding: { high: "decision-request" },
+  riskBinding: { high: "signed-approval-before-builder" },
   sla: { decisionRequestReminderHours: 24, blockingQuestionTimeoutHours: 4 },
 };
 
@@ -105,12 +105,9 @@ export function classifyDecision({ text = "", fields = {}, protocol = DEFAULT_PR
   const proto = protocol && Array.isArray(protocol.triggers) ? protocol : DEFAULT_PROTOCOL;
   const haystack = String(text || "").toLowerCase();
 
-  // High-risk tasks are always a founder decision (mirrors the engine's
-  // signed-approval-before-build gate).
-  const riskOutcome = proto.riskBinding?.[fields.risk];
-  if (riskOutcome === "decision-request") {
-    return { outcome: "decision-request", reason: "High-risk work requires founder approval before the risky action.", trigger: "risk:high" };
-  }
+  // Risk is enforced by the workflow's builder gate. Do not turn the same
+  // high-risk classification into a second intake decision request; a genuine
+  // product/privacy choice still matches its explicit trigger below.
 
   for (const trigger of proto.triggers) {
     if (Array.isArray(trigger.anyKeyword) &&

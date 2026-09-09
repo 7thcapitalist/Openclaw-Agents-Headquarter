@@ -13,12 +13,27 @@ This repository is an operations system for coordinating coding and non-coding a
 machine-readable authority for factory mode, routing, roles, and gates. If they
 disagree, stop and resolve the discrepancy rather than silently choosing one.
 
+## Repository and Git workflow — NON-NEGOTIABLE
+
+`main` is the single canonical and permanent branch. Every repository change —
+by the founder, Claude Code, Codex, Cursor, OpenClaw factory agents, automated
+recovery, QA, or infrastructure jobs — MUST land through a new Pull Request
+targeting `main`. **Never push directly to `main`.**
+
+Ephemeral PR branches/worktrees are allowed but must stay short-lived: one
+coherent change, then PR, review, merge, delete branch, delete worktree. Do not
+keep feature, development, integration, or per-agent branches, or long-lived
+worktrees. Independent changes are separate PRs, never accumulated on a shared
+branch. Start every task from the latest `main`.
+
+Full policy: `docs/software-factory/GIT_WORKFLOW.md` (SFD-2026-008).
+
 ## Engineering rules
 - GitHub is the durable source of truth for software work: issues -> branches -> PRs -> reviews -> merge.
 - Never have two agents edit the same branch concurrently.
 - Prefer one task, one branch, one primary implementation agent.
 - The implementation agent must not be the sole reviewer of its own work.
-- Keep `main` releasable. Work through branches and PRs.
+- `main` is the only permanent branch. Keep it releasable. All work lands via a PR targeting `main`; never push to `main` directly. Delete the branch and worktree after merge. See `docs/software-factory/GIT_WORKFLOW.md`.
 - Do not weaken the existing `./run.sh` execution boundary.
 - Do not put secrets, tokens, private OpenClaw state, or generated personal data in the repository.
 - Reversible implementation details should be decided autonomously. Escalate only strategic, costly, privacy-sensitive, destructive, or hard-to-reverse decisions.
@@ -33,6 +48,18 @@ Before finishing a task, record:
 - verification performed
 - unresolved risks
 - recommended next action
+
+## Mandatory delivery step
+No task is complete until the agent has:
+1. started from the latest `main` in a short-lived task branch/worktree;
+2. committed only the coherent changes for that task;
+3. pushed that branch; and
+4. opened a Pull Request targeting `main`.
+
+The final response MUST include the PR URL. If a PR cannot be created, the
+agent MUST report the task as incomplete and explain the blocker. Never claim
+completion with only local changes. Do not include unrelated dirty-worktree
+changes in the PR; isolate them first or stop and escalate to the founder.
 
 Do not mark work complete merely because code was written.
 

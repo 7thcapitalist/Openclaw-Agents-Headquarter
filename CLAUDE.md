@@ -2,6 +2,8 @@
 
 Read `AGENTS.md` first. It is the shared contract for every coding agent in this repository.
 
+The repository is **main-only**: `main` is the single permanent branch and every change — including yours — lands through a PR targeting `main` from a short-lived branch/worktree that is deleted after merge. Never push to `main` directly. Full policy: `docs/software-factory/GIT_WORKFLOW.md` (SFD-2026-008).
+
 For software-factory work, also read:
 - `docs/software-factory/README.md`
 - `docs/software-factory/OPERATING_RULES.md`

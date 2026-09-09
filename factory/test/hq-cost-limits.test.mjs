@@ -8,7 +8,8 @@ import { createState, readState, writeState } from "../lib/task-workflow.mjs";
 import { runOneStage, runToTerminal } from "../lib/openclaw-runner.mjs";
 import { summarizeCosts } from "../lib/hq/cost.mjs";
 import { readPlanLimits } from "../lib/hq/plan-limits.mjs";
-import { buildHqCostsPayload, buildHqPlanLimitsPayload } from "../../dashboard/backend/lib/hq-cost-limits.mjs";
+import { buildHqCostsPayload, buildHqPlanLimitsPayload, readOpenClawSessionUsage } from "../../dashboard/backend/lib/hq-cost-limits.mjs";
+import { normalizeProviderSnapshot, normalizeUsageWindow } from "../lib/hq/provider-usage.mjs";
 
 const hqRoot = resolve(".");
 const pricing = {
@@ -240,39 +241,67 @@ test("buildHqPlanLimitsPayload derives inferred windows from state files and let
   assert.equal(official.providers.openai.limit, 7);
 });
 
-test("builders resolve the production state root from hqRoot alone when no stateRoot is injected", async () => {
-  const fixture = makeFixtureRoot();
-  const stateRoot = join(fixture.root, "dashboard", "backend", "data", "factory");
-  writeTaskState(stateRoot, makeTask("issue-4001", "delta"), [
-    {
-      stage: "qa",
-      actor: "openclaw",
-      completedAt: "2026-09-08T08:00:00Z",
-      usage: { provider: "openai", model: "gpt-5.6-sol", tokensIn: 100, tokensOut: 20, durationMs: 10 },
-    },
-  ], {
-    blocker: { stage: "qa", outcome: "fail", summary: "429 rate limit", at: "2026-09-08T08:10:00Z" },
-  });
+test("payload builders resolve their own state root from hqRoot alone (server call shape)", async () => {
+  // The dashboard routes call these with only { hqRoot } — no stateRoot. That
+  // path was never covered and regressed: defaultStateRoot(hqRoot) needs a repo
+  // argument, so the bare call threw "paths[0] must be of type string".
+  const { root } = makeFixtureRoot();
 
-  const costs = await buildHqCostsPayload({ hqRoot: fixture.root, pricing, now: "2026-09-08T10:00:00Z" });
-  assert.equal(costs.byProject.delta.dispatches, 1);
-  assert.equal(costs.totals.dispatches, 1);
+  const costs = await buildHqCostsPayload({ hqRoot: root, pricing, now: "2026-09-08T12:30:00Z" });
+  assert.equal(costs.version, 1);
+  assert.equal(costs.totals.dispatches, 0);
+  assert.ok(Array.isArray(costs.recentTasks));
+  assert.ok(costs.totals.today);
 
-  const limits = await buildHqPlanLimitsPayload({ hqRoot: fixture.root, now: "2026-09-08T10:00:00Z" });
-  assert.equal(limits.available, true);
-  assert.equal(limits.source, "inferred");
-  assert.equal(limits.usageWindows[0].provider, "openai");
-  assert.equal(limits.cooldownHistory.length, 1);
+  const limits = await buildHqPlanLimitsPayload({ hqRoot: root, now: "2026-09-08T12:30:00Z" });
+  assert.equal(limits.available, false);
+  assert.match(limits.reason, /No authoritative plan-limit source/);
 });
 
-test("builders degrade without throwing when the production state root does not exist", async () => {
+test("provider usage normalization derives remaining only from a complete authoritative window", () => {
+  const window = normalizeUsageWindow({ name: "5-hour window", limit: 100, used: 40, resetAt: "2026-09-08T13:00:00Z", source: "provider", confidence: "authoritative" });
+  assert.equal(window.remaining, 60);
+  assert.equal(window.percentRemaining, 60);
+  assert.equal(window.confidence, "authoritative");
+
+  const unavailable = normalizeProviderSnapshot({ provider: "anthropic", windows: [] });
+  assert.equal(unavailable.status, "unavailable");
+  assert.equal(unavailable.windows.length, 0);
+});
+
+test("OpenClaw session adapter keeps recorded local usage separate from Factory sessions", async () => {
+  const snapshot = await readOpenClawSessionUsage({
+    now: "2026-09-08T12:30:00Z",
+    source: () => ({ sessions: [
+      { key: "agent:builder:factory-task-1-builder-1", agentId: "builder", modelProvider: "openai", model: "gpt-5.6-sol", inputTokens: 10, outputTokens: 5 },
+      { key: "agent:main:interactive-1", agentId: "main", modelProvider: "anthropic", model: "claude-sonnet-5", inputTokens: 20, outputTokens: 3 },
+      { key: "agent:main:malformed", agentId: "main", modelProvider: "openai", model: "gpt-5.6-sol", inputTokens: "nope" },
+    ] }),
+  });
+  assert.equal(snapshot.available, true);
+  assert.equal(snapshot.sessions.length, 2);
+  assert.equal(snapshot.sessions.find((row) => row.scope === "factory").totalTokens, 15);
+  assert.equal(snapshot.sessions.find((row) => row.scope === "other-local").totalTokens, 23);
+});
+
+test("cost payload exposes attribution dimensions without inventing provider capacity", async () => {
   const fixture = makeFixtureRoot();
-
-  const costs = await buildHqCostsPayload({ hqRoot: fixture.root, pricing, now: "2026-09-08T10:00:00Z" });
-  assert.equal(costs.totals.dispatches, 0);
-
-  const limits = await buildHqPlanLimitsPayload({ hqRoot: fixture.root, now: "2026-09-08T10:00:00Z" });
-  assert.equal(limits.available, false);
+  const stateRoot = join(fixture.root, "states");
+  writeTaskState(stateRoot, makeTask("issue-attributed", "lifemax"), [{
+    stage: "builder", actor: "backend-builder", completedAt: "2026-09-08T12:00:00Z",
+    usage: { provider: "openai", model: "gpt-5.6-sol", tokensIn: 10, tokensOut: 5 },
+  }]);
+  const payload = await buildHqCostsPayload({
+    hqRoot: fixture.root, stateRoot, pricing, now: "2026-09-08T12:30:00Z",
+    runtimeSource: () => ({ sessions: [] }),
+  });
+  assert.equal(payload.aiUsage.factory.totalTokens, 15);
+  assert.equal(payload.aiUsage.factory.byAgent[0].agent, "backend-builder");
+  assert.equal(payload.aiUsage.factory.byProject[0].project, "lifemax");
+  const openai = payload.aiUsage.capacity.find((row) => row.provider === "openai");
+  assert.equal(openai.confidence, "unavailable");
+  assert.equal(openai.windows.length, 0);
+  assert.match(openai.reason, /No authoritative/);
 });
 
 function makeFixtureRoot() {

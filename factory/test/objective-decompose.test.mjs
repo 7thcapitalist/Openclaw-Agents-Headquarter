@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { decomposeObjective, buildObjectiveStateFromNodes } from "../lib/objective/decompose.mjs";
+import { executeDecomposition, decomposeObjective, buildObjectiveStateFromNodes } from "../lib/objective/decompose.mjs";
 
 const REPO = process.cwd();
 const validNodes = [
@@ -22,6 +22,8 @@ test("decomposeObjective builds a validated task graph from a model response", a
     assert.ok(Array.isArray(n.contract.acceptanceCriteria) && n.contract.acceptanceCriteria.length);
     assert.equal(n.contract.id, n.id);
     assert.equal(n.branch, `factory/${n.id}`);
+    assert.equal(n.githubPublish, null);
+    assert.equal(n.prUrl, null);
   }
   // integration node depends on every build node
   assert.deepEqual(g.integration.dependsOn.sort(), Object.keys(g.nodes).sort());
@@ -46,4 +48,38 @@ test("buildObjectiveStateFromNodes lets tests skip the model call", () => {
   const g = buildObjectiveStateFromNodes({ objective: "x", project: "demo", repo: REPO, nodes: validNodes.slice(0, 2) });
   assert.equal(Object.keys(g.nodes).length, 2);
   assert.equal(g.status, "active");
+});
+
+
+test("decomposition retries a transient transport failure with a private message file and cleans it up", async () => {
+  const { readFileSync, existsSync, statSync } = await import("fs");
+  let calls = 0; let file; const waits = [];
+  const result = await executeDecomposition({ prompt: "private objective", repo: REPO, objectiveId: "retry-test",
+    wait: async (ms) => waits.push(ms),
+    run: async (bin, args) => {
+      calls += 1;
+      assert.equal(bin, "openclaw");
+      assert.equal(args.includes("private objective"), false);
+      file = args[args.indexOf("--message-file") + 1];
+      assert.equal(readFileSync(file, "utf8"), "private objective");
+      assert.equal(statSync(file).mode & 0o777, 0o600);
+      if (calls === 1) throw Object.assign(new Error("Command failed"), { stderr: "LLM request failed: network connection error. fetch failed" });
+      return { stdout: JSON.stringify({ status: "ok", result: { payloads: [{ text: '{"nodes":[]}' }] } }) };
+    },
+  });
+  assert.equal(result, '{"nodes":[]}'); assert.equal(calls, 2);
+  assert.deepEqual(waits, [15000]); assert.equal(existsSync(file), false);
+});
+
+test("decomposition caps retries and retains the real error without the command or secrets", async () => {
+  let calls = 0;
+  await assert.rejects(executeDecomposition({ prompt: "private objective", repo: REPO, objectiveId: "fail-test", wait: async () => {},
+    run: async () => { calls += 1; throw Object.assign(new Error("Command failed: private objective"), { stderr: "provider idle timeout sk-abcdefghijklmnopqrstuvwxyz" }); },
+  }), (error) => error.transient && /idle timeout/.test(error.message) && !/private objective|sk-abc/.test(error.message));
+  assert.equal(calls, 3);
+  calls = 0;
+  await assert.rejects(executeDecomposition({ prompt: "x", repo: REPO, objectiveId: "invalid-test", wait: async () => {},
+    run: async () => { calls += 1; return { stdout: "not JSON" }; },
+  }), /JSON/);
+  assert.equal(calls, 1);
 });

@@ -88,7 +88,12 @@ export function summarizeCosts({ hqRoot, stateRoot = null, pricing = null, now =
     byDay: new Map(),
     byProject: new Map(),
     byProviderModel: new Map(),
+    byProvider: new Map(),
+    byModel: new Map(),
+    byAgent: new Map(),
+    byObjective: new Map(),
   };
+  const usageRecords = [];
   const knownModels = new Set();
   const unpricedModels = new Set();
 
@@ -105,7 +110,9 @@ export function summarizeCosts({ hqRoot, stateRoot = null, pricing = null, now =
     for (const dispatch of Array.isArray(state.dispatches) ? state.dispatches : []) {
       const completedAt = String(dispatch.completedAt || state.updatedAt || view.updatedAt || now);
       const day = toDay(completedAt);
-      const stage = String(dispatch.stage || state.currentStage || "unknown").trim() || "unknown";
+    const stage = String(dispatch.stage || state.currentStage || "unknown").trim() || "unknown";
+    const agent = String(dispatch.actor || state.assignments?.[stage] || "unknown").trim() || "unknown";
+    const objective = String(state.task?.outcome || "unknown").trim() || "unknown";
       const usage = sanitizeUsage(dispatch.usage);
       const priced = usage ? priceUsage(usage, resolvedPricing) : null;
       const providerModel = usage ? buildPricingKey(usage.provider, usage.model) : "unknown/unknown";
@@ -116,6 +123,28 @@ export function summarizeCosts({ hqRoot, stateRoot = null, pricing = null, now =
       addToMap(buckets.byDay, day, { taskId, stage, day, project, providerModel, completedAt }, priced, usage);
       addToMap(buckets.byProject, project, { taskId, stage, day, project, providerModel, completedAt }, priced, usage);
       addToMap(buckets.byProviderModel, providerModel, { taskId, stage, day, project, providerModel, completedAt }, priced, usage);
+      addToMap(buckets.byProvider, usage?.provider || "unknown", { taskId, stage, day, project, providerModel, completedAt }, priced, usage);
+      addToMap(buckets.byModel, usage?.model || "unknown", { taskId, stage, day, project, providerModel, completedAt }, priced, usage);
+      addToMap(buckets.byAgent, agent, { taskId, stage, day, project, providerModel, completedAt }, priced, usage);
+      addToMap(buckets.byObjective, objective, { taskId, stage, day, project, providerModel, completedAt }, priced, usage);
+
+      if (usage) usageRecords.push({
+        provider: usage.provider,
+        model: usage.model,
+        agent,
+        project,
+        objective,
+        taskId,
+        stage,
+        completedAt,
+        tokensIn: usage.tokensIn,
+        tokensOut: usage.tokensOut,
+        totalTokens: usage.tokensIn + usage.tokensOut,
+        durationMs: usage.durationMs ?? null,
+        estimatedUsd: priced?.costUsd ?? null,
+        usageConfidence: "recorded",
+        costConfidence: priced?.costUsd == null ? "unavailable" : "calculated-from-recorded-tokens-and-pricing",
+      });
 
       if (usage) {
         if (priced?.pricingSource === "pricing-file") knownModels.add(providerModel);
@@ -141,6 +170,11 @@ export function summarizeCosts({ hqRoot, stateRoot = null, pricing = null, now =
     byDay: finalizeMap(buckets.byDay),
     byProject: finalizeMap(buckets.byProject),
     byProviderModel: finalizeMap(buckets.byProviderModel),
+    byProvider: finalizeMap(buckets.byProvider),
+    byModel: finalizeMap(buckets.byModel),
+    byAgent: finalizeMap(buckets.byAgent),
+    byObjective: finalizeMap(buckets.byObjective),
+    usageRecords: usageRecords.sort((a, b) => String(b.completedAt).localeCompare(String(a.completedAt))),
   };
 }
 

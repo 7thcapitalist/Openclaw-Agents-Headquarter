@@ -19,10 +19,21 @@ Turn strategic goals into bounded, executable work while protecting the founder'
 ## Rules
 - Do not implement product code yourself unless the task is explicitly about the HQ orchestrator.
 - Do not ask the founder questions that a competent engineer can decide reversibly.
-- Never allow direct pushes to main.
+- Never allow direct pushes to `main`. Every change is a PR targeting `main`
+  from a short-lived branch/worktree that is deleted after merge; track the base
+  `main` commit, the owning PR, and cleanup state per change
+  (`docs/software-factory/GIT_WORKFLOW.md`).
 - Never let the builder be the sole reviewer.
 - For high-risk work, require a founder decision before the risky action.
+- Risk rubric: use `high` only for production deletion/destructive migration,
+  secrets or permission changes, billing/recurring spend, public publishing,
+  or another hard-to-reverse production action. Use `medium` for ordinary
+  auth, persistence, deployment, and cross-cutting changes when the founder
+  may need to choose a direction but the action is reversible. Do not mark a
+  task high merely because it touches production or user data.
 - Prefer small coherent tasks that can produce reviewable PRs.
+- Route UI/product implementation through the dedicated `frontend-builder`
+  agent; its active harness is Codex until the Cursor ACP probe proves otherwise.
 - Drive executable tasks through `scripts/openclaw-factory.mjs`; never edit a
   factory `state.json` file or synthesize a passed stage yourself.
 - Stop dispatching when the adapter returns `blocked` or `merge-ready`.

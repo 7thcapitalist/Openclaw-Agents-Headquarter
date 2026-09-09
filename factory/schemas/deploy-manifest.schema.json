@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclaw.local/schemas/deploy-manifest.schema.json",
+  "title": "Project deployment manifest",
+  "description": "The deploy.config.json contract. Environment entries declare names and sources only; values must come from the environment or secret store.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "build", "env", "healthCheck"],
+  "properties": {
+    "version": { "const": 1 },
+    "provider": { "enum": ["vercel", "none"] },
+    "build": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command"],
+      "properties": {
+        "command": { "type": "string", "minLength": 1 },
+        "installCommand": { "type": "string", "minLength": 1 },
+        "outputDir": { "$ref": "#/$defs/relativePath" },
+        "rootDirectory": { "$ref": "#/$defs/relativePath" }
+      }
+    },
+    "env": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["key", "required", "scope", "source"],
+        "properties": {
+          "key": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" },
+          "required": { "type": "boolean" },
+          "scope": { "enum": ["build", "runtime", "both"] },
+          "source": { "enum": ["env", "secret-store"] }
+        }
+      }
+    },
+    "hooks": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "migrate": { "type": "string", "minLength": 1 },
+        "preDeploy": { "$ref": "#/$defs/commands" },
+        "postDeploy": { "$ref": "#/$defs/commands" }
+      }
+    },
+    "healthCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path"],
+      "properties": {
+        "path": { "type": "string", "pattern": "^/" },
+        "expectStatus": { "type": "integer", "minimum": 100, "maximum": 599, "default": 200 },
+        "timeoutMs": { "type": "integer", "minimum": 1, "default": 10000 }
+      }
+    },
+    "smokeTest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path"],
+      "properties": {
+        "path": { "type": "string", "pattern": "^/" },
+        "method": { "enum": ["GET", "POST", "HEAD"], "default": "GET" },
+        "expectStatus": { "type": "integer", "minimum": 100, "maximum": 599, "default": 200 },
+        "bodyIncludes": { "type": "string" }
+      }
+    }
+  },
+  "$defs": {
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "not": { "pattern": "(^/|(^|[\\\\/])\\.\\.([\\\\/]|$))" }
+    },
+    "commands": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    }
+  }
+}

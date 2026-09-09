@@ -50,6 +50,24 @@ test("advances only in order and requires assigned actor and evidence", () => {
   assert.equal(state.stages.product.status, "pass");
 });
 
+test("deferred decisions do not stop the pipeline and are recorded for the completed task", () => {
+  let state = createState({ task, repo: "/tmp/repo", branch: "factory/issue-42", worktree: "/tmp/worktree" });
+  state = completeStage(state, {
+    ...completion("product"),
+    deferredDecision: {
+      question: "Which deployment default should future apps use?",
+      options: ["A: Vercel", "B: another provider"],
+      recommendation: "A: Vercel for web apps.",
+    },
+  });
+  assert.equal(state.status, "active");
+  assert.equal(state.currentStage, "architect");
+  assert.equal(state.blocker, undefined);
+  assert.deepEqual(state.deferredDecisions[0].options, ["A: Vercel", "B: another provider", "Other: describe your preference"]);
+  assert.equal(state.events.at(-1).type, "handoff-ready");
+  assert.equal(state.events.some((event) => event.type === "stage-decision-deferred"), true);
+});
+
 test("failure blocks rather than advancing and can be explicitly resumed", () => {
   const initial = createState({ task, repo: "/tmp/repo", branch: "factory/issue-42", worktree: "/tmp/worktree" });
   const blocked = completeStage(initial, { ...completion("product"), outcome: "fail" });
@@ -93,6 +111,18 @@ test("high-risk work blocks before build until founder approval is recorded", ()
   state = recordFounderApproval(state, { assertion, evidence });
   assert.equal(state.status, "active");
   assert.equal(state.founderApproval.assertion.taskId, task.id);
+});
+
+test("a founder decision on an earlier high-risk blocker prevents a second approval gate", () => {
+  let state = createState({ task: { ...task, risk: "high" }, repo: "/tmp/repo", branch: "factory/issue-42", worktree: "/tmp/worktree", founderPublicKey });
+  state.status = "blocked";
+  state.blocker = { stage: "product", outcome: "decision-required", summary: "Choose the persistence direction." };
+  state.founderDecisions = [{ at: new Date().toISOString(), direction: "Use the approved hosted persistence option." }];
+  state = resumeState(state);
+  state = completeStage(state, completion("product"));
+  state = completeStage(state, completion("architect", state.assignments.architect));
+  assert.equal(state.status, "active");
+  assert.equal(state.currentStage, "builder");
 });
 
 test("task input cannot forge founder approval", () => {

@@ -4,17 +4,35 @@
   "controlPlane": "github",
   "orchestrator": "openclaw",
   "taskSource": "github-issues",
+  "gitWorkflow": {
+    "_doc": "Repository-wide invariant (SFD-2026-008, docs/software-factory/GIT_WORKFLOW.md). Applies to every actor: founder, Claude, Codex, Cursor, factory agents, automated recovery, QA, infra jobs.",
+    "model": "main-only",
+    "permanentBranch": "main",
+    "changeUnit": "pull-request",
+    "prTarget": "main",
+    "directPushToMain": false,
+    "ephemeralBranches": true,
+    "longLivedBranches": false,
+    "longLivedWorktrees": false,
+    "deleteBranchAfterMerge": true,
+    "deleteWorktreeAfterMerge": true,
+    "startFromLatestMain": true,
+    "policyDoc": "docs/software-factory/GIT_WORKFLOW.md"
+  },
   "openclawIntegration": {
     "protocolVersion": 1,
     "maxAttemptsPerStage": 3,
+    "maxRecoveryAttempts": 3,
     "_concurrentGroupsDoc": "Each inner array is a set of pipeline stages the runner dispatches concurrently once the branch is frozen (builder done). The engine still applies results one at a time and all gates are unchanged. Set to [] to force fully sequential.",
     "concurrentGroups": [["reviewer", "qa", "security"]],
     "agentIds": {
-      "_doc": "Keys are '<stage>' or '<stage>:<harness-token>' routing tokens; values are OpenClaw runtime agent ids. 'builder:cursor' maps to the 'frontend-builder' OpenClaw agent — 'cursor' is the historical name for the UI-builder slot, not a live Cursor session; frontend-builder runs on the OpenClaw gateway model in its own isolated worktree (see factory/agents.json). qa:claude and qa:codex both point at the one 'qa' OpenClaw agent, which is Claude-backed via acpx as of 2026-09-05; independence still holds because the pipeline assigns QA a different harness token from the builder.",
+      "_doc": "Keys are stages or '<stage>:<harness-token>' routing tokens; values are OpenClaw runtime agent ids. decompose and intake use the proven architect route while defaulting safely to main in code if these optional keys are absent. builder:frontend maps the dedicated Codex-backed frontend-builder agent. qa:claude and qa:codex point at the Claude-backed qa agent; builder/reviewer/QA independence is enforced by task-workflow.mjs.",
+      "decompose": "architect",
+      "intake": "architect",
       "product": "product",
       "architect": "architect",
       "builder:codex": "backend-builder",
-      "builder:cursor": "frontend-builder",
+      "builder:frontend": "frontend-builder",
       "builder:claude": "architect",
       "reviewer": "reviewer",
       "qa:claude": "qa",
@@ -23,6 +41,8 @@
       "release": "release",
       "openclaw": "main",
       "learning": "learning",
+      "recovery": "architect",
+      "recovery-verify": "backend-builder",
       "research": "research"
     }
   },
@@ -30,6 +50,16 @@
     "injectIntoHandoff": false,
     "evidenceRetentionDays": 90,
     "patternThreshold": 2
+  },
+  "deploy": {
+    "defaultProvider": "vercel",
+    "providers": ["vercel", "none"]
+  },
+  "founderInteraction": {
+    "default": "chief-of-staff-decides",
+    "maxQuestionsAtIntake": 1,
+    "askOnlyWhen": ["material product direction", "privacy or security posture", "meaningful spend", "destructive production action", "no safe progress"],
+    "deferNonBlockingDecisionsUntil": "merge-ready"
   },
   "pipeline": [
     "product",
@@ -63,8 +93,8 @@
       "responsibility": "implementation, tests, branch, PR"
     },
     "productBuilder": {
-      "preferredHarness": "cursor",
-      "runtime": "acp",
+      "preferredHarness": "codex",
+      "runtime": "native-codex-or-acp",
       "writeAccess": true,
       "responsibility": "UI implementation and visual iteration"
     },
@@ -88,12 +118,12 @@
     }
   },
   "routing": {
-    "ui": "cursor",
+    "ui": "frontend",
     "backend": "codex",
     "architecture": "claude",
     "bugfix": "codex",
     "review": "different-model",
-    "qa-ui": "cursor",
+    "qa-ui": "codex",
     "qa-backend": "codex-or-claude"
   },
   "risk": {

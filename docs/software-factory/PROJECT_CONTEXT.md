@@ -21,6 +21,12 @@ context; local OpenClaw state is not.
 
 ## Intended workflow
 
+The repository is main-only: `main` is the single canonical and permanent
+branch, every change (founder or agent) lands through a PR targeting `main` from
+a short-lived branch/worktree that is deleted after merge, and nobody pushes to
+`main` directly. This is a repository-wide invariant — see
+[`GIT_WORKFLOW.md`](GIT_WORKFLOW.md) and `DECISIONS.md` SFD-2026-008.
+
 1. The founder sets a goal and any settled product constraints.
 2. The Chief of Staff turns it into a GitHub issue using
    `factory/templates/task.md`, including outcome, acceptance criteria, scope,
@@ -28,7 +34,8 @@ context; local OpenClaw state is not.
 3. OpenClaw routes exactly one primary implementation owner to an isolated
    branch/worktree. Two agents must never share a writable branch.
 4. The assigned harness implements and verifies the smallest coherent change,
-   then opens a PR. GitHub preserves the issue-to-branch-to-PR trail.
+   then opens a PR targeting `main`. GitHub preserves the
+   issue-to-branch-to-PR trail.
 5. A different model reviews the work. The author cannot be the sole reviewer.
 6. QA tests acceptance criteria and failure cases and records evidence. UI work
    includes visual/responsive evidence when possible.
@@ -36,7 +43,9 @@ context; local OpenClaw state is not.
    blockers or required decisions.
 8. The founder alone authorizes the merge in V1. Merging is not delegated to an
    agent, even for low-risk work.
-9. After merge, durable decisions and relevant project context are updated.
+9. After merge, durable decisions and relevant project context are updated, and
+   the merged branch and its worktree are deleted. Later work starts from the
+   new `main`.
 
 The pipeline state is:
 
@@ -53,7 +62,7 @@ deploy.
 | Task source and delivery record | GitHub Issues, branches, and PRs | Durable work state and audit trail. |
 | Architecture, independent review, security | Claude | Read-mostly architecture challenge and default review of Codex work; writes only when explicitly assigned as builder. |
 | Backend/general implementation and QA | Codex | Primary builder for backend, general, and bug-fix work; may perform QA or review work it did not author. |
-| Frontend/UI implementation | Cursor | Primary UI/product builder and visual iteration harness. |
+| Frontend/UI implementation | Codex (`frontend-builder`) | Dedicated UI/product builder route with responsive and visual evidence requirements. |
 | Personal interactive development | Cursor | Founder's hands-on development environment; follows the same branch, review, QA, and human-merge rules. |
 | Release readiness | Deterministic gates plus OpenClaw | Check acceptance criteria, verification, independent review, QA evidence, and unresolved decisions; cannot merge in V1. |
 | Final merge authority | Human founder | Approves and performs/authorizes merges and all high-risk actions. |
@@ -63,16 +72,17 @@ for a task when the task contract says so, but reviewer independence and human
 merge authority do not change. The detailed cross-review rules are in
 `OPERATING_RULES.md`; executable defaults are in `factory/factory.config.json`.
 
-## Cursor in the system
+## Frontend tooling
 
-Cursor has two deliberate uses. As an agent harness it owns frontend/UI
-implementation and visual QA when routed by OpenClaw. As the founder's personal
-interactive IDE it is the operator's direct workspace for exploration and
-hands-on development. Interactive work is not an exception to the factory: use
-an issue and isolated branch for deliverable work, preserve the `./run.sh`
-boundary, collect suitable verification, obtain independent review, and leave
-the final merge to the founder. Repository-wide Cursor instructions live in
-`.cursor/rules/factory.mdc`.
+OpenClaw routes frontend/UI implementation to the dedicated Codex-backed
+`frontend-builder` agent. Cursor remains the founder's personal interactive IDE
+and a planned visual-iteration harness, but its CLI does not currently expose an
+ACP server mode that OpenClaw can drive. Re-run
+`scripts/probe-cursor-harness.mjs` before changing that route. Interactive work
+is not an exception to the factory: use an issue and isolated branch for
+deliverable work, preserve the `./run.sh` boundary, collect suitable
+verification, obtain independent review, and leave the final merge to the
+founder. Repository-wide Cursor instructions live in `.cursor/rules/factory.mdc`.
 
 ## Safety and approval boundaries
 

@@ -8,7 +8,7 @@
 # Decision protocol
 
 Every judgement call an agent, the Chief of Staff, or a sensor faces resolves to
-exactly one of four outcomes. The default is **continue**. Bringing the founder
+one of five outcomes. The default is **continue**. Bringing the founder
 in is the exception — the product is attention compression.
 
 ## continue (default)
@@ -34,12 +34,20 @@ A trigger is hit. Triggers:
 - migrations that are hard to reverse
 - legal / compliance implications
 - a UX tradeoff that changes the product promise
-- any task classified `risk: "high"`
 
 Action: emit a Decision Card (`factory/templates/decision-card.md`) with options,
 tradeoffs, and a recommendation; add it to the project decision queue; block
 **only the affected sub-task**; keep everything else moving. The founder answers
-asynchronously.
+asynchronously. A recorded decision on the task also satisfies its later
+high-risk builder authorization; do not ask the founder to approve the same
+direction twice.
+
+## decision-deferred
+
+The team can safely finish the assigned work, but a legitimate choice is useful
+for the founder to review afterward. This is not a blocker. The agent records a
+short question, two options plus `Other`, and a recommendation. Headquarters
+shows it only after the task reaches `merge-ready` or `merged`.
 
 ## ask (rare)
 

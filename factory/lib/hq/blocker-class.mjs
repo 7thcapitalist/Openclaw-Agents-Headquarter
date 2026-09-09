@@ -34,15 +34,74 @@ const INFRA_FAIL_RE = new RegExp(
   "i",
 );
 
+// A high-risk task cannot even initialize until the founder's approval authority
+// is configured (FACTORY_FOUNDER_PUBLIC_KEY). That is a founder setup action, not
+// a code failure and not an infra hiccup — it must reach the Founder Inbox.
+const FOUNDER_APPROVAL_SETUP_RE = new RegExp(
+  [
+    "founder public key",
+    "high-risk task initialization requires",
+    "FACTORY_FOUNDER_PUBLIC_KEY",
+    "founder approval authority",
+    "signed founder approval",
+  ].join("|"),
+  "i",
+);
+
+export function isFounderApprovalSetupFailure(text) {
+  return FOUNDER_APPROVAL_SETUP_RE.test(String(text || ""));
+}
+
+// The canonical blocker for "this needs the founder before any work can start".
+// Shared by the objective orchestrator (init-time) and the objective submission
+// endpoint (preflight) so both surface it identically.
+export function founderApprovalSetupBlocker({ stage = "init", at = new Date().toISOString() } = {}) {
+  return {
+    stage,
+    outcome: "decision-required",
+    founderAction: true,
+    summary:
+      "This objective was assessed high-risk, so it needs your signed approval before any code is written — "
+      + "but the factory has no founder approval key configured. Set FACTORY_FOUNDER_PUBLIC_KEY to your Ed25519 "
+      + "public key (see docs/software-factory/SETUP.md), restart Headquarters, then continue this objective. "
+      + "It will pause once more for your signature before the builder stage.",
+    at,
+  };
+}
+
 export function classifyBlocker(blocker) {
   if (!blocker) return null;
   if (blocker.outcome === "decision-required") return "decision";
+  // A blocker explicitly tagged as needing the founder is a decision even if a
+  // generic catch-all never set `outcome`.
+  if (blocker.founderAction === true) return "decision";
   if (blocker.outcome === "fail") {
     const text = String(blocker.summary || blocker.detail || blocker.reason || "");
     return INFRA_FAIL_RE.test(text) ? "infra" : "hard";
   }
   // Any other non-empty blocker outcome: treat as needing a look, not infra.
   return "hard";
+}
+
+// Classify a decomposed-objective NODE blocker. Unlike classifyBlocker(), this
+// understands that the objective orchestrator relabels an infrastructure failure
+// as `decision-required` (see objective/orchestrator.mjs). "infra" here means
+// "safe for the system to retry without the founder".
+export function classifyObjectiveNodeBlocker(blocker) {
+  if (!blocker) return null;
+  // 1. Explicit tag written by the orchestrator on newly-synthesized blockers.
+  if (blocker.infra === true) return "infra";
+  // 2. Backfill for objective-state.json written before the tag existed: match
+  //    the orchestrator's exact synthesized sentence (specific enough to be safe).
+  if (blocker.outcome === "decision-required"
+      && /could not run/i.test(blocker.summary || "")
+      && /retry the objective later|adjust model routing/i.test(blocker.summary || "")) {
+    return "infra";
+  }
+  // 3. A genuine stage decision or a merge conflict stays with the founder.
+  if (blocker.outcome === "decision-required") return "decision";
+  // 4. fail → infra|hard via the existing regex; anything else → hard.
+  return classifyBlocker(blocker);
 }
 
 export function isInfraFailure(blocker) {

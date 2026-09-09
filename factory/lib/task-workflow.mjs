@@ -1,7 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "fs";
 import { dirname, join, resolve } from "path";
-import { createHash, randomUUID, verify as verifySignature } from "crypto";
+import { createHash, randomUUID, sign as signPayload, verify as verifySignature } from "crypto";
 import { classifyBlocker } from "./hq/blocker-class.mjs";
+import { classifyFailure, isRecoverableFailure, recoveryStrategy } from "./failure-classification.mjs";
 
 export const STAGES = [
   "product",
@@ -44,9 +45,9 @@ export function validateTaskContract(task) {
 export function defaultAssignments(task) {
   const builder = task.preferredBuilder && task.preferredBuilder !== "auto"
     ? task.preferredBuilder
-    : task.workType === "ui" ? "cursor" : "codex";
+    : task.workType === "ui" ? "frontend" : "codex";
   const reviewer = builder === "claude" ? "codex" : "claude";
-  const qa = builder === "cursor" ? "codex" : builder === "codex" ? "claude" : "codex";
+  const qa = builder === "frontend" ? "claude" : builder === "codex" ? "claude" : "codex";
   return {
     product: "openclaw",
     architect: "claude",
@@ -58,7 +59,7 @@ export function defaultAssignments(task) {
   };
 }
 
-export function createState({ task, repo, branch, worktree, founderPublicKey = null, baseSha = null, now = new Date().toISOString() }) {
+export function createState({ task, repo, branch, worktree, founderPublicKey = null, baseSha = null, maxRecoveryAttempts = 3, now = new Date().toISOString() }) {
   validateTaskContract(task);
   const safeTask = sanitizeTaskContract(task);
   if (safeTask.risk === "high" && !founderPublicKey) {
@@ -77,6 +78,8 @@ export function createState({ task, repo, branch, worktree, founderPublicKey = n
     currentStage: STAGES[0],
     assignments,
     stages: Object.fromEntries(STAGES.map((stage) => [stage, { status: "pending" }])),
+    failures: [],
+    recovery: { maxAttempts: Number(maxRecoveryAttempts) || 3, attempts: [], active: null },
     events: [{ at: now, type: "task-created", stage: STAGES[0] }],
     createdAt: now,
     updatedAt: now,
@@ -97,7 +100,7 @@ export function createState({ task, repo, branch, worktree, founderPublicKey = n
   return state;
 }
 
-export function completeStage(state, { stage, actor, outcome, summary, evidence = [], now = new Date().toISOString() }) {
+export function completeStage(state, { stage, actor, outcome, summary, evidence = [], deferredDecision = null, now = new Date().toISOString() }) {
   if (state.status !== "active") throw new Error(`Task is ${state.status}; it cannot advance.`);
   if (stage !== state.currentStage) throw new Error(`Expected stage ${state.currentStage}, received ${stage}.`);
   if (actor !== state.assignments[stage]) {
@@ -120,6 +123,13 @@ export function completeStage(state, { stage, actor, outcome, summary, evidence 
     next.status = "blocked";
     next.blocker = { stage, outcome, summary: String(summary), actor, at: now };
     return next;
+  }
+
+  if (deferredDecision) {
+    const decision = normalizeDeferredDecision(deferredDecision, stage, now);
+    next.stages[stage].deferredDecision = decision;
+    next.deferredDecisions = [...(next.deferredDecisions || []), decision];
+    next.events.push({ at: now, type: "stage-decision-deferred", stage, actor, decisionId: decision.id });
   }
 
   const index = STAGES.indexOf(stage);
@@ -147,6 +157,23 @@ export function completeStage(state, { stage, actor, outcome, summary, evidence 
   return next;
 }
 
+function normalizeDeferredDecision(input, stage, now) {
+  const question = String(input.question || "").trim();
+  if (!question) throw new Error("A deferred decision requires a plain-language question.");
+  const options = Array.isArray(input.options) ? input.options.map((x) => String(x).trim()).filter(Boolean).slice(0, 3) : [];
+  if (options.length < 2) throw new Error("A deferred decision requires at least two options.");
+  if (!options.some((option) => /^other\b/i.test(option))) options.push("Other: describe your preference");
+  return {
+    id: String(input.id || `${stage}-${Date.parse(now) || Date.now()}`),
+    stage,
+    question,
+    why: String(input.why || "The team completed the safe work and is reporting this choice for your review.").trim(),
+    options,
+    recommendation: String(input.recommendation || "").trim(),
+    requestedAt: now,
+  };
+}
+
 export function resumeState(state, now = new Date().toISOString()) {
   if (state.status !== "blocked") throw new Error("Only a blocked task can be resumed.");
   if (state.blocker?.stage === "builder" && state.task.risk === "high" && !hasValidFounderApproval(state)) {
@@ -161,7 +188,7 @@ export function resumeState(state, now = new Date().toISOString()) {
   return next;
 }
 
-const REVIEW_STAGES = new Set(["reviewer", "qa", "security"]);
+const REVIEW_STAGES = new Set(["reviewer", "qa", "security", "release"]);
 
 export function routeStageFailure(state, { failedStage, targetStage, maxAttemptsPerStage = 3, now = new Date().toISOString() }) {
   if (state.blocker?.outcome !== "fail") return state;
@@ -173,7 +200,8 @@ export function routeStageFailure(state, { failedStage, targetStage, maxAttempts
   // to fix — re-running builder + the whole review group for a dropped model
   // call is pure waste. Retry the failed review stage in place instead. A real
   // FAIL verdict still routes to the builder.
-  const infra = REVIEW_STAGES.has(failedStage) && classifyBlocker(state.blocker) === "infra";
+  const releaseConflict = failedStage === "release" && /merge conflict|conflict(?:ing|s)?(?:\/dirty)?|branch.*(?:out.of.date|behind)/i.test(state.blocker.summary || "");
+  const infra = REVIEW_STAGES.has(failedStage) && !releaseConflict && classifyBlocker(state.blocker) === "infra";
   const target = targetStage
     || (REVIEW_STAGES.has(failedStage) && !infra ? "builder" : failedStage);
   const next = structuredClone(state);
@@ -184,6 +212,111 @@ export function routeStageFailure(state, { failedStage, targetStage, maxAttempts
   delete next.blocker;
   next.updatedAt = now;
   next.events.push({ at: now, type: "failure-routed", fromStage: failedStage, stage: target, actor: next.assignments[target], attempt: attempts + 1, ...(infra ? { infra: true } : {}) });
+  return next;
+}
+
+// Start a recovery cycle on the same task. The original dispatch/failure is
+// retained; recovery is only an additional sub-state of this state machine.
+export function startRecovery(state, { failedStage, actor, error, evidence = [], source = "execution", maxRecoveryAttempts = 3, now = new Date().toISOString() }) {
+  const kind = classifyFailure({ error, source });
+  const next = structuredClone(state);
+  next.failures = [...(next.failures || []), {
+    at: now, stage: failedStage, agent: actor, error: String(error || "unknown failure"),
+    classification: kind, evidence: structuredClone(evidence), disposition: "recovery-started",
+  }];
+  next.recovery = { ...(next.recovery || {}), maxAttempts: Number(maxRecoveryAttempts) || 3, attempts: next.recovery?.attempts || [], active: null };
+  if (!isRecoverableFailure(kind)) return next;
+  const used = next.recovery.attempts.length;
+  if (used >= next.recovery.maxAttempts) return escalateRecovery(next, { failedStage, kind, error, now });
+  const attempt = {
+    number: used + 1, strategy: recoveryStrategy(used + 1), originalObjective: next.task.outcome,
+    failedStage, agent: actor, error: String(error || "unknown failure"), classification: kind,
+    repairTarget: kind === "FACTORY_ERROR" ? "factory" : "project", relevantEvidence: structuredClone(evidence),
+    attemptedActions: [], currentState: next.status, diagnosis: null, repair: null, verification: null,
+    status: "diagnosing", startedAt: now,
+  };
+  next.recovery.attempts = [...next.recovery.attempts, attempt];
+  next.recovery.active = { phase: "diagnose", failedStage, attempt: attempt.number };
+  next.status = "active";
+  next.currentStage = failedStage;
+  delete next.blocker;
+  next.updatedAt = now;
+  next.events.push({ at: now, type: "failure-classified", stage: failedStage, actor: "system", classification: kind, error: String(error || "") });
+  next.events.push({ at: now, type: "recovery-diagnosing", stage: failedStage, actor: "recovery", attempt: attempt.number, classification: kind });
+  return next;
+}
+
+export function recordRecoveryResult(state, { outcome, actor, summary, evidence = [], diagnosis = null, now = new Date().toISOString() }) {
+  const active = state.recovery?.active;
+  if (!active) throw new Error("No recovery attempt is active.");
+  const next = structuredClone(state);
+  const attempt = next.recovery.attempts.at(-1);
+  if (active.phase === "diagnose") {
+    attempt.diagnosis = { summary: String(summary || ""), evidence: structuredClone(evidence), actor, at: now, ...(diagnosis || {}) };
+    attempt.attemptedActions = Array.isArray(diagnosis?.attemptedActions) ? structuredClone(diagnosis.attemptedActions) : [];
+    attempt.repair = { status: outcome === "pass" ? "attempted" : "not-attempted", summary: String(summary || ""), evidence: structuredClone(evidence), actor, at: now };
+    next.events.push({ at: now, type: "recovery-repair-attempted", stage: active.failedStage, actor, attempt: active.attempt });
+    if (outcome === "pass") {
+      next.recovery.active.phase = "verify";
+      next.recovery.active.verificationStage = active.failedStage === "qa" ? "reviewer" : "qa";
+      next.events.push({ at: now, type: "recovery-verifying", stage: active.failedStage, actor: next.assignments[next.recovery.active.verificationStage], attempt: active.attempt });
+      return next;
+    }
+    return finishRecoveryFailure(next, { summary, actor, evidence, outcome, now });
+  }
+  attempt.verification = { outcome, summary: String(summary || ""), evidence: structuredClone(evidence), actor, at: now };
+  next.events.push({ at: now, type: "recovery-verification", stage: active.failedStage, actor, outcome, attempt: active.attempt });
+  if (outcome === "pass") {
+    attempt.status = "verified";
+    attempt.completedAt = now;
+    next.recovery.active = null;
+    next.stages[active.failedStage] = { status: "pending" };
+    next.status = "active";
+    next.currentStage = active.failedStage;
+    next.updatedAt = now;
+    next.events.push({ at: now, type: "recovery-verified", stage: active.failedStage, actor, attempt: active.attempt });
+    next.events.push({ at: now, type: "task-resumed", stage: active.failedStage, actor: "system", reason: "recovery-verified" });
+    return next;
+  }
+  return finishRecoveryFailure(next, { summary, actor, evidence, outcome, now });
+}
+
+function finishRecoveryFailure(state, { summary, actor, outcome, now }) {
+  const next = structuredClone(state);
+  const active = next.recovery.active;
+  const attempt = next.recovery.attempts.at(-1);
+  attempt.status = "failed";
+  attempt.completedAt = now;
+  const error = String(summary || "Recovery could not repair the failure.");
+  const kind = attempt.classification;
+  if (outcome === "decision-required") {
+    return escalateRecovery(next, { failedStage: active.failedStage, kind: "FOUNDER_DECISION_REQUIRED", error, now });
+  }
+  if (next.recovery.attempts.length < next.recovery.maxAttempts && isRecoverableFailure(kind)) {
+    next.recovery.active = { phase: "diagnose", failedStage: active.failedStage, attempt: next.recovery.attempts.length + 1 };
+    next.recovery.attempts.push({ number: next.recovery.attempts.length + 1, strategy: recoveryStrategy(next.recovery.attempts.length + 1), originalObjective: next.task.outcome, failedStage: active.failedStage, agent: "recovery", error, classification: kind, repairTarget: kind === "FACTORY_ERROR" ? "factory" : "project", relevantEvidence: [], attemptedActions: [], currentState: next.status, diagnosis: null, repair: null, verification: null, status: "diagnosing", startedAt: now });
+    next.events.push({ at: now, type: "recovery-diagnosing", stage: active.failedStage, actor: "recovery", attempt: next.recovery.attempts.length, classification: kind });
+    return next;
+  }
+  return escalateRecovery(next, { failedStage: active.failedStage, kind, error, now });
+}
+
+function escalateRecovery(state, { failedStage, kind, error, now }) {
+  const next = structuredClone(state);
+  next.recovery.active = null;
+  next.status = "blocked";
+  next.blocker = {
+    stage: failedStage, outcome: "decision-required", founderAction: true, classification: kind,
+    whatFailed: `${failedStage} failed for the original task.`,
+    why: String(error || "Recovery budget exhausted or failure is unsafe to automate."),
+    whatFactoryTried: (next.recovery.attempts || []).map((a) => `${a.strategy}: ${a.status}`).join("; ") || "No recovery attempt was available.",
+    whatItNeedsFromFounder: "Review the recorded failure and decide whether to repair the project, factory, or environment, or change the task scope.",
+    whatHappensAfterApproval: "The original task will resume from the failed stage after the blocker is resolved.",
+    summary: `Recovery could not continue after ${(next.recovery.attempts || []).length} bounded attempt(s): ${String(error || "unknown failure")}`,
+    at: now,
+  };
+  next.events.push({ at: now, type: "recovery-escalated", stage: failedStage, actor: "system", classification: kind });
+  next.updatedAt = now;
   return next;
 }
 
@@ -232,6 +365,30 @@ export function evidenceSha256(path) {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
+// Build the signed founder-approval assertion for a high-risk task. The ONLY
+// place a private key is used in the approval flow — callers must run this in a
+// founder-controlled process (never the dashboard server or an agent). The
+// produced object is exactly what recordFounderApproval() verifies.
+//
+//   state        — the task state (needs founderApprovalRequest + task.risk "high")
+//   evidencePath — absolute path to the approval evidence file inside the worktree
+//   privateKey   — Ed25519 private key (PEM string or KeyObject)
+//   approvedAt   — ISO timestamp of the human decision (defaults to now)
+export function createFounderApprovalAssertion(state, { evidencePath, privateKey, approvedAt = new Date().toISOString() }) {
+  if (state?.task?.risk !== "high" || !state.founderApprovalRequest) {
+    throw new Error("Task has no high-risk founder approval request.");
+  }
+  if (!evidencePath) throw new Error("Founder approval requires an evidence file path.");
+  if (!privateKey) throw new Error("Founder approval requires the founder private key.");
+  const unsigned = {
+    ...state.founderApprovalRequest,
+    approvedAt,
+    evidenceSha256: evidenceSha256(evidencePath),
+  };
+  const signature = signPayload(null, Buffer.from(founderApprovalPayload(state, unsigned)), privateKey).toString("base64");
+  return { ...unsigned, signature };
+}
+
 function sanitizeTaskContract(task) {
   const safe = structuredClone(task);
   for (const field of ["founderApproval", "founderApprovalAuthority", "founderApprovalRequest", "approval", "approvals"]) delete safe[field];
@@ -252,7 +409,31 @@ function validateFounderAssertion(state, assertion, evidence) {
   if (!valid) throw new Error("Founder approval signature is invalid.");
 }
 
+// True when a task is parked at the high-risk gate before `builder` and still
+// has no valid recorded approval — i.e. it is waiting for the founder to sign.
+export function isAwaitingFounderApproval(state) {
+  return Boolean(
+    state
+    && state.task?.risk === "high"
+    && state.status === "blocked"
+    && state.blocker?.stage === "builder"
+    && state.blocker?.outcome === "decision-required"
+    && !hasFounderDecision(state)
+    && !hasValidFounderApproval(state),
+  );
+}
+
+// A founder's explicit decision on an earlier strategic blocker authorizes the
+// same task's risky action. This prevents one task from asking the founder to
+// choose a direction and then approve that identical direction a second time.
+// The signed approval path remains available when no earlier decision exists.
+function hasFounderDecision(state) {
+  return Array.isArray(state?.founderDecisions)
+    && state.founderDecisions.some((decision) => String(decision?.direction || "").trim());
+}
+
 function hasValidFounderApproval(state) {
+  if (hasFounderDecision(state)) return true;
   if (!state.founderApproval?.assertion || !state.founderApproval?.evidence) return false;
   try {
     validateFounderAssertion(state, state.founderApproval.assertion, state.founderApproval.evidence);
@@ -262,7 +443,7 @@ function hasValidFounderApproval(state) {
   }
 }
 
-function publicKeyFingerprint(publicKey) {
+export function publicKeyFingerprint(publicKey) {
   return createHash("sha256").update(String(publicKey)).digest("hex");
 }
 

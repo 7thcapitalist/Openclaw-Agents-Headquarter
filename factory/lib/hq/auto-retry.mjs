@@ -9,7 +9,7 @@
 // A genuine founder decision ("decision-required") or a hard FAIL is left
 // untouched — those still surface in the Founder Inbox.
 
-import { existsSync, readdirSync, readFileSync } from "fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { readState, writeState, resumeState } from "../task-workflow.mjs";
 import { runToTerminal, executeOpenClaw } from "../openclaw-runner.mjs";
@@ -29,6 +29,44 @@ function walkStateFiles(dir, out = []) {
 function readConfig(hqRoot) {
   try { return JSON.parse(readFileSync(join(hqRoot, "factory", "factory.config.json"), "utf8")); }
   catch { return {}; }
+}
+
+// Auto-retry drives the task workflow directly, so the objective orchestrator
+// is not necessarily in the call stack to project the new state. Reconcile the
+// owning objective after the retry without creating a second registry or
+// changing the task's durable evidence.
+function reconcileObjectiveNode(stateRoot, statePath, taskState, at) {
+  for (const objectivePath of walkFiles(stateRoot, "objective-state.json")) {
+    let objective;
+    try { objective = JSON.parse(readFileSync(objectivePath, "utf8")); } catch { continue; }
+    let changed = false;
+    for (const node of Object.values(objective.nodes || {})) {
+      if (node.statePath !== statePath) continue;
+      const nextStatus = taskState.status === "active" ? "running" : node.status;
+      const nextBlocker = taskState.status === "active" ? (taskState.blocker || null) : (taskState.blocker || node.blocker || null);
+      if (node.status !== nextStatus || JSON.stringify(node.blocker || null) !== JSON.stringify(nextBlocker)) {
+        node.status = nextStatus;
+        node.blocker = nextBlocker;
+        changed = true;
+      }
+    }
+    if (!changed) continue;
+    if (Object.values(objective.nodes || {}).some((node) => node.statePath === statePath && taskState.status === "active")) objective.status = "active";
+    objective.updatedAt = at;
+    objective.events = [...(objective.events || []), { at, type: "node-reconciled", nodeStatePath: statePath, taskStatus: taskState.status, actor: "auto-retry" }];
+    try { writeFileSync(objectivePath, `${JSON.stringify(objective, null, 2)}\n`, "utf8"); } catch { /* task evidence remains authoritative */ }
+  }
+}
+
+function walkFiles(dir, fileName, out = []) {
+  let entries = [];
+  try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return out; }
+  for (const entry of entries) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) walkFiles(full, fileName, out);
+    else if (entry.name === fileName) out.push(full);
+  }
+  return out;
 }
 
 /**
@@ -69,6 +107,12 @@ export async function retryStuckTasks({
   for (const statePath of files) {
     let state;
     try { state = readState(statePath); } catch { continue; }
+
+    // A delegated worker may still be writing. Age is not proof of termination.
+    if (state.currentDispatch?.yieldedAt || state.yieldedGroup) {
+      skipped.push({ taskId: state.task?.id, statePath, reason: "delegated execution still owns its dispatch" });
+      continue;
+    }
 
     // Two recoverable situations, both "no live runner owns this task":
     //   1. blocked on an INFRA-class failure (transient agent/process error)
@@ -115,9 +159,11 @@ export async function retryStuckTasks({
 
     try {
       const res = await runTask({ hqRoot, statePath, execute, ...runnerOpts });
+      try { reconcileObjectiveNode(stateRoot, statePath, readState(statePath), now()); } catch { /* projection repair is best effort */ }
       retried.push({ taskId: state.task?.id, stage: revived.currentStage, attempt: revived.autoRetries, status: res.status, reason });
       log(`[auto-retry] ${state.task?.id}: now ${res.status}`);
     } catch (error) {
+      try { reconcileObjectiveNode(stateRoot, statePath, readState(statePath), now()); } catch { /* projection repair is best effort */ }
       retried.push({ taskId: state.task?.id, stage: revived.currentStage, attempt: revived.autoRetries, error: String(error.message || error), reason });
       log(`[auto-retry] ${state.task?.id}: threw ${error.message || error}`);
     }

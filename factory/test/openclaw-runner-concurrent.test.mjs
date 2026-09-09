@@ -165,3 +165,46 @@ test("a review member whose agent fails on infra retries in place with a legible
   const qaDispatch = state.dispatches.filter((d) => d.stage === "qa").at(-1);
   assert.match(qaDispatch.summary || "", /could not run|Could not start the CLI/i, "the failure reason is carried, not swallowed");
 });
+
+test("yielded review group resumes its exact artifacts without duplicate workers", async () => {
+  const { retryStuckTasks } = await import("../lib/hq/auto-retry.mjs");
+  const { root, statePath } = makeFixture();
+  const normal = makeExecute({ delayMs: 0 });
+  for (let i = 0; i < 3; i++) await runOneStage({ hqRoot, statePath, execute: normal });
+  let calls = 0; let delegated;
+  const execute = async (input) => {
+    calls++;
+    if (input.dispatch.stage === "security") {
+      delegated = input;
+      return { stdout: JSON.stringify({ status: "ok", result: { yielded: true } }) };
+    }
+    return normal(input);
+  };
+  const opts = { hqRoot, statePath, execute, waitForResult: async () => false };
+  assert.equal((await runConcurrentGroupIfReady(opts)).waiting, true);
+  assert.equal(calls, 3);
+  assert.equal(readState(statePath).yieldedGroup.length, 3);
+  const sweep = await retryStuckTasks({ hqRoot, stateRoot: root, staleActiveMs: 1, now: () => "2099-01-01T00:00:00Z" });
+  assert.equal(sweep.retried.length, 0);
+  await normal(delegated); // the original delegate finishes
+  assert.equal((await runConcurrentGroupIfReady({ ...opts, groups: [] })).waiting, true);
+  assert.ok(readState(statePath).yieldedGroup, "configuration drift cannot discard ownership");
+  assert.equal((await runConcurrentGroupIfReady(opts)).status, "active");
+  assert.equal(readState(statePath).currentStage, "release");
+  assert.equal(readState(statePath).yieldedGroup, undefined);
+  assert.equal(calls, 3);
+});
+
+test("review artifacts surviving a crash are consumed without re-dispatch", async () => {
+  const { statePath, worktree } = makeFixture();
+  const normal = makeExecute({ delayMs: 0 });
+  for (let i = 0; i < 3; i++) await runOneStage({ hqRoot, statePath, execute: normal });
+  const state = readState(statePath);
+  for (const stage of ["reviewer", "qa", "security"]) {
+    const paths = computeDispatchPaths({ state, stage, statePath });
+    await normal({ dispatch: { ...paths, stage, actor: state.assignments[stage], cwd: worktree } });
+  }
+  const result = await runConcurrentGroupIfReady({ hqRoot, statePath, execute: async () => { throw new Error("must not redispatch completed work"); } });
+  assert.equal(result.status, "active");
+  assert.equal(readState(statePath).currentStage, "release");
+});

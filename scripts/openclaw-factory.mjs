@@ -24,6 +24,7 @@ if (resolve(process.argv[1] || "") === fileURLToPath(import.meta.url)) {
 
 export async function handleRequest(request, dependencies = {}) {
   validateRequest(request);
+  if (request.action === "intake") return inspectObjective(request, dependencies);
   if (request.action === "start") return startFromObjective(request, dependencies);
   if (request.action === "init") return initialize(request, dependencies.initializeTask || initializeTask);
   if (request.action === "next") return prepareDispatch({ hqRoot, statePath: requiredPath(request) });
@@ -72,6 +73,7 @@ export async function handleRequest(request, dependencies = {}) {
 
 async function startFromObjective(request, dependencies) {
   if (!request.repo) throw new Error("start requires repo.");
+  const config = JSON.parse(readFileSync(resolve(hqRoot, "factory", "factory.config.json"), "utf8"));
   const stateRoot = resolve(request.stateRoot || defaultStateRoot(hqRoot, request.repo));
   const intake = await createContractFromObjective({
     objective: request.objective,
@@ -80,14 +82,16 @@ async function startFromObjective(request, dependencies) {
     project: request.project,
     stateRoot,
     hqRoot,
+    intakeAgentId: config.openclawIntegration?.agentIds?.intake,
+    founderAnswers: Array.isArray(request.answers) ? request.answers : [],
     execute: dependencies.executeChiefOfStaff,
   });
+  if (intake.questions?.length) return { version: 1, status: "needs-founder-input", taskId: intake.contract.id, questions: intake.questions };
   const decisionAdvisory = intake.advisory?.decisionClassification;
   if (decisionAdvisory) {
     console.warn(`[decision-advisory] ${intake.contract.id}: ${decisionAdvisory.surfacedAs} / ${decisionAdvisory.trigger} — advisory only, not blocking`);
   }
   const created = initialize({ ...request, action: "init", contractPath: intake.contractPath, stateRoot }, dependencies.initializeTask || initializeTask);
-  const config = JSON.parse(readFileSync(resolve(hqRoot, "factory", "factory.config.json"), "utf8"));
   const result = await runToTerminal({
     hqRoot,
     statePath: created.statePath,
@@ -97,6 +101,18 @@ async function startFromObjective(request, dependencies) {
     execute: dependencies.execute,
   });
   return { ...result, statePath: created.statePath, worktree: created.worktree, branch: created.branch, contract: intake.contract, advisory: intake.advisory };
+}
+
+async function inspectObjective(request, dependencies) {
+  if (!request.repo || !request.objective) throw new Error("intake requires repo and objective.");
+  const config = JSON.parse(readFileSync(resolve(hqRoot, "factory", "factory.config.json"), "utf8"));
+  const stateRoot = resolve(request.stateRoot || defaultStateRoot(hqRoot, request.repo));
+  const intake = await createContractFromObjective({
+    objective: request.objective, repo: request.repo, issue: request.issue, project: request.project,
+    stateRoot, hqRoot, preview: true, founderAnswers: Array.isArray(request.answers) ? request.answers : [],
+    intakeAgentId: config.openclawIntegration?.agentIds?.intake, execute: dependencies.executeChiefOfStaff,
+  });
+  return { version: 1, status: intake.questions?.length ? "needs-founder-input" : "ready", questions: intake.questions || [], contract: intake.contract };
 }
 
 function initialize(request, initializer) {
@@ -143,5 +159,5 @@ function requiredPath(request) {
 }
 
 function stateResponse(state) {
-  return { version: 1, status: state.status, taskId: state.task.id, currentStage: state.currentStage, blocker: state.blocker || null };
+  return { version: 1, status: state.status, taskId: state.task.id, currentStage: state.currentStage, blocker: state.blocker || null, recovery: state.recovery || null, failures: state.failures || [] };
 }

@@ -6,6 +6,11 @@ Start with [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md) for the durable context
 shared by every harness. Accepted decisions and their rationale live in
 [`DECISIONS.md`](DECISIONS.md). This document remains the operational overview.
 
+The repository is **main-only**: `main` is the single permanent branch and every
+change lands through a PR targeting it via a short-lived branch/worktree that is
+deleted after merge. This is a repository-wide invariant — see
+[`GIT_WORKFLOW.md`](GIT_WORKFLOW.md) (SFD-2026-008).
+
 ## Founder loop
 
 1. Founder discusses a goal with a strategy agent.
@@ -17,6 +22,12 @@ shared by every harness. Accepted decisions and their rationale live in
 7. Low-risk work can eventually auto-merge when all gates pass. V1 keeps merge approval human-controlled.
 8. The HQ records what shipped, what is blocked, and what requires a strategic decision.
 
+The Chief of Staff decides ordinary implementation details automatically. At
+intake it may ask at most one short question, and only when the missing answer
+changes product direction, privacy/security, meaningful spend, destructive
+production behavior, or safe progress. Non-blocking choices are deferred until
+the task is merge-ready and shown as `A`, `B`, or `Other` in the Founder Inbox.
+
 ## Roles
 
 | Role | Default harness | Purpose |
@@ -24,9 +35,9 @@ shared by every harness. Accepted decisions and their rationale live in
 | Chief of Staff | OpenClaw | turn goals into bounded work; route/escalate |
 | Architect | Claude Code | design and challenge non-trivial architecture |
 | Builder | Codex | primary autonomous implementation |
-| Product/UI Builder | Cursor | interface work and visual iteration |
+| Product/UI Builder | Codex (`frontend-builder`) | interface work, responsive checks, and visual evidence |
 | Reviewer | different from builder | find correctness, maintainability, security, and product issues |
-| QA | Cursor/Codex/Claude | attempt to break the result and verify acceptance criteria |
+| QA | Claude/Codex | attempt to break the result and verify acceptance criteria independently |
 | Release Manager | deterministic gates + OpenClaw | decide whether work is merge-ready; no production autonomy in V1 |
 
 Roles are responsibilities, not seven permanently-running processes.
@@ -37,13 +48,13 @@ GitHub is the durable control plane:
 
 `idea -> issue -> ready -> building -> review -> QA -> merge-ready -> merged -> deployed`
 
-OpenClaw is the orchestrator. Codex, Claude Code, and Cursor are execution harnesses. The HQ dashboard is the operator view.
+OpenClaw is the orchestrator. Codex and Claude are the active execution harnesses; Cursor remains an interactive IDE and planned harness. The HQ dashboard is the operator view.
 
 ## V1 safety model
 
-- Agents may read project repos and create branches/PRs.
+- Agents may read project repos and create short-lived branches/PRs.
 - Agents may run normal development commands inside isolated workspaces.
-- Agents do not push directly to `main`.
+- Agents do not push directly to `main`. Every change lands via a PR targeting `main`; the branch and worktree are deleted after merge (`GIT_WORKFLOW.md`).
 - Agents do not deploy production, delete production data, spend money, publish externally, or change secrets without human approval.
 - A model cannot be the sole reviewer of its own implementation.
 
@@ -131,10 +142,13 @@ result. `run` drives all remaining stages:
 For an OpenClaw automation that owns invocation itself, call `next`, dispatch
 the returned `actor` with `promptPath` and `cwd`, then call `ingest`. Repeated
 `next` calls return the same outstanding dispatch, while a running dispatch
-cannot be claimed twice. Invocation failures retry the same stage up to the
-configured limit. Substantive review, QA, and security failures invalidate
-downstream evidence and route their findings back to the builder. A
-decision-required result or exhausted retry budget blocks advancement.
+cannot be claimed twice. Every failure is classified and recoverable failures
+remain on the original task: the factory records the failure, dispatches a
+bounded diagnosis/repair, independently verifies the repair, and then re-arms
+the failed stage. Substantive review, QA, and security failures invalidate
+downstream evidence and preserve their original findings. A founder decision,
+unsafe repair, or exhausted recovery budget blocks advancement with an
+actionable Founder Inbox explanation.
 
 The default OpenClaw agent IDs are configured under
 `openclawIntegration.agentIds` in `factory/factory.config.json`; requests may
