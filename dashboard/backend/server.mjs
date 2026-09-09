@@ -315,7 +315,7 @@ app.get("/api/hq/learning", (_req, res) => {
 
 app.get("/api/hq/costs", async (_req, res) => {
   try {
-    res.json(await buildHqCostsPayload({ hqRoot: ROOT }));
+    res.json(await buildHqCostsPayload({ hqRoot: ROOT, authoritativeSource: PLAN_LIMITS_SOURCE }));
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
   }

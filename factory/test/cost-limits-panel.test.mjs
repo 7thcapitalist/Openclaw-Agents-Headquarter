@@ -6,6 +6,7 @@ import {
   fmtTokens,
   fmtUsd,
   normalizeCosts,
+  normalizeAiUsage,
   normalizePlanLimits,
 } from "../../dashboard/backend/public/cost-limits.mjs";
 
@@ -130,4 +131,37 @@ test("formatters reject unusable values and preserve zero", () => {
   assert.equal(fmtTokens(0), "0");
   assert.equal(fmtTokens(NaN), "—");
   assert.equal(fmtCount(42), "42");
+});
+
+test("founder AI usage view keeps multiple windows, attribution, and unavailable capacity explicit", () => {
+  const aiUsage = normalizeAiUsage({
+    asOf: "2026-09-08T12:00:00Z",
+    capacity: [{
+      provider: "openai",
+      label: "Codex / OpenAI",
+      status: "healthy",
+      confidence: "authoritative",
+      source: "provider API",
+      windows: [
+        { name: "5-hour window", used: 100, remaining: 0, limit: 100, percentRemaining: 0, resetAt: "2026-09-08T13:00:00Z", confidence: "authoritative", source: "provider API" },
+        { name: "Daily window", note: "not exposed", confidence: "unavailable", source: "unavailable" },
+      ],
+    }, {
+      provider: "anthropic", label: "Claude / Anthropic", status: "unavailable", confidence: "unavailable", reason: "No supported quota source",
+    }],
+    runtime: { status: "healthy", source: "OpenClaw sessions command", updatedAt: "2026-09-08T11:59:00Z" },
+    factory: { totalTokens: 100, records: 1, usageConfidence: "recorded", byProvider: [{ provider: "openai", totalTokens: 100 }], byModel: [], byAgent: [{ agent: "builder", totalTokens: 100 }], byProject: [{ project: "LifeMax", totalTokens: 100 }], byObjective: [], byTask: [], byStage: [] },
+    otherLocal: { available: true, summary: { totalTokens: 20, byProvider: [], byModel: [], byAgent: [], byProject: [], byObjective: [], byTask: [], byStage: [] } },
+    dataQuality: [{ label: "Provider remaining capacity", confidence: "authoritative" }, { label: "Factory usage", confidence: "recorded" }],
+  });
+  assert.equal(aiUsage.capacity[0].windows.length, 2);
+  const html = costLimitsPanel({ aiUsage, recentTasks: [], totals: {} }, { providers: [] });
+  assert.match(html, /Can the Factory keep running/);
+  assert.match(html, /5-hour window/);
+  assert.match(html, /0% remaining/);
+  assert.match(html, /Daily window/);
+  assert.match(html, /No supported quota source/);
+  assert.match(html, /By agent/);
+  assert.match(html, /LifeMax/);
+  assert.match(html, /OpenClaw runtime/);
 });
