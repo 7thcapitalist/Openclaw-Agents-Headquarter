@@ -23,7 +23,9 @@ export function objectiveStatusBadgeClass(o) {
 // standalone task only provides the original prompt. Keep the complete prompt
 // on the object for drill-downs, but never let it become a dashboard heading.
 export function shortObjectiveTitle(value, { maxWords = 8, maxChars = 72, fallback = "Untitled objective" } = {}) {
-  const text = String(value || "")
+  const raw = String(value || "").replace(/^(?:mission|objective|task)\s*[:—-]\s*/i, "");
+  const firstLine = raw.split(/\r?\n/).find((line) => line.trim()) || raw;
+  const text = firstLine
     .replace(/```[\s\S]*?```/g, " ")
     .replace(/[`*_>#]/g, "")
     .replace(/\s+/g, " ")

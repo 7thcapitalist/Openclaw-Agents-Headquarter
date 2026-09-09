@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 import {
   groupObjectives,
@@ -51,6 +53,19 @@ test("shortObjectiveTitle collapses legacy long prompts for founder surfaces", (
   assert.equal(title, "Build a calm founder command center");
   assert.ok(title.length <= 72);
   assert.equal(shortObjectiveTitle(""), "Untitled objective");
+});
+
+test("shortObjectiveTitle removes prompt labels and keeps the first line", () => {
+  assert.equal(
+    shortObjectiveTitle("MISSION: TRANSFORM LIFEMAXING INTO A REAL-LIFE GAME\nThis is not merely a UI redesign."),
+    "TRANSFORM LIFEMAXING INTO A REAL-LIFE GAME",
+  );
+});
+
+test("live execution headings never render the original prompt", () => {
+  const app = readFileSync(join(import.meta.dirname, "../../dashboard/backend/public/app.js"), "utf8");
+  assert.match(app, /const title = objectiveView\.shortObjectiveTitle\(x\.title \|\| x\.objective/);
+  assert.doesNotMatch(app, /operation-original-request/);
 });
 
 test("objective cards fall back to a compact title when the presenter title is missing", () => {
