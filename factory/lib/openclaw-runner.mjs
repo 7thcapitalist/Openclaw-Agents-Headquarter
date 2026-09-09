@@ -29,8 +29,9 @@ export function configuredAgentIds(hqRoot, agentIds = {}) {
     // Only import stage+harness routes implicitly. Legacy direct callers and
     // unit harnesses may intentionally use logical actors such as `openclaw`;
     // broad stage/actor defaults are supplied explicitly by the orchestrator.
+    // Recovery routes must also be available to standalone task retries.
     fromConfig = Object.fromEntries(Object.entries(config.openclawIntegration?.agentIds || {})
-      .filter(([key]) => key.includes(":")));
+      .filter(([key]) => key.includes(":") || key === "recovery" || key === "recovery-verify"));
   } catch { /* isolated unit tests may not have a factory config */ }
   return { ...fromConfig, ...agentIds };
 }
@@ -365,6 +366,18 @@ export async function executeOpenClaw({ agentId, messageFile, sessionKey, cwd })
 }
 
 export function selectAgentId(dispatch, agentIds, { strict = false } = {}) {
+  if (dispatch.kind === "recovery-verify") {
+    // The protocol stage remains the failed stage for result validation; route
+    // verification by its actual responsibility, never by the failed builder.
+    const stage = dispatch.verificationStage || "qa";
+    const verifier = agentIds["recovery-verify"] || agentIds[`${stage}:${dispatch.actor}`] || agentIds[stage];
+    if (verifier) {
+      if (verifier === agentIds.recovery) throw new Error("Recovery repair and verification require different runtime agents");
+      return verifier;
+    }
+    if (strict) throw new Error("No recovery verification runtime agent is configured");
+    return dispatch.actor;
+  }
   const selected = agentIds[dispatch.kind === "recovery-diagnose" ? "recovery" : `${dispatch.stage}:${dispatch.actor}`]
     || agentIds[dispatch.stage]
     || agentIds[dispatch.actor];

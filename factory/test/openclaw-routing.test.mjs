@@ -21,3 +21,10 @@ test("runner refuses to dispatch an unconfigured logical actor instead of invoki
     /no runtime agent is configured.*codex/,
   );
 });
+
+test("recovery verification does not use the failed builder route", () => {
+  const routes = { recovery: "architect", "recovery-verify": "backend-builder", "builder:claude": "architect", "qa:claude": "qa" };
+  assert.equal(selectAgentId({ kind: "recovery-diagnose", stage: "builder", actor: "recovery" }, routes), "architect");
+  assert.equal(selectAgentId({ kind: "recovery-verify", stage: "builder", actor: "claude", verificationStage: "qa" }, routes), "backend-builder");
+  assert.throws(() => selectAgentId({ kind: "recovery-verify", stage: "builder", actor: "claude" }, { ...routes, "recovery-verify": "architect" }), /different runtime agents/);
+});

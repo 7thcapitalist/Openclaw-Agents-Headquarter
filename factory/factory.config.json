@@ -41,7 +41,8 @@
       "release": "release",
       "openclaw": "main",
       "learning": "learning",
-      "recovery": "recovery",
+      "recovery": "architect",
+      "recovery-verify": "backend-builder",
       "research": "research"
     }
   },
