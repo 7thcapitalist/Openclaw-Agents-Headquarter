@@ -4,6 +4,7 @@ import { mkdtempSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { EventEmitter } from "node:events";
+import { buildFounderOverview } from "../../dashboard/backend/lib/founderControlPlane.mjs";
 import { addOvernightItem, readOvernightQueue, removeOvernightItem, startOvernight, stopOvernight } from "../../dashboard/backend/lib/overnightQueue.mjs";
 
 test("overnight queue persists a bounded founder plan and supports removal", () => {
@@ -60,4 +61,7 @@ test("worker startup error settles once and continues the queue", () => {
   child.emit("close", 0);
   assert.equal(readOvernightQueue(root).status, "needs-attention");
   assert.equal(readOvernightQueue(root).items[0].status, "failed");
+  const itemId = `overnight:${readOvernightQueue(root).items[0].id}`;
+  const overview = buildFounderOverview(root, []);
+  assert.ok(overview.inbox.some(item => item.id === itemId && item.kind === "blocked"));
 });

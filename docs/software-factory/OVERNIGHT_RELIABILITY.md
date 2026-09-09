@@ -18,3 +18,8 @@ further verification before an overnight reliability guarantee can be made.
 Verification: queue tests simulate three requests with an initial failure,
 worker-start failure, and stop during an active objective. The first failure
 does not duplicate work or prevent later requests from completing.
+
+Queue/control-plane verification: 28 tests pass, including a worker-start
+failure reaching Founder Inbox. The broader Founder UI regression file has
+one existing timeout-response assertion failure, reproduced on main e43e4df.
+No live dashboard restart or browser workflow is claimed for this PR.
