@@ -828,6 +828,10 @@ import { costLimitsPanel } from "/cost-limits.mjs";
     };
     project.onchange = () => { const repo = project.selectedOptions[0]?.dataset.repo; if (repo) document.getElementById("founder-repo").value = repo; syncSelfNote(); };
     syncSelfNote();
+    app.querySelectorAll("[data-refresh-ai-usage]").forEach((button) => button.onclick = () => {
+      button.disabled = true;
+      route().finally(() => { button.disabled = false; });
+    });
     app.querySelectorAll(".founder-presets .chip").forEach((chip) => chip.onclick = () => {
       document.getElementById("founder-objective").value = chip.dataset.preset;
       document.getElementById("founder-decompose").checked = true;
