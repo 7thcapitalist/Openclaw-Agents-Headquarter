@@ -1,7 +1,7 @@
 import { openSync, closeSync, unlinkSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "fs";
 import { basename, dirname, join, resolve } from "path";
 import { homedir } from "os";
-import { readState, resumeState, writeState } from "../../../factory/lib/task-workflow.mjs";
+import { isAwaitingFounderApproval, readState, resumeState, writeState } from "../../../factory/lib/task-workflow.mjs";
 import { writeHandoff } from "../../../factory/lib/handoff.mjs";
 import { listProjectBriefs } from "../../../factory/lib/intel/project-brief.mjs";
 import { buildCompanyBriefing } from "../../../factory/lib/intel/founder-briefing.mjs";
@@ -184,6 +184,7 @@ function taskView(path) {
       : null,
     events: (state.events || []).slice(-5).reverse(),
     founderApprovalRequest: state.founderApprovalRequest || null,
+    awaitingFounderApproval: isAwaitingFounderApproval(state),
     decisionCard: readDecisionCard(state),
   };
 }
@@ -856,8 +857,8 @@ export function buildFounderOverview(root, hqProjects = []) {
     statePath: task.statePath,
     question: task.decisionCard?.question || task.blocker.summary,
     why: task.decisionCard?.why || `The ${task.blocker.stage} stage cannot continue without founder direction.`,
-    recommendation: task.decisionCard?.recommendation || (task.risk === "high" ? "Review and submit the signed high-risk approval." : "Approve the recommended path or provide a concise direction."),
-    options: task.decisionCard?.options?.length ? task.decisionCard.options : (task.risk === "high" ? ["Submit signed approval", "Keep paused"] : ["Approve and resume", "Provide direction", "Keep paused"]),
+    recommendation: task.decisionCard?.recommendation || (task.awaitingFounderApproval ? "Review the planned high-risk change and submit the signed approval." : "Provide a concise direction so the team can continue."),
+    options: task.decisionCard?.options?.length ? task.decisionCard.options : (task.awaitingFounderApproval ? ["Submit signed approval", "Keep paused"] : ["Approve and resume", "Provide direction", "Keep paused"]),
     risk: task.risk,
     requestedAt: task.blocker.at,
   }));
@@ -928,7 +929,11 @@ function buildFounderInbox({ tasks, decisions, questions, objectives = [] }) {
 
   for (const d of decisions) {
     const task = byId.get(d.taskId);
-    const isApproval = d.risk === "high" && Boolean(task?.founderApprovalRequest);
+    // A high-risk task may have an approval request from creation, but it is
+    // only an approval item once the workflow has actually reached the
+    // builder gate. Product/architect decision-required blockers must remain
+    // ordinary founder decisions.
+    const isApproval = Boolean(task?.awaitingFounderApproval);
     items.push({
       kind: isApproval ? "approval" : "decision",
       id: d.id,

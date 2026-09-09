@@ -95,6 +95,18 @@ test("high-risk work blocks before build until founder approval is recorded", ()
   assert.equal(state.founderApproval.assertion.taskId, task.id);
 });
 
+test("a founder decision on an earlier high-risk blocker prevents a second approval gate", () => {
+  let state = createState({ task: { ...task, risk: "high" }, repo: "/tmp/repo", branch: "factory/issue-42", worktree: "/tmp/worktree", founderPublicKey });
+  state.status = "blocked";
+  state.blocker = { stage: "product", outcome: "decision-required", summary: "Choose the persistence direction." };
+  state.founderDecisions = [{ at: new Date().toISOString(), direction: "Use the approved hosted persistence option." }];
+  state = resumeState(state);
+  state = completeStage(state, completion("product"));
+  state = completeStage(state, completion("architect", state.assignments.architect));
+  assert.equal(state.status, "active");
+  assert.equal(state.currentStage, "builder");
+});
+
 test("task input cannot forge founder approval", () => {
   const forged = { ...task, risk: "high", founderApproval: { by: "founder", verified: true }, approvals: { founder: true } };
   assert.throws(() => createState({ task: forged, repo: "/tmp/repo", branch: "factory/issue-42", worktree: "/tmp/worktree" }), /public key/);
