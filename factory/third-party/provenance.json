@@ -14,5 +14,9 @@
     "sourcePath": "README.md",
     "classification": "reference",
     "notes": "Research and architectural comparison cite Paperclip; no source code is included in this document."
-  }]
+  },
+  { "localPath": "factory/lib/integrations/openclaw-gateway-contract.mjs", "sourceId": "paperclip", "sourcePath": "packages/adapters/openclaw-gateway/src/server/execute.ts", "classification": "adapted", "notes": "Adapts Paperclip Gateway handshake, device signing, pairing, session, idempotency, event, and timeout contracts into a synthetic HQ harness." },
+  { "localPath": "factory/test/openclaw-gateway-contract.test.mjs", "sourceId": "paperclip", "sourcePath": "packages/adapters/openclaw-gateway/src/server/execute.ts", "classification": "adapted", "notes": "Adapts Paperclip OpenClaw onboarding cases into credential-free contract tests." },
+  { "localPath": "docs/software-factory/PAPERCLIP_OPENCLAW_GATEWAY_CONTRACT.md", "sourceId": "paperclip", "sourcePath": "packages/adapters/openclaw-gateway/README.md", "classification": "reference", "notes": "Documents the pinned adapter source and preserved HQ execution boundaries." }
+  ]
 }
