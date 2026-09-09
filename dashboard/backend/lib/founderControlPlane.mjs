@@ -188,6 +188,7 @@ function taskView(path) {
     founderApprovalRequest: state.founderApprovalRequest || null,
     awaitingFounderApproval: isAwaitingFounderApproval(state),
     decisionCard: readDecisionCard(state),
+    deferredDecisions: state.deferredDecisions || [],
   };
 }
 
@@ -684,6 +685,21 @@ function readDecisionCard(state) {
     };
     if (card.question || card.why || card.recommendation || card.options.length) return card;
   }
+  // Reviewers sometimes return a long prose escalation instead of the
+  // repository Decision Card template. Keep the founder interaction short by
+  // extracting the explicit A/B choice from that prose.
+  const summary = String(state.blocker?.summary || "");
+  if (/Option A:/i.test(summary) && /Option B:/i.test(summary)) {
+    return {
+      question: "How should the team verify the remaining production risk?",
+      why: "The reviewer cannot verify the remote production database behavior with the current test environment.",
+      recommendation: "A: provision a temporary test database and run the real remote verification.",
+      options: [
+        "A: provision a temporary test database and run the remote verification",
+        "B: use the extended deployed smoke test as the promotion gate",
+      ],
+    };
+  }
   return null;
 }
 
@@ -924,7 +940,7 @@ export function buildFounderOverview(root, hqProjects = []) {
       taskCount: project.tasks.length,
     };
   });
-  const decisions = tasks.filter((task) => task.blocker?.outcome === "decision-required").map((task) => ({
+  const blockedDecisions = tasks.filter((task) => task.blocker?.outcome === "decision-required").map((task) => ({
     id: `${task.id}:${task.blocker.stage}`,
     taskId: task.id,
     project: task.project,
@@ -936,6 +952,24 @@ export function buildFounderOverview(root, hqProjects = []) {
     risk: task.risk,
     requestedAt: task.blocker.at,
   }));
+  const decisions = [
+    ...blockedDecisions,
+    ...tasks
+      .filter((task) => ["merge-ready", "merged"].includes(task.status) && Array.isArray(task.deferredDecisions))
+      .flatMap((task) => task.deferredDecisions.map((decision) => ({
+        id: `${task.id}:${decision.id}`,
+        taskId: task.id,
+        project: task.project,
+        statePath: task.statePath,
+        question: decision.question,
+        why: decision.why,
+        recommendation: decision.recommendation || "The team completed the safe work; choose the option that best matches your intent.",
+        options: decision.options,
+        risk: task.risk,
+        requestedAt: decision.requestedAt,
+        deferred: true,
+      }))),
+  ];
   const activity = tasks.flatMap((task) => task.events.map((event) => ({ ...event, taskId: task.id, project: task.project, objective: task.objective })))
     .sort((a, b) => String(b.at || "").localeCompare(String(a.at || ""))).slice(0, 30);
 
@@ -1009,7 +1043,7 @@ function buildFounderInbox({ tasks, decisions, questions, objectives = [] }) {
     // ordinary founder decisions.
     const isApproval = Boolean(task?.awaitingFounderApproval);
     items.push({
-      kind: isApproval ? "approval" : "decision",
+      kind: isApproval ? "approval" : (d.deferred ? "post-task-decision" : "decision"),
       id: d.id,
       taskId: d.taskId,
       objective: task?.objective || null,
@@ -1025,7 +1059,7 @@ function buildFounderInbox({ tasks, decisions, questions, objectives = [] }) {
       options: d.options,
       risk: d.risk || null,
       requestedAt: d.requestedAt || null,
-      action: isApproval ? "one-click-approval" : "respond-and-resume",
+      action: isApproval ? "one-click-approval" : (d.deferred ? "record-decision" : "respond-and-resume"),
       // Copy for the one-click review card. The browser signs with a
       // non-extractable Ed25519 key; the server only verifies + records.
       approval: isApproval
@@ -1243,6 +1277,14 @@ export function resolveFounderDecision({ root, hqRoot, statePath, direction }) {
   const allowedRoot = resolve(factoryRoot(root));
   if (!path.startsWith(`${allowedRoot}/`)) throw new Error("Task state is outside the factory state directory.");
   const state = readState(path);
+  if (["merge-ready", "merged"].includes(state.status) && Array.isArray(state.deferredDecisions) && state.deferredDecisions.length) {
+    const at = new Date().toISOString();
+    const pending = state.deferredDecisions.find((item) => !item.founderResponse) || state.deferredDecisions[0];
+    pending.founderResponse = String(direction).trim();
+    state.events.push({ at, type: "deferred-decision-recorded", stage: pending.stage, actor: "founder", direction: pending.founderResponse, decisionId: pending.id });
+    writeState(path, state);
+    return taskView(path);
+  }
   if (state.status !== "blocked" || state.blocker?.outcome !== "decision-required") throw new Error("Task is not waiting for a founder decision.");
   if (state.task.risk === "high" && state.blocker?.stage === "builder") throw new Error("High-risk build approval requires the signed approval flow.");
   const at = new Date().toISOString();

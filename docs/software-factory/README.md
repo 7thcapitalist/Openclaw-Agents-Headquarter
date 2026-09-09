@@ -22,6 +22,12 @@ deleted after merge. This is a repository-wide invariant — see
 7. Low-risk work can eventually auto-merge when all gates pass. V1 keeps merge approval human-controlled.
 8. The HQ records what shipped, what is blocked, and what requires a strategic decision.
 
+The Chief of Staff decides ordinary implementation details automatically. At
+intake it may ask at most one short question, and only when the missing answer
+changes product direction, privacy/security, meaningful spend, destructive
+production behavior, or safe progress. Non-blocking choices are deferred until
+the task is merge-ready and shown as `A`, `B`, or `Other` in the Founder Inbox.
+
 ## Roles
 
 | Role | Default harness | Purpose |

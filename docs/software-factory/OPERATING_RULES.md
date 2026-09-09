@@ -34,6 +34,12 @@ Do not ask the founder about:
 - reversible implementation details
 - minor UI details already implied by the issue
 
+When safe work can continue, record a **deferred decision** instead of stopping
+the pipeline. Deferred decisions are shown together after the task reaches
+merge-ready, in plain language with options `A`, `B`, or `Other`. Use a blocking
+founder decision only when no safe progress is possible or a real authority,
+privacy, destructive-operation, spend, or production gate must stop the work.
+
 Make the best reasonable choice, document it, and continue.
 
 ## Escalate

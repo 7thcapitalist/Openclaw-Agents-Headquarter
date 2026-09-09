@@ -551,9 +551,10 @@ import { costLimitsPanel } from "/cost-limits.mjs";
 
   function decisionCard(x) {
     const actionable = Boolean(x.statePath);
+    const postTask = x.kind === "post-task-decision" || x.deferred === true;
     // Free-text-ish placeholder options ("Provide direction", "Keep paused") are
     // not real one-click answers — only offer buttons for substantive choices.
-    const choices = (x.options || []).filter((o) => !/^(provide direction|keep paused|approve and resume|submit signed approval)$/i.test(String(o).trim()));
+    const choices = (x.options || []).filter((o) => !/^(provide direction|keep paused|approve and resume|submit signed approval|other\b)/i.test(String(o).trim()));
     return `<article class="decision-card">
       <div class="decision-top"><span class="decision-icon">!</span><div><strong>${esc(x.question)}</strong><span>${esc(x.project || "company")}${x.taskId ? ` · <code>${esc(x.taskId)}</code>` : ""}</span></div></div>
       ${x.objective ? `<p class="muted small">Task: ${esc(x.objective)}</p>` : ""}
@@ -561,8 +562,8 @@ import { costLimitsPanel } from "/cost-limits.mjs";
       ${x.recommendation ? `<div class="decision-rec"><small>Recommendation</small>${esc(x.recommendation)}</div>` : ""}
       ${actionable
         ? `<div class="decision-choices">
-            ${choices.map((c) => `<button class="btn" data-resolve-choice="${esc(x.statePath)}" data-choice="${esc(c)}">${esc(c)}</button>`).join("")}
-            <button class="btn secondary" data-resolve-decision="${esc(x.statePath)}">Answer in my own words…</button>
+            ${choices.map((c) => `<button class="btn" data-resolve-choice="${esc(x.statePath)}" data-choice="${esc(c)}" data-post-task="${postTask ? "1" : "0"}">${esc(c)}</button>`).join("")}
+            <button class="btn secondary" data-resolve-other="${esc(x.statePath)}" data-post-task="${postTask ? "1" : "0"}">Other…</button>
           </div>`
         : `<p class="muted small">Strategic decision tracked in ${esc(x.project || "the project")}'s ownership.json — not resolvable from here yet; update the file directly.</p>`}
     </article>`;
@@ -644,8 +645,8 @@ import { costLimitsPanel } from "/cost-limits.mjs";
     return out;
   }
 
-  const INBOX_KIND_LABEL = { approval: "Approval", decision: "Decision", blocked: "Blocked", question: "Question" };
-  const INBOX_KIND_CLASS = { approval: "badge-warn", decision: "badge-warn", blocked: "health-failed", question: "badge-type" };
+  const INBOX_KIND_LABEL = { approval: "Approval", decision: "Decision", "post-task-decision": "After task", blocked: "Blocked", question: "Question" };
+  const INBOX_KIND_CLASS = { approval: "badge-warn", decision: "badge-warn", "post-task-decision": "badge-type", blocked: "health-failed", question: "badge-type" };
 
   // One Founder Inbox entry, wrapped with a "×" that dismisses it to the
   // "Dismissed" fold below. Dismissing is presentation-only and reversible —
@@ -672,10 +673,10 @@ import { costLimitsPanel } from "/cost-limits.mjs";
   // system answers them synchronously).
   function inboxCardBody(x) {
     if (x.kind === "approval") return approvalCard(x);
-    if (x.kind === "decision") {
+    if (x.kind === "decision" || x.kind === "post-task-decision") {
       return decisionCard({
         question: x.title, why: x.detail, project: x.project, taskId: x.taskId, objective: x.objective,
-        recommendation: x.recommendation, options: x.options, risk: x.risk, statePath: x.statePath,
+        recommendation: x.recommendation, options: x.options, risk: x.risk, statePath: x.statePath, kind: x.kind, deferred: x.deferred,
       });
     }
     return `<article class="decision-card">
@@ -847,11 +848,24 @@ import { costLimitsPanel } from "/cost-limits.mjs";
       const objective = document.getElementById("founder-objective").value.trim();
       if (!objective) { showToast("Describe the outcome you want first.", true); return; }
       if (!project.value) { showToast("Pick a project.", true); return; }
-      try {
-        await apiJson(endpoint, { method: "POST", body: JSON.stringify({ objective, projectId: project.value, ...(repo ? { repo } : {}) }) });
+      const body = (answers = []) => JSON.stringify({ objective, projectId: project.value, ...(repo ? { repo } : {}), ...(answers.length ? { answers } : {}) });
+      const launch = async (answers = []) => {
+        await apiJson(endpoint, { method: "POST", body: body(answers) });
         showToast("Created. Your team is on it — follow it in “Running now” below.");
         document.getElementById("founder-objective").value = "";
         setTimeout(route, 800);
+      };
+      try {
+        const intake = await apiJson("/api/founder/intake", { method: "POST", body: body() });
+        if (!intake.questions?.length) return launch();
+        const q = intake.questions[0];
+        openModal("One quick question", `<p>${esc(q.question)}</p>${q.why ? `<p class="muted small">${esc(q.why)}</p>` : ""}<div class="decision-choices">${q.options.map((option) => `<button class="btn" data-intake-answer="${esc(option)}">${esc(option)}</button>`).join("")}<button class="btn secondary" data-intake-other>Other…</button></div>`);
+        const answer = async (value) => { closeModal(); await launch([value]); };
+        modalBody.querySelectorAll("[data-intake-answer]").forEach((btn) => btn.onclick = () => answer(btn.dataset.intakeAnswer));
+        modalBody.querySelector("[data-intake-other]").onclick = () => {
+          openModal("Answer the question", `<textarea class="editor" id="intake-other" placeholder="Your answer…"></textarea><button class="btn" id="intake-submit">Continue</button>`);
+          document.getElementById("intake-submit").onclick = () => { const value = document.getElementById("intake-other").value.trim(); if (!value) return showToast("Write a short answer first.", true); answer(value); };
+        };
       } catch (err) { showToast(err.message, true); }
     };
     app.querySelectorAll("[data-retry-task]").forEach((btn) => btn.onclick = async () => {
@@ -887,11 +901,22 @@ import { costLimitsPanel } from "/cost-limits.mjs";
       btn.disabled = true;
       try {
         await apiJson("/api/founder/decisions/resolve", { method: "POST", body: JSON.stringify({ statePath: btn.dataset.resolveChoice, direction: btn.dataset.choice }) });
-        showToast(`Answered: “${btn.dataset.choice}”. Work resumed.`);
+        showToast(btn.dataset.postTask === "1" ? `Recorded: “${btn.dataset.choice}”.` : `Answered: “${btn.dataset.choice}”. Work resumed.`);
         route();
       } catch (e) { showToast(e.message, true); btn.disabled = false; }
     });
-    app.querySelectorAll("[data-resolve-decision]").forEach((btn) => btn.onclick = () => { openModal("Answer in your own words", `<label class="field-label">Your direction for the team</label><textarea class="editor" id="decision-direction" placeholder="Go with option A because…"></textarea><button class="btn" id="submit-decision">Send &amp; resume</button>`); document.getElementById("submit-decision").onclick = async () => { const dir = document.getElementById("decision-direction").value.trim(); if (!dir) { showToast("Type a direction first.", true); return; } try { await apiJson("/api/founder/decisions/resolve", { method: "POST", body: JSON.stringify({ statePath: btn.dataset.resolveDecision, direction: dir }) }); closeModal(); showToast("Decision recorded. Work resumed."); route(); } catch (e) { showToast(e.message, true); } }; });
+    app.querySelectorAll("[data-resolve-other]").forEach((btn) => btn.onclick = () => {
+      const postTask = btn.dataset.postTask === "1";
+      openModal("Choose Other", `<label class="field-label">Your answer</label><textarea class="editor" id="decision-direction" placeholder="Describe your preference…"></textarea><button class="btn" id="submit-decision">Record answer</button>`);
+      document.getElementById("submit-decision").onclick = async () => {
+        const dir = document.getElementById("decision-direction").value.trim();
+        if (!dir) { showToast("Write a short answer first.", true); return; }
+        try {
+          await apiJson("/api/founder/decisions/resolve", { method: "POST", body: JSON.stringify({ statePath: btn.dataset.resolveOther, direction: dir }) });
+          closeModal(); showToast(postTask ? "Recorded for the completed task." : "Decision recorded. Work resumed."); route();
+        } catch (e) { showToast(e.message, true); }
+      };
+    });
     app.querySelectorAll("[data-approve]").forEach((btn) => btn.onclick = async () => {
       const card = btn.closest("[data-approval-task]");
       const statusEl = card?.querySelector("[data-approve-status]") || document.createElement("div");

@@ -54,6 +54,12 @@
     "defaultProvider": "vercel",
     "providers": ["vercel", "none"]
   },
+  "founderInteraction": {
+    "default": "chief-of-staff-decides",
+    "maxQuestionsAtIntake": 1,
+    "askOnlyWhen": ["material product direction", "privacy or security posture", "meaningful spend", "destructive production action", "no safe progress"],
+    "deferNonBlockingDecisionsUntil": "merge-ready"
+  },
   "pipeline": [
     "product",
     "architect",

@@ -111,6 +111,15 @@ test("ordinary reversible work remains unflagged and keeps the written contract 
   assert.equal(Object.hasOwn(JSON.parse(readFileSync(result.contractPath, "utf8")), "advisory"), false);
 });
 
+test("chief of staff can ask one material intake question without starting work", async () => {
+  const result = await intake("Launch this for customers.", {
+    task: { questions: [{ question: "Which customer group is this for?", options: ["A: families", "B: clinicians"], why: "This changes the product promise." }] },
+  });
+  assert.equal(result.questions.length, 1);
+  assert.equal(result.questions[0].question, "Which customer group is this for?");
+  assert.equal(result.contractPath, null);
+});
+
 test("intake model output cannot forge the classifier-owned advisory namespace", async () => {
   const forged = { decisionClassification: { advisory: true, blocksDispatch: true, outcome: "block" } };
   const result = await intake("Rename a helper and add a unit test.", { task: { advisory: forged } });

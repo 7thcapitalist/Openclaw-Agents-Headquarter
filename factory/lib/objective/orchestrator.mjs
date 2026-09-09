@@ -580,7 +580,18 @@ export async function runObjective({ hqRoot, objectivePath, maxConcurrent = 3, e
           return;
         }
         const classification = classifyFailure({ error: message, source: "factory" });
-        patchNode(objectivePath, nodeId, { status: "blocked", blocker: { stage: "orchestrator", outcome: "decision-required", founderAction: true, classification, whatFailed: `The factory could not continue objective node ${nodeId}.`, why: message, whatFactoryTried: "Recorded the orchestration error and stopped before advancing dependent work.", whatItNeedsFromFounder: "Review the factory error and approve or direct the repair if it is safe to continue.", whatHappensAfterApproval: "The original objective node will resume from its last durable state.", summary: `Factory error (${classification}): ${message}` } }, { type: "node-blocked", detail: message });
+        patchNode(objectivePath, nodeId, {
+          status: "blocked",
+          blocker: {
+            stage: "orchestrator", outcome: "decision-required", founderAction: true, classification,
+            whatFailed: `The factory could not continue objective node ${nodeId}.`,
+            why: message,
+            whatFactoryTried: "Recorded the orchestration error and stopped before advancing dependent work.",
+            whatItNeedsFromFounder: "Review the factory error and approve or direct the repair if it is safe to continue.",
+            whatHappensAfterApproval: "The original objective node will resume from its last durable state.",
+            summary: `Factory error (${classification}): ${message}`,
+          },
+        }, { type: "node-blocked", detail: message });
       })
       .finally(() => inFlight.delete(nodeId));
     inFlight.set(nodeId, p);

@@ -35,7 +35,7 @@ test("a project failure is diagnosed, repaired, independently verified, and resu
   };
   let result;
   for (let i = 0; i < 30; i += 1) {
-    result = await runOneStage({ hqRoot: process.cwd(), statePath, execute, concurrentGroups: [] });
+    result = await runOneStage({ hqRoot: join(process.cwd()), statePath, execute, concurrentGroups: [] });
     if (result.status !== "active") break;
   }
   assert.equal(result.status, "merge-ready");
@@ -47,3 +47,4 @@ test("a project failure is diagnosed, repaired, independently verified, and resu
   assert.ok(state.events.some((event) => event.type === "recovery-repair-attempted"));
   assert.ok(state.events.some((event) => event.type === "recovery-verified"));
 });
+
