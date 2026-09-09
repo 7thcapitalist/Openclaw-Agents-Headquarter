@@ -14,5 +14,10 @@
     "sourcePath": "README.md",
     "classification": "reference",
     "notes": "Research and architectural comparison cite Paperclip; no source code is included in this document."
-  }]
+  },
+  { "localPath": "factory/lib/packages/agent-company-linter.mjs", "sourceId": "paperclip", "sourcePath": "docs/companies/companies-spec.md", "classification": "adapted", "notes": "Implements the safe read-only subset of Paperclip Agent Companies discovery and validation." },
+  { "localPath": "factory/test/agent-company-linter.test.mjs", "sourceId": "paperclip", "sourcePath": "docs/companies/companies-spec.md", "classification": "inspired", "notes": "Tests portable package and safety behavior derived from the specification." },
+  { "localPath": "scripts/lint-agent-company.mjs", "sourceId": "paperclip", "sourcePath": "docs/companies/companies-spec.md", "classification": "inspired", "notes": "Provides a read-only JSON CLI for the adapted package linter." },
+  { "localPath": "docs/software-factory/PAPERCLIP_COMPANY_PACKAGE_LINTER.md", "sourceId": "paperclip", "sourcePath": "docs/companies/companies-spec.md", "classification": "reference", "notes": "Documents the supported Paperclip package subset and safeguards." }
+  ]
 }
