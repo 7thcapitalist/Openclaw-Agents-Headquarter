@@ -298,6 +298,23 @@ test("founder inbox: a terminally failed task is a 'blocked' item, not a decisio
   assert.equal(overview.decisions.length, 0, "a fail is not a decision");
 });
 
+test("founder inbox: exhausted infrastructure recovery becomes an actionable failure", () => {
+  const { root, statePath } = fixture();
+  registerIntelligence(root);
+  const state = JSON.parse(readFileSync(statePath, "utf8"));
+  state.status = "blocked";
+  state.autoRetries = 3;
+  state.blocker = { stage: "builder", outcome: "fail", summary: "Could not start the CLI." };
+  writeState(statePath, state);
+
+  const overview = buildFounderOverview(root, [{ id: "startup-ops", name: "Startup Ops" }]);
+  assert.equal(overview.autoRecovering.length, 0);
+  assert.equal(overview.inbox.length, 1);
+  assert.equal(overview.inbox[0].kind, "blocked");
+  assert.match(overview.inbox[0].title, /recovery exhausted/i);
+  assert.match(overview.inbox[0].detail, /retried.*3 times/i);
+});
+
 test("founder inbox: dismissing an entry moves it to dismissedInbox and is reversible", () => {
   const { root, statePath } = fixture();
   registerIntelligence(root);
