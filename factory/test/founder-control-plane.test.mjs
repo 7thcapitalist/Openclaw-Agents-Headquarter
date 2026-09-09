@@ -651,3 +651,33 @@ test("an old untouched objective drops to history without being archived", () =>
   assert.equal(shaped.lifecycle, "history");
   assert.equal(view.summary.history, 1);
 });
+
+test("objective execution view briefs infrastructure blockers instead of presenting raw text as a founder decision", () => {
+  const { root } = fixture();
+  const objectiveDir = join(root, "dashboard/backend/data/factory/startup-ops/objectives/obj-recovery-demo");
+  const taskDir = join(root, "dashboard/backend/data/factory/startup-ops/tasks/task-recovery");
+  mkdirSync(taskDir, { recursive: true });
+  const task = createState({
+    task: { id: "task-recovery", issue: "local:recovery", outcome: "Recover the build", acceptanceCriteria: ["retry safely"], project: "startup-ops", workType: "backend", risk: "low" },
+    repo: join(root, "repo"), branch: "factory/task-recovery", worktree: join(root, "repo"),
+    now: "2026-09-08T17:42:00.000Z",
+  });
+  task.status = "blocked";
+  task.blocker = { stage: "builder", outcome: "fail", summary: "builder dispatch wrote no result file. Reason: [openclaw] Could not start the CLI." };
+  const statePath = join(taskDir, "state.json");
+  writeState(statePath, task);
+  mkdirSync(objectiveDir, { recursive: true });
+  writeFileSync(join(objectiveDir, "objective-state.json"), JSON.stringify({
+    objectiveId: "obj-recovery-demo", objective: "Recover the build", project: "startup-ops", repo: join(root, "repo"), status: "blocked",
+    createdAt: "2026-09-08T17:42:00.000Z", updatedAt: "2026-09-08T17:42:00.000Z",
+    nodes: { "task-recovery": { id: "task-recovery", role: "builder", status: "blocked", statePath } },
+    integration: { id: "obj-recovery-demo-integration", role: "integration", status: "pending" }, events: [],
+  }, null, 2));
+
+  const view = buildObjectiveExecutionView(root, "obj-recovery-demo");
+  assert.equal(view.blocker.kind, "infra");
+  assert.equal(view.blocker.autoRecovering, true);
+  assert.equal(view.blocker.needsFounder, undefined);
+  assert.match(view.blocker.headline, /retrying this automatically/i);
+  assert.match(view.rawBlocker.summary, /Could not start the CLI/);
+});
