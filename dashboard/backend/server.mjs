@@ -391,6 +391,27 @@ app.post("/api/founder/tasks", (req, res) => {
   res.status(202).json({ job });
 });
 
+// Chief of Staff preflight. Most requests return ready immediately; only a
+// genuinely material ambiguity returns one short question before work starts.
+app.post("/api/founder/intake", async (req, res) => {
+  try {
+    const objective = String(req.body?.objective || "").trim();
+    const projectId = String(req.body?.projectId || "").trim();
+    const repo = resolveLaunchRepo(req, projectId) || "";
+    if (!objective || !repo || !projectId) return res.status(400).json({ error: "objective and projectId are required (repo is auto-resolved for registered projects)." });
+    if (isProjectPaused(ROOT, projectId)) return res.status(409).json({ error: "Resume this project before starting work." });
+    if (!existsSync(join(repo, ".git"))) return res.status(400).json({ error: `Not a git working tree: ${repo}` });
+    const result = await handleFactoryRequest({
+      version: 1, action: "intake", repo, objective, project: projectId,
+      issue: req.body?.issue || undefined,
+      answers: Array.isArray(req.body?.answers) ? req.body.answers : [],
+    });
+    res.json(result);
+  } catch (e) {
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
 // Decompose one founder objective into a dependency-aware task graph and run the
 // independent parts concurrently. Detached, tracked as a founder job — same
 // pattern as /api/founder/tasks. Reuses factory/lib/objective/.

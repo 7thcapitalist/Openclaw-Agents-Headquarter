@@ -71,17 +71,24 @@ export function ingestResult({ statePath, result, agentMeta = null, maxAttemptsP
   }
   if (dispatch.kind?.startsWith("recovery-")) {
     const evidence = verifyEvidence(result.evidence, state.worktree);
-    const next = recordRecoveryResult(state, { outcome: result.outcome, actor: result.actor, summary: result.summary, evidence, diagnosis: result.diagnosis || null, now });
+    const next = recordRecoveryResult(state, {
+      outcome: result.outcome === "decision-deferred" ? "pass" : result.outcome,
+      actor: result.actor, summary: result.summary, evidence, diagnosis: result.diagnosis || null, now,
+    });
     next.dispatches = [...(state.dispatches || []), { ...dispatch, status: "completed", outcome: result.outcome, summary: result.summary, completedAt: now, ...(agentMeta ? { usage: sanitizeUsage(agentMeta) } : {}) }];
-    delete next.currentDispatch; writeState(statePath, next); return terminalResponse(next);
+    delete next.currentDispatch;
+    writeState(statePath, next);
+    return terminalResponse(next);
   }
   const evidence = verifyEvidence(result.evidence, state.worktree);
+  const deferredDecision = result.outcome === "decision-deferred" ? result.decision : null;
   let next = completeStage(state, {
     stage: result.stage,
     actor: result.actor,
-    outcome: result.outcome,
+    outcome: result.outcome === "decision-deferred" ? "pass" : result.outcome,
     summary: result.summary,
     evidence,
+    deferredDecision,
     now,
   });
   const finished = { ...dispatch, status: "completed", outcome: result.outcome, summary: result.summary, completedAt: now };
@@ -105,7 +112,9 @@ export function failDispatch({ statePath, dispatchId, error, maxAttemptsPerStage
   if (dispatch.kind?.startsWith("recovery-")) {
     const next = recordRecoveryResult(state, { outcome: "fail", actor: dispatch.actor, summary: String(error), evidence: [], now });
     next.dispatches = [...(state.dispatches || []), { ...dispatch, status: "failed", error: String(error), completedAt: now }];
-    delete next.currentDispatch; writeState(statePath, next); return terminalResponse(next);
+    delete next.currentDispatch;
+    writeState(statePath, next);
+    return terminalResponse(next);
   }
   state.status = "blocked";
   state.blocker = { stage: dispatch.stage, outcome: "fail", summary: String(error), actor: dispatch.actor, at: now };
@@ -129,7 +138,9 @@ export function validateAgentResult(result) {
   for (const field of ["dispatchId", "stage", "actor", "outcome", "summary"]) {
     if (typeof result[field] !== "string" || !result[field].trim()) throw new Error(`Agent result is missing ${field}.`);
   }
-  if (!new Set(["pass", "fail", "decision-required"]).has(result.outcome)) throw new Error("Invalid agent result outcome.");
+  if (!new Set(["pass", "fail", "decision-required", "decision-deferred"]).has(result.outcome)) throw new Error("Invalid agent result outcome.");
+  if (result.outcome === "decision-deferred" && (!result.decision || typeof result.decision !== "object")) throw new Error("A deferred decision requires a decision object.");
+  if (result.outcome === "decision-deferred" && (!Array.isArray(result.decision.options) || result.decision.options.length < 2)) throw new Error("A deferred decision requires at least two options.");
   if (!Array.isArray(result.evidence) || result.evidence.length === 0 || !result.evidence.every((x) => typeof x === "string" && x.trim())) {
     throw new Error("Agent result requires one or more evidence paths.");
   }

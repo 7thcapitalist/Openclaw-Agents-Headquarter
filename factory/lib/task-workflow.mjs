@@ -100,7 +100,7 @@ export function createState({ task, repo, branch, worktree, founderPublicKey = n
   return state;
 }
 
-export function completeStage(state, { stage, actor, outcome, summary, evidence = [], now = new Date().toISOString() }) {
+export function completeStage(state, { stage, actor, outcome, summary, evidence = [], deferredDecision = null, now = new Date().toISOString() }) {
   if (state.status !== "active") throw new Error(`Task is ${state.status}; it cannot advance.`);
   if (stage !== state.currentStage) throw new Error(`Expected stage ${state.currentStage}, received ${stage}.`);
   if (actor !== state.assignments[stage]) {
@@ -123,6 +123,13 @@ export function completeStage(state, { stage, actor, outcome, summary, evidence 
     next.status = "blocked";
     next.blocker = { stage, outcome, summary: String(summary), actor, at: now };
     return next;
+  }
+
+  if (deferredDecision) {
+    const decision = normalizeDeferredDecision(deferredDecision, stage, now);
+    next.stages[stage].deferredDecision = decision;
+    next.deferredDecisions = [...(next.deferredDecisions || []), decision];
+    next.events.push({ at: now, type: "stage-decision-deferred", stage, actor, decisionId: decision.id });
   }
 
   const index = STAGES.indexOf(stage);
@@ -148,6 +155,23 @@ export function completeStage(state, { stage, actor, outcome, summary, evidence 
     next.events.push({ at: now, type: "handoff-ready", stage: next.currentStage });
   }
   return next;
+}
+
+function normalizeDeferredDecision(input, stage, now) {
+  const question = String(input.question || "").trim();
+  if (!question) throw new Error("A deferred decision requires a plain-language question.");
+  const options = Array.isArray(input.options) ? input.options.map((x) => String(x).trim()).filter(Boolean).slice(0, 3) : [];
+  if (options.length < 2) throw new Error("A deferred decision requires at least two options.");
+  if (!options.some((option) => /^other\b/i.test(option))) options.push("Other: describe your preference");
+  return {
+    id: String(input.id || `${stage}-${Date.parse(now) || Date.now()}`),
+    stage,
+    question,
+    why: String(input.why || "The team completed the safe work and is reporting this choice for your review.").trim(),
+    options,
+    recommendation: String(input.recommendation || "").trim(),
+    requestedAt: now,
+  };
 }
 
 export function resumeState(state, now = new Date().toISOString()) {
@@ -191,15 +215,26 @@ export function routeStageFailure(state, { failedStage, targetStage, maxAttempts
   return next;
 }
 
+// Start a recovery cycle on the same task. The original dispatch/failure is
+// retained; recovery is only an additional sub-state of this state machine.
 export function startRecovery(state, { failedStage, actor, error, evidence = [], source = "execution", maxRecoveryAttempts = 3, now = new Date().toISOString() }) {
   const kind = classifyFailure({ error, source });
   const next = structuredClone(state);
-  next.failures = [...(next.failures || []), { at: now, stage: failedStage, agent: actor, error: String(error || "unknown failure"), classification: kind, evidence: structuredClone(evidence), disposition: "recovery-started" }];
+  next.failures = [...(next.failures || []), {
+    at: now, stage: failedStage, agent: actor, error: String(error || "unknown failure"),
+    classification: kind, evidence: structuredClone(evidence), disposition: "recovery-started",
+  }];
   next.recovery = { ...(next.recovery || {}), maxAttempts: Number(maxRecoveryAttempts) || 3, attempts: next.recovery?.attempts || [], active: null };
   if (!isRecoverableFailure(kind)) return next;
   const used = next.recovery.attempts.length;
   if (used >= next.recovery.maxAttempts) return escalateRecovery(next, { failedStage, kind, error, now });
-  const attempt = { number: used + 1, strategy: recoveryStrategy(used + 1), originalObjective: next.task.outcome, failedStage, agent: actor, error: String(error || "unknown failure"), classification: kind, repairTarget: kind === "FACTORY_ERROR" ? "factory" : "project", relevantEvidence: structuredClone(evidence), attemptedActions: [], currentState: next.status, diagnosis: null, repair: null, verification: null, status: "diagnosing", startedAt: now };
+  const attempt = {
+    number: used + 1, strategy: recoveryStrategy(used + 1), originalObjective: next.task.outcome,
+    failedStage, agent: actor, error: String(error || "unknown failure"), classification: kind,
+    repairTarget: kind === "FACTORY_ERROR" ? "factory" : "project", relevantEvidence: structuredClone(evidence),
+    attemptedActions: [], currentState: next.status, diagnosis: null, repair: null, verification: null,
+    status: "diagnosing", startedAt: now,
+  };
   next.recovery.attempts = [...next.recovery.attempts, attempt];
   next.recovery.active = { phase: "diagnose", failedStage, attempt: attempt.number };
   next.status = "active";
@@ -227,25 +262,36 @@ export function recordRecoveryResult(state, { outcome, actor, summary, evidence 
       next.events.push({ at: now, type: "recovery-verifying", stage: active.failedStage, actor: next.assignments[next.recovery.active.verificationStage], attempt: active.attempt });
       return next;
     }
-    return finishRecoveryFailure(next, { summary, outcome, now });
+    return finishRecoveryFailure(next, { summary, actor, evidence, outcome, now });
   }
   attempt.verification = { outcome, summary: String(summary || ""), evidence: structuredClone(evidence), actor, at: now };
   next.events.push({ at: now, type: "recovery-verification", stage: active.failedStage, actor, outcome, attempt: active.attempt });
   if (outcome === "pass") {
-    attempt.status = "verified"; attempt.completedAt = now; next.recovery.active = null;
-    next.stages[active.failedStage] = { status: "pending" }; next.status = "active"; next.currentStage = active.failedStage; next.updatedAt = now;
+    attempt.status = "verified";
+    attempt.completedAt = now;
+    next.recovery.active = null;
+    next.stages[active.failedStage] = { status: "pending" };
+    next.status = "active";
+    next.currentStage = active.failedStage;
+    next.updatedAt = now;
     next.events.push({ at: now, type: "recovery-verified", stage: active.failedStage, actor, attempt: active.attempt });
     next.events.push({ at: now, type: "task-resumed", stage: active.failedStage, actor: "system", reason: "recovery-verified" });
     return next;
   }
-  return finishRecoveryFailure(next, { summary, outcome, now });
+  return finishRecoveryFailure(next, { summary, actor, evidence, outcome, now });
 }
 
-function finishRecoveryFailure(state, { summary, outcome, now }) {
-  const next = structuredClone(state); const active = next.recovery.active; const attempt = next.recovery.attempts.at(-1);
-  attempt.status = "failed"; attempt.completedAt = now;
-  const error = String(summary || "Recovery could not repair the failure."); const kind = attempt.classification;
-  if (outcome === "decision-required") return escalateRecovery(next, { failedStage: active.failedStage, kind: "FOUNDER_DECISION_REQUIRED", error, now });
+function finishRecoveryFailure(state, { summary, actor, outcome, now }) {
+  const next = structuredClone(state);
+  const active = next.recovery.active;
+  const attempt = next.recovery.attempts.at(-1);
+  attempt.status = "failed";
+  attempt.completedAt = now;
+  const error = String(summary || "Recovery could not repair the failure.");
+  const kind = attempt.classification;
+  if (outcome === "decision-required") {
+    return escalateRecovery(next, { failedStage: active.failedStage, kind: "FOUNDER_DECISION_REQUIRED", error, now });
+  }
   if (next.recovery.attempts.length < next.recovery.maxAttempts && isRecoverableFailure(kind)) {
     next.recovery.active = { phase: "diagnose", failedStage: active.failedStage, attempt: next.recovery.attempts.length + 1 };
     next.recovery.attempts.push({ number: next.recovery.attempts.length + 1, strategy: recoveryStrategy(next.recovery.attempts.length + 1), originalObjective: next.task.outcome, failedStage: active.failedStage, agent: "recovery", error, classification: kind, repairTarget: kind === "FACTORY_ERROR" ? "factory" : "project", relevantEvidence: [], attemptedActions: [], currentState: next.status, diagnosis: null, repair: null, verification: null, status: "diagnosing", startedAt: now });
@@ -256,9 +302,22 @@ function finishRecoveryFailure(state, { summary, outcome, now }) {
 }
 
 function escalateRecovery(state, { failedStage, kind, error, now }) {
-  const next = structuredClone(state); next.recovery.active = null; next.status = "blocked";
-  next.blocker = { stage: failedStage, outcome: "decision-required", founderAction: true, classification: kind, whatFailed: `${failedStage} failed for the original task.`, why: String(error || "Recovery budget exhausted or failure is unsafe to automate."), whatFactoryTried: (next.recovery.attempts || []).map((a) => `${a.strategy}: ${a.status}`).join("; ") || "No recovery attempt was available.", whatItNeedsFromFounder: "Review the recorded failure and decide whether to repair the project, factory, or environment, or change the task scope.", whatHappensAfterApproval: "The original task will resume from the failed stage after the blocker is resolved.", summary: `Recovery could not continue after ${(next.recovery.attempts || []).length} bounded attempt(s): ${String(error || "unknown failure")}`, at: now };
-  next.events.push({ at: now, type: "recovery-escalated", stage: failedStage, actor: "system", classification: kind }); next.updatedAt = now; return next;
+  const next = structuredClone(state);
+  next.recovery.active = null;
+  next.status = "blocked";
+  next.blocker = {
+    stage: failedStage, outcome: "decision-required", founderAction: true, classification: kind,
+    whatFailed: `${failedStage} failed for the original task.`,
+    why: String(error || "Recovery budget exhausted or failure is unsafe to automate."),
+    whatFactoryTried: (next.recovery.attempts || []).map((a) => `${a.strategy}: ${a.status}`).join("; ") || "No recovery attempt was available.",
+    whatItNeedsFromFounder: "Review the recorded failure and decide whether to repair the project, factory, or environment, or change the task scope.",
+    whatHappensAfterApproval: "The original task will resume from the failed stage after the blocker is resolved.",
+    summary: `Recovery could not continue after ${(next.recovery.attempts || []).length} bounded attempt(s): ${String(error || "unknown failure")}`,
+    at: now,
+  };
+  next.events.push({ at: now, type: "recovery-escalated", stage: failedStage, actor: "system", classification: kind });
+  next.updatedAt = now;
+  return next;
 }
 
 export function recordFounderApproval(state, { assertion, evidence, now = new Date().toISOString() }) {

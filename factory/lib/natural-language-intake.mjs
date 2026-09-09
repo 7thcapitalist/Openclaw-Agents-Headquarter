@@ -11,12 +11,15 @@ const execFileAsync = promisify(execFile);
 const DEFAULT_HQ_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const SURFACED_OUTCOMES = new Set(["decision-request", "ask", "block"]);
 
-export async function createContractFromObjective({ objective, repo, issue, project, stateRoot, hqRoot = DEFAULT_HQ_ROOT, protocol = null, intakeAgentId = "main", execute = executeChiefOfStaff }) {
+export async function createContractFromObjective({ objective, repo, issue, project, stateRoot, hqRoot = DEFAULT_HQ_ROOT, protocol = null, intakeAgentId = "main", execute = executeChiefOfStaff, founderAnswers = [], preview = false }) {
   if (typeof objective !== "string" || !objective.trim()) throw new Error("start requires a non-empty objective.");
   const id = `task-${randomUUID().slice(0, 8)}`;
-  const prompt = `You are the Chief of Staff intake for a software factory. Convert the natural-language request below into one bounded task contract. Inspect the repository only when needed to classify it. Return ONLY a JSON object with exactly these fields: id, issue, outcome, acceptanceCriteria, project, workType, risk, preferredBuilder, constraints. Use id ${JSON.stringify(id)}. Use issue ${JSON.stringify(issue || `local:${id}`)}.${project ? ` Use project ${JSON.stringify(project)} exactly.` : ""} workType must be ui, backend, architecture, bugfix, research, or ops. risk must be low, medium, or high. Use high only for production deletion/destructive migration, secrets or permission changes, billing/recurring spend, public publishing, or another hard-to-reverse production action. Use medium for ordinary auth, persistence, deployment, and cross-cutting changes when reversible. preferredBuilder must be auto, codex, claude, or frontend. Do not invent product scope. Acceptance criteria must be observable and include appropriate verification.\n\nRepository: ${resolve(repo)}\n\nFounder request:\n${objective.trim()}`;
+  const prompt = `You are the Chief of Staff intake for a software factory. Convert the natural-language request below into one bounded task contract. Inspect the repository only when needed to classify it. Return ONLY a JSON object with these required fields: id, issue, outcome, acceptanceCriteria, project, workType, risk, preferredBuilder, constraints. You may also return questions: an array with at most one item containing question, options, and why. Ask a question only when a missing fact materially changes product direction, privacy/security, spending, destructive production behavior, or makes safe progress impossible. Do not ask about implementation details, filenames, tests, or choices you can make yourself. If safe work can begin, return questions as an empty array. Use id ${JSON.stringify(id)}. Use issue ${JSON.stringify(issue || `local:${id}`)}.${project ? ` Use project ${JSON.stringify(project)} exactly.` : ""} workType must be ui, backend, architecture, bugfix, research, or ops. risk must be low, medium, or high. Use high only for production deletion/destructive migration, secrets or permission changes, billing/recurring spend, public publishing, or another hard-to-reverse production action. Use medium for ordinary auth, persistence, deployment, and cross-cutting changes when reversible. preferredBuilder must be auto, codex, claude, or frontend. Do not invent product scope. Acceptance criteria must be observable and include appropriate verification.\n\nRepository: ${resolve(repo)}\n\nFounder request:\n${objective.trim()}${founderAnswers.length ? `\n\nFounder answers to your earlier question:\n${JSON.stringify(founderAnswers)}` : ""}`;
   const raw = await execute({ prompt, repo, id, agentId: intakeAgentId });
-  const contract = validateTaskContract(extractJsonObject(raw));
+  const parsed = extractJsonObject(raw);
+  const questions = normalizeQuestions(parsed.questions);
+  delete parsed.questions;
+  const contract = validateTaskContract(parsed);
   if (contract.id !== id) throw new Error("Chief of Staff changed the assigned task id.");
   // This namespace is owned by the deterministic classifier, not model output.
   delete contract.advisory;
@@ -26,13 +29,19 @@ export async function createContractFromObjective({ objective, repo, issue, proj
     fields: { risk: contract.risk, workType: contract.workType },
     protocol: decisionProtocol,
   });
+  const boundRisk = contract.risk === "high" ? decisionProtocol.riskBinding?.high : null;
+  if (boundRisk && classification.outcome === "continue") {
+    classification.outcome = "decision-request";
+    classification.reason = `High-risk work requires ${boundRisk}.`;
+    classification.trigger = "risk:high";
+  }
   let advisory;
   if (SURFACED_OUTCOMES.has(classification.outcome)) {
     advisory = {
       decisionClassification: {
         advisory: true,
         blocksDispatch: false,
-        label: "ADVISORY — founder sign-off recommended before merge; does not block dispatch.",
+        label: "ADVISORY — no founder action required at intake; does not block dispatch.",
         outcome: classification.outcome,
         surfacedAs: classification.outcome === "block" ? "decision-request" : classification.outcome,
         trigger: classification.trigger,
@@ -45,12 +54,22 @@ export async function createContractFromObjective({ objective, repo, issue, proj
     };
     contract.advisory = advisory;
   }
+  if (questions.length && !founderAnswers.length) return { contract, contractPath: null, advisory, questions };
   const root = resolve(stateRoot);
   const intakeDir = join(root, "intake");
   mkdirSync(intakeDir, { recursive: true });
   const contractPath = join(intakeDir, `${id}.json`);
   writeFileSync(contractPath, `${JSON.stringify(contract, null, 2)}\n`, "utf8");
-  return { contract, contractPath, advisory };
+  return { contract, contractPath, advisory, questions: [] };
+}
+
+function normalizeQuestions(value) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 1).map((item) => ({
+    question: String(item?.question || "").trim(),
+    why: String(item?.why || "").trim(),
+    options: Array.isArray(item?.options) ? item.options.map((x) => String(x).trim()).filter(Boolean).slice(0, 3) : [],
+  })).filter((item) => item.question && item.options.length >= 2);
 }
 
 function findMatchedRule(classification, protocol) {
