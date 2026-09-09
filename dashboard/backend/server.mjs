@@ -109,6 +109,7 @@ import { founderApprovalSetupBlocker } from "../../factory/lib/hq/blocker-class.
 import { defaultStateRoot } from "../../factory/lib/natural-language-intake.mjs";
 import { readDeploymentStatus } from "../../factory/lib/deploy/status.mjs";
 import { addOvernightItem, readOvernightQueue, removeOvernightItem, startOvernight, stopOvernight, overnightLimit } from "./lib/overnightQueue.mjs";
+import { buildOperationsSnapshot } from "../../factory/lib/hq/operations.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const execFileAsync = promisify(execFile);
@@ -829,6 +830,11 @@ app.get("/api/hq/autonomy", async (_req, res) => {
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
   }
+});
+
+app.get("/api/hq/operations", (_req, res) => {
+  try { res.json(buildOperationsSnapshot({ hqRoot: ROOT })); }
+  catch (e) { res.status(500).json({ version: 1, available: false, error: String(e.message || e) }); }
 });
 
 app.get("/api/command-center/home", async (_req, res) => {
