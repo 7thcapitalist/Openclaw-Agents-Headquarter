@@ -33,6 +33,7 @@ export function prepareDispatch({ hqRoot, statePath, now = new Date().toISOStrin
     stage,
     actor: recovery ? (recovery.phase === "diagnose" ? "recovery" : state.assignments[recovery.verificationStage || "qa"]) : state.assignments[stage],
     kind: recovery ? `recovery-${recovery.phase}` : "stage",
+    ...(recovery?.phase === "verify" ? { verificationStage: recovery.verificationStage || "qa" } : {}),
     status: "ready",
     attempt,
     promptPath,
@@ -163,6 +164,7 @@ function dispatchResponse(dispatch, state) {
     promptPath: dispatch.promptPath,
     resultPath: dispatch.resultPath,
     kind: dispatch.kind || "stage",
+    ...(dispatch.verificationStage ? { verificationStage: dispatch.verificationStage } : {}),
   };
 }
 

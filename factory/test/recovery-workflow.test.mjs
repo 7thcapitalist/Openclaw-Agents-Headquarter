@@ -24,8 +24,8 @@ test("a project failure is diagnosed, repaired, independently verified, and resu
   writeState(statePath, createState({ task, repo: root, branch: "factory/issue-recovery", worktree, maxRecoveryAttempts: 3 }));
   let failedOnce = false;
   const seen = [];
-  const execute = async ({ dispatch, cwd }) => {
-    seen.push({ kind: dispatch.kind, stage: dispatch.stage, actor: dispatch.actor });
+  const execute = async ({ dispatch, cwd, agentId }) => {
+    seen.push({ kind: dispatch.kind, stage: dispatch.stage, actor: dispatch.actor, agentId });
     mkdirSync(join(cwd, "evidence"), { recursive: true });
     const evidence = `evidence/${dispatch.dispatchId}.md`;
     writeFileSync(join(cwd, evidence), "observed proof\n");
@@ -43,8 +43,9 @@ test("a project failure is diagnosed, repaired, independently verified, and resu
   assert.equal(state.failures[0].classification, "PROJECT_ERROR");
   assert.equal(state.recovery.attempts[0].status, "verified");
   assert.notEqual(seen.find((item) => item.kind === "recovery-diagnose").actor, seen.find((item) => item.kind === "recovery-verify").actor);
+  assert.equal(seen.find((item) => item.kind === "recovery-diagnose").agentId, "architect");
+  assert.equal(seen.find((item) => item.kind === "recovery-verify").agentId, "backend-builder");
   assert.ok(state.events.some((event) => event.type === "recovery-diagnosing"));
   assert.ok(state.events.some((event) => event.type === "recovery-repair-attempted"));
   assert.ok(state.events.some((event) => event.type === "recovery-verified"));
 });
-
