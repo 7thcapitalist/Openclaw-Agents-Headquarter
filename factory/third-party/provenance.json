@@ -35,5 +35,26 @@
     "sourcePath": "packages/db/src/schema/cost_events.ts",
     "classification": "reference",
     "notes": "Documents the pinned Paperclip source and HQ-specific adaptations."
+  },
+  {
+    "localPath": "factory/lib/telemetry/dispatch.mjs",
+    "sourceId": "paperclip",
+    "sourcePath": "server/src/services/heartbeat.ts",
+    "classification": "inspired",
+    "notes": "Wires the attributed Paperclip-derived audit, liveness, and cost primitives to the HQ OpenClaw dispatch lifecycle."
+  },
+  {
+    "localPath": "factory/test/dispatch-telemetry.test.mjs",
+    "sourceId": "paperclip",
+    "sourcePath": "server/src/services/heartbeat.ts",
+    "classification": "inspired",
+    "notes": "Verifies idempotent operational projections and best-effort failure containment."
+  },
+  {
+    "localPath": "docs/software-factory/PAPERCLIP_RUNTIME_TELEMETRY.md",
+    "sourceId": "paperclip",
+    "sourcePath": "docs/guides/agent-developer/heartbeat-protocol.md",
+    "classification": "reference",
+    "notes": "Documents the HQ-specific runtime projection and authority boundaries."
   }]
 }
