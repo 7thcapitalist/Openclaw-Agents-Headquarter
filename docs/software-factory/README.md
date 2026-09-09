@@ -175,4 +175,9 @@ Remaining implementation milestones are:
 2. GitHub PR creation/update and durable review-comment synchronization.
 3. Daily/weekly founder digest.
 
+The proposed adoption and interoperability roadmap for Paperclip is documented
+in [`PAPERCLIP_INTEGRATION_PLAN.md`](PAPERCLIP_INTEGRATION_PLAN.md). It keeps the
+current GitHub/HQ factory authoritative while evaluating Paperclip through
+isolated, reversible phases.
+
 See `docs/software-factory/FIRST_WEEK.md` for how to learn the system by using it.
