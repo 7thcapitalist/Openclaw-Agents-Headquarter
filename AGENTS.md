@@ -49,6 +49,18 @@ Before finishing a task, record:
 - unresolved risks
 - recommended next action
 
+## Mandatory delivery step
+No task is complete until the agent has:
+1. started from the latest `main` in a short-lived task branch/worktree;
+2. committed only the coherent changes for that task;
+3. pushed that branch; and
+4. opened a Pull Request targeting `main`.
+
+The final response MUST include the PR URL. If a PR cannot be created, the
+agent MUST report the task as incomplete and explain the blocker. Never claim
+completion with only local changes. Do not include unrelated dirty-worktree
+changes in the PR; isolate them first or stop and escalate to the founder.
+
 Do not mark work complete merely because code was written.
 
 ## Memory and decisions
