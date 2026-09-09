@@ -63,6 +63,37 @@ Synchronize with the latest `main`. Do not assume an existing local branch or
 worktree is current. After a PR merges, treat its branch and worktree as
 disposable and do not continue from that stale state.
 
+## Founder-authorized multi-PR campaigns
+
+A bounded campaign may prepare multiple PRs before any of them merge only when
+the founder explicitly authorizes that delivery shape. This is an exception to
+the normally sequential "merge, then start the next task" rule, not an exception
+to PR delivery, isolation, review, verification, or human merge.
+
+Every campaign must:
+
+- name its scope, shared `main` base commit, ordered issue/PR list, dependencies,
+  integration owner, and expiry condition in a durable campaign tracker;
+- create every change on a separate branch and worktree from that recorded
+  `main` commit; never share a writable branch or use an integration branch;
+- keep every PR coherent and targeting `main`;
+- declare its campaign, dependency PRs, intended merge position, verification,
+  and rollback in the PR body;
+- avoid silently duplicating code from an unmerged predecessor; use an explicit
+  compatibility seam or mark the PR blocked on that predecessor;
+- merge in the declared order; immediately before each merge, update that PR
+  with the latest `main`, resolve conflicts, rerun its checks, and preserve
+  independent review/QA evidence;
+- treat GitHub's earlier green result as stale after any predecessor merges;
+- delete each branch/worktree after merge and close the campaign after its last
+  PR or expiry.
+
+Campaign authorization does not permit direct pushes, stacked PR targets,
+shared branches, agent self-merge, skipped gates, production actions, or changes
+outside the declared scope. A campaign PR may remain open while dependencies are
+unmerged, but it is not merge-ready until those dependencies are merged and its
+latest-main refresh succeeds.
+
 ## What the factory must always know
 
 For every change in flight:
@@ -72,6 +103,8 @@ For every change in flight:
 - whether that PR is open, merged, or closed
 - whether the associated worktree still exists
 - whether cleanup (branch + worktree deletion) has completed
+- campaign id, shared base, merge position, dependencies, and latest-main
+  refresh status when the change belongs to a campaign
 
 ## Relationship to other rules
 
