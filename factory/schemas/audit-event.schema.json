@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "HQ audit event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "eventId", "occurredAt", "actor", "action", "subject", "correlation", "data"],
+  "properties": {
+    "version": { "const": 1 },
+    "eventId": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "occurredAt": { "type": "string", "format": "date-time" },
+    "actor": { "$ref": "#/$defs/actor" },
+    "action": { "type": "string", "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)+$" },
+    "subject": { "$ref": "#/$defs/subject" },
+    "correlation": { "type": "object", "additionalProperties": { "type": "string" } },
+    "data": { "type": "object" }
+  },
+  "$defs": {
+    "actor": {
+      "type": "object", "additionalProperties": false, "required": ["type", "id"],
+      "properties": { "type": { "enum": ["human", "agent", "system"] }, "id": { "type": "string" } }
+    },
+    "subject": {
+      "type": "object", "additionalProperties": false, "required": ["type", "id"],
+      "properties": { "type": { "enum": ["task", "objective", "project", "agent", "run", "decision", "system"] }, "id": { "type": "string" } }
+    }
+  }
+}
