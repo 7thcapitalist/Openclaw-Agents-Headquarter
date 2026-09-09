@@ -872,6 +872,55 @@ import { costLimitsPanel } from "/cost-limits.mjs";
     executionPoll = setInterval(refresh, 2500);
   }
 
+  function questionStatusText(question) {
+    if (question.status === "queued") return "Queued — the factory will start answering shortly…";
+    if (question.status === "running") return "The factory is thinking… You can leave this open or close it and check Today later.";
+    return "";
+  }
+
+  async function askFounderQuestion() {
+    const questionText = document.getElementById("question-text");
+    const sendButton = document.getElementById("send-question");
+    const out = document.getElementById("question-answer");
+    const question = questionText?.value.trim() || "";
+    if (!question) return showToast("Write a question first.", true);
+    sendButton.disabled = true;
+    out.innerHTML = `<p class="muted">Submitting the question…</p>`;
+    try {
+      const created = await apiJson("/api/founder/questions", { method: "POST", body: JSON.stringify({ agentId: "main", question }) });
+      const id = created.question.id;
+      let terminal = false;
+      const refresh = async () => {
+        try {
+          const current = (await apiJson(`/api/founder/questions/${encodeURIComponent(id)}`)).question;
+          if (current.status === "answered") {
+            terminal = true;
+            out.innerHTML = `<div class="card">${esc(current.answer)}</div>`;
+            sendButton.disabled = false;
+            if (executionPoll) { clearInterval(executionPoll); executionPoll = null; }
+          } else if (current.status === "failed") {
+            terminal = true;
+            out.innerHTML = `<p class="danger-text">${esc(current.error || "The factory could not answer this question.")}</p><p class="muted small">You can close this and ask again after checking Today.</p>`;
+            sendButton.disabled = false;
+            if (executionPoll) { clearInterval(executionPoll); executionPoll = null; }
+          } else {
+            out.innerHTML = `<p class="muted">${esc(questionStatusText(current))}</p>`;
+          }
+        } catch (error) {
+          terminal = true;
+          out.innerHTML = `<p class="danger-text">${esc(error.message)}</p>`;
+          sendButton.disabled = false;
+          if (executionPoll) { clearInterval(executionPoll); executionPoll = null; }
+        }
+      };
+      await refresh();
+      if (!terminal) executionPoll = setInterval(refresh, 2000);
+    } catch (error) {
+      out.innerHTML = `<p class="danger-text">${esc(error.message)}</p>`;
+      sendButton.disabled = false;
+    }
+  }
+
   function bindFounderControls() {
     const project = document.getElementById("founder-project");
     const selfNote = document.getElementById("founder-self-note");
@@ -1017,7 +1066,10 @@ import { costLimitsPanel } from "/cost-limits.mjs";
       try { await apiJson("/api/founder/overnight/stop", { method: "POST" }); showToast("Stopping after the current objective."); route(); }
       catch (err) { showToast(err.message, true); }
     });
-    document.getElementById("ask-agent")?.addEventListener("click", () => { openModal("Ask the factory", `<label class="field-label">Question</label><textarea class="editor" id="question-text" placeholder="What is blocking this work?"></textarea><button class="btn" id="send-question">Ask</button><div id="question-answer"></div>`); document.getElementById("send-question").onclick = async () => { const out = document.getElementById("question-answer"); out.innerHTML = `<p class="muted">The factory is thinking…</p>`; try { const j = await apiJson("/api/founder/questions", { method: "POST", body: JSON.stringify({ agentId: "main", question: document.getElementById("question-text").value }) }); out.innerHTML = `<div class="card">${esc(j.question.answer)}</div>`; } catch (e) { out.innerHTML = `<p class="danger-text">${esc(e.message)}</p>`; } }; });
+    document.getElementById("ask-agent")?.addEventListener("click", () => {
+      openModal("Ask the factory", `<label class="field-label">Question</label><textarea class="editor" id="question-text" placeholder="What is blocking this work?"></textarea><button class="btn" id="send-question">Ask</button><div id="question-answer"></div>`);
+      document.getElementById("send-question").onclick = askFounderQuestion;
+    });
     bindObjectiveControls(app);
   }
 

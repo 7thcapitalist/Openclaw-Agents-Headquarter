@@ -1268,6 +1268,23 @@ export function recordQuestion(root, question) {
   return question;
 }
 
+export function findQuestion(root, questionId) {
+  return readControl(root).questions.find((question) => question.id === questionId) || null;
+}
+
+export function updateQuestion(root, questionId, patch) {
+  const control = readControl(root);
+  const index = control.questions.findIndex((question) => question.id === questionId);
+  if (index < 0) return null;
+  control.questions[index] = { ...control.questions[index], ...patch, id: questionId };
+  writeControl(root, control);
+  return control.questions[index];
+}
+
+export function listPendingQuestions(root) {
+  return readControl(root).questions.filter((question) => question.status === "queued" || question.status === "running");
+}
+
 export function listFounderJobs(root) {
   return readControl(root).jobs.slice().sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
 }
