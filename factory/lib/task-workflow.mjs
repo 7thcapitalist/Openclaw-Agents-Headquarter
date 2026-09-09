@@ -286,11 +286,22 @@ export function isAwaitingFounderApproval(state) {
     && state.status === "blocked"
     && state.blocker?.stage === "builder"
     && state.blocker?.outcome === "decision-required"
+    && !hasFounderDecision(state)
     && !hasValidFounderApproval(state),
   );
 }
 
+// A founder's explicit decision on an earlier strategic blocker authorizes the
+// same task's risky action. This prevents one task from asking the founder to
+// choose a direction and then approve that identical direction a second time.
+// The signed approval path remains available when no earlier decision exists.
+function hasFounderDecision(state) {
+  return Array.isArray(state?.founderDecisions)
+    && state.founderDecisions.some((decision) => String(decision?.direction || "").trim());
+}
+
 function hasValidFounderApproval(state) {
+  if (hasFounderDecision(state)) return true;
   if (!state.founderApproval?.assertion || !state.founderApproval?.evidence) return false;
   try {
     validateFounderAssertion(state, state.founderApproval.assertion, state.founderApproval.evidence);

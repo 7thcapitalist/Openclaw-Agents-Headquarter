@@ -34,12 +34,13 @@ A trigger is hit. Triggers:
 - migrations that are hard to reverse
 - legal / compliance implications
 - a UX tradeoff that changes the product promise
-- any task classified `risk: "high"`
 
 Action: emit a Decision Card (`factory/templates/decision-card.md`) with options,
 tradeoffs, and a recommendation; add it to the project decision queue; block
 **only the affected sub-task**; keep everything else moving. The founder answers
-asynchronously.
+asynchronously. A recorded decision on the task also satisfies its later
+high-risk builder authorization; do not ask the founder to approve the same
+direction twice.
 
 ## ask (rare)
 

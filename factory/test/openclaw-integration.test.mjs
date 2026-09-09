@@ -94,6 +94,27 @@ test("mocked OpenClaw execution drives a complete task to merge-ready", async ()
   assert.match(readFileSync(state.completionReport.path, "utf8"), /# Completion report/);
 });
 
+test("a restart with an owned running dispatch waits instead of double-claiming it", async () => {
+  const fixture = makeFixture();
+  const dispatch = prepareDispatch({ hqRoot, statePath: fixture.statePath });
+  markDispatchRunning({ statePath: fixture.statePath, dispatchId: dispatch.dispatchId });
+
+  const waiting = await runOneStage({
+    hqRoot,
+    statePath: fixture.statePath,
+    execute: async () => { throw new Error("must not dispatch a second worker"); },
+  });
+  assert.equal(waiting.status, "dispatch");
+  assert.equal(waiting.waiting, true);
+  assert.equal((readState(fixture.statePath).dispatches || []).length, 0);
+
+  const evidence = writeEvidence(fixture.worktree, "product");
+  writeFileSync(dispatch.resultPath, JSON.stringify(resultFor(dispatch, [evidence])));
+  const resumed = await runOneStage({ hqRoot, statePath: fixture.statePath, execute: async () => { throw new Error("must not re-dispatch"); } });
+  assert.equal(resumed.status, "active");
+  assert.equal(readState(fixture.statePath).dispatches[0].status, "completed");
+});
+
 test("a non-terminal stage completion never invokes the GitHub publish step", async () => {
   const fixture = makeFixture();
   const execute = async ({ dispatch, cwd }) => {

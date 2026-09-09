@@ -1,7 +1,7 @@
 import { openSync, closeSync, unlinkSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "fs";
 import { basename, dirname, join, resolve } from "path";
 import { homedir } from "os";
-import { readState, resumeState, writeState } from "../../../factory/lib/task-workflow.mjs";
+import { isAwaitingFounderApproval, readState, resumeState, writeState } from "../../../factory/lib/task-workflow.mjs";
 import { writeHandoff } from "../../../factory/lib/handoff.mjs";
 import { listProjectBriefs } from "../../../factory/lib/intel/project-brief.mjs";
 import { buildCompanyBriefing } from "../../../factory/lib/intel/founder-briefing.mjs";
@@ -184,6 +184,7 @@ function taskView(path) {
       : null,
     events: (state.events || []).slice(-5).reverse(),
     founderApprovalRequest: state.founderApprovalRequest || null,
+    awaitingFounderApproval: isAwaitingFounderApproval(state),
     decisionCard: readDecisionCard(state),
   };
 }
@@ -222,6 +223,104 @@ export function findObjectiveStatePath(root, objectiveId) {
     if (existsSync(statePath)) return statePath;
   }
   return null;
+}
+
+// Read-only execution record for the founder. The objective state is the
+// source of truth for the graph; each node's task state is the source of truth
+// for dispatches, stage results, evidence, and handoffs. Keeping this join
+// here means the UI never needs to infer progress from process output or invent
+// heartbeat messages.
+export function buildObjectiveExecutionView(root, objectiveId, { now = Date.now() } = {}) {
+  const objectivePath = findObjectiveStatePath(root, objectiveId);
+  if (!objectivePath) return null;
+  const objective = readObjState(objectivePath);
+  const nodes = [...Object.values(objective.nodes || {}), objective.integration].filter(Boolean);
+  const taskByNode = new Map();
+  for (const node of nodes) {
+    if (!node.statePath || !existsSync(node.statePath)) continue;
+    try { taskByNode.set(node.id, readState(node.statePath)); } catch { /* task may be between atomic writes */ }
+  }
+
+  const stageOrder = ["product", "architect", "builder", "reviewer", "qa", "security", "release"];
+  const stages = stageOrder.map((stage) => {
+    const entries = nodes.map((node) => ({ node, task: taskByNode.get(node.id) }))
+      .filter(({ node, task }) => task?.stages?.[stage] || node.role === stage || (stage === "builder" && node.role?.includes("builder")));
+    const active = entries.find(({ task }) => task?.currentDispatch?.stage === stage && task.currentDispatch.status === "running")
+      || entries.find(({ task }) => task?.currentStage === stage && task?.status === "active");
+    const result = active?.task?.stages?.[stage];
+    const dispatch = active?.task?.dispatches?.filter((item) => item.stage === stage).at(-1) || null;
+    const completed = entries.length > 0 && entries.every(({ task, node }) => task?.stages?.[stage]?.status === "pass" || (!task && node.status === "gate-satisfied"));
+    const failed = entries.find(({ task }) => ["fail", "decision-required"].includes(task?.stages?.[stage]?.status));
+    return {
+      stage,
+      status: failed ? (failed.task.stages[stage].status === "decision-required" ? "blocked" : "failed") : active ? "working" : completed ? "completed" : "pending",
+      agent: active?.task?.currentDispatch?.actor || active?.task?.assignments?.[stage] || entries[0]?.task?.assignments?.[stage] || null,
+      nodeId: active?.node.id || failed?.node.id || entries.find(({ task }) => task?.stages?.[stage]?.status === "pass")?.node.id || null,
+      startedAt: active?.task?.currentDispatch?.startedAt || dispatch?.startedAt || result?.startedAt || null,
+      finishedAt: result?.completedAt || dispatch?.completedAt || null,
+      activity: active ? `Working on ${stage}` : result?.summary || null,
+      blocker: failed?.task?.blocker || null,
+    };
+  });
+
+  const rawEvents = [];
+  const addEvents = (source, node, events) => {
+    for (const event of events || []) rawEvents.push({ ...event, source, nodeId: node?.id || null });
+  };
+  addEvents("orchestrator", null, objective.events);
+  for (const node of nodes) addEvents(node.statePath ? (taskByNode.get(node.id)?.task?.project || node.role || "factory") : node.role, node, taskByNode.get(node.id)?.events);
+  const eventType = (event) => {
+    if (event.type === "dispatch-running") return "agent-received-work";
+    if (event.type === "handoff-ready") return "handoff";
+    if (event.type === "stage-pass") return "stage-completed";
+    if (event.type === "stage-fail" || event.type === "dispatch-failed") return "failed";
+    if (event.type === "stage-decision-required") return "decision-required";
+    if (event.type === "dispatch-ready") return "agent-started";
+    return event.type || "event";
+  };
+  const events = rawEvents.filter((event) => event.at).map((event) => {
+    const task = event.nodeId ? taskByNode.get(event.nodeId) : null;
+    const destination = event.type === "handoff" || event.type === "handoff-ready"
+      ? task?.assignments?.[event.stage] || null : null;
+    const stageIndex = stageOrder.indexOf(event.stage);
+    const source = event.actor || ((event.type === "handoff-ready" && stageIndex > 0) ? task?.assignments?.[stageOrder[stageIndex - 1]] : null) || event.source || "factory";
+    const stageResult = task?.stages?.[event.stage];
+    const message = event.summary || stageResult?.summary || event.detail || event.reason
+      || (event.type === "dispatch-running" ? `Started ${event.stage} work` : null)
+      || (event.type === "dispatch-ready" ? `Assigned ${event.stage} work` : null)
+      || (event.type === "handoff-ready" ? `Handoff ready for ${event.stage}` : null)
+      || (event.type === "stage-pass" ? `${event.stage} completed` : null)
+      || String(event.type || "Execution event").replaceAll("-", " ");
+    return { at: event.at, source, destination, type: eventType(event), stage: event.stage || null, nodeId: event.nodeId, message: String(message) };
+  }).sort((a, b) => String(a.at).localeCompare(String(b.at)));
+
+  const current = nodes.map((node) => ({ node, task: taskByNode.get(node.id) }))
+    .find(({ task }) => task?.currentDispatch?.status === "running")
+    || nodes.map((node) => ({ node, task: taskByNode.get(node.id) })).find(({ task }) => task?.status === "active");
+  const currentDispatch = current?.task?.currentDispatch || null;
+  const blocker = current?.task?.blocker || nodes.find((node) => node.blocker)?.blocker || objective.blocker || null;
+  const terminal = ["complete", "completed", "merge-ready", "merged"].includes(String(objective.status || "").toLowerCase());
+  const createdMs = Date.parse(objective.createdAt || "");
+  const lastAt = events.at(-1)?.at || objective.updatedAt || null;
+  const endMs = terminal && lastAt ? Date.parse(lastAt) : now;
+  return {
+    objectiveId,
+    objective: objective.objective,
+    project: objective.project,
+    repo: objective.repo,
+    status: objective.status,
+    createdAt: objective.createdAt || null,
+    updatedAt: objective.updatedAt || null,
+    elapsedMs: Number.isFinite(createdMs) ? Math.max(0, endMs - createdMs) : null,
+    currentStage: currentDispatch?.stage || current?.task?.currentStage || null,
+    currentAgent: currentDispatch?.actor || (current?.task?.currentStage ? current.task.assignments?.[current.task.currentStage] : null),
+    currentActivity: currentDispatch ? `Working on ${currentDispatch.stage}` : current?.task?.status === "active" ? `Waiting to dispatch ${current.task.currentStage}` : null,
+    blocker,
+    stages,
+    events,
+    evidence: nodes.flatMap((node) => Object.entries(taskByNode.get(node.id)?.stages || {}).flatMap(([stage, result]) => (result.evidence || []).map((item) => ({ nodeId: node.id, stage, path: item.path || item, recordedAt: item.recordedAt || result.completedAt || null })))),
+    github: objective.integration?.githubPublish || null,
+  };
 }
 
 const STALE_ACTIVE_MS_DEFAULT = 90 * 60 * 1000;
@@ -758,8 +857,8 @@ export function buildFounderOverview(root, hqProjects = []) {
     statePath: task.statePath,
     question: task.decisionCard?.question || task.blocker.summary,
     why: task.decisionCard?.why || `The ${task.blocker.stage} stage cannot continue without founder direction.`,
-    recommendation: task.decisionCard?.recommendation || (task.risk === "high" ? "Review and submit the signed high-risk approval." : "Approve the recommended path or provide a concise direction."),
-    options: task.decisionCard?.options?.length ? task.decisionCard.options : (task.risk === "high" ? ["Submit signed approval", "Keep paused"] : ["Approve and resume", "Provide direction", "Keep paused"]),
+    recommendation: task.decisionCard?.recommendation || (task.awaitingFounderApproval ? "Review the planned high-risk change and submit the signed approval." : "Provide a concise direction so the team can continue."),
+    options: task.decisionCard?.options?.length ? task.decisionCard.options : (task.awaitingFounderApproval ? ["Submit signed approval", "Keep paused"] : ["Approve and resume", "Provide direction", "Keep paused"]),
     risk: task.risk,
     requestedAt: task.blocker.at,
   }));
@@ -830,7 +929,11 @@ function buildFounderInbox({ tasks, decisions, questions, objectives = [] }) {
 
   for (const d of decisions) {
     const task = byId.get(d.taskId);
-    const isApproval = d.risk === "high" && Boolean(task?.founderApprovalRequest);
+    // A high-risk task may have an approval request from creation, but it is
+    // only an approval item once the workflow has actually reached the
+    // builder gate. Product/architect decision-required blockers must remain
+    // ordinary founder decisions.
+    const isApproval = Boolean(task?.awaitingFounderApproval);
     items.push({
       kind: isApproval ? "approval" : "decision",
       id: d.id,

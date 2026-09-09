@@ -61,6 +61,7 @@ import { buildReadinessReport } from "./lib/readiness.mjs";
 import {
   buildFounderOverview,
   buildObjectivesView,
+  buildObjectiveExecutionView,
   buildRolePolicy,
   discoverFactoryTasks,
   findObjectiveStatePath,
@@ -248,6 +249,20 @@ app.get("/api/founder/overview", (_req, res) => {
 app.get("/api/founder/objectives", (_req, res) => {
   try {
     res.json(buildObjectivesView(ROOT));
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+// One objective's durable execution record: objective events joined with the
+// underlying task states for every node. The browser may poll this while work
+// is active; it never creates or mutates execution state.
+app.get("/api/founder/objectives/:id/execution", (req, res) => {
+  try {
+    if (!/^obj-[a-z0-9-]+$/i.test(req.params.id)) return res.status(400).json({ error: "Invalid objective id." });
+    const execution = buildObjectiveExecutionView(ROOT, req.params.id);
+    if (!execution) return res.status(404).json({ error: "No such objective." });
+    res.json(execution);
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
   }
