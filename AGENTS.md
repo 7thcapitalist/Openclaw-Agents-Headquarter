@@ -24,7 +24,11 @@ Ephemeral PR branches/worktrees are allowed but must stay short-lived: one
 coherent change, then PR, review, merge, delete branch, delete worktree. Do not
 keep feature, development, integration, or per-agent branches, or long-lived
 worktrees. Independent changes are separate PRs, never accumulated on a shared
-branch. Start every task from the latest `main`.
+branch. Start every task from the latest `main`, except for an explicitly
+founder-authorized multi-PR campaign governed by SFD-2026-010: each campaign PR
+still uses its own branch/worktree and targets `main`, records the shared base
+commit and merge order, and must be refreshed and reverified against the then-
+latest `main` immediately before merge.
 
 Full policy: `docs/software-factory/GIT_WORKFLOW.md` (SFD-2026-008).
 
