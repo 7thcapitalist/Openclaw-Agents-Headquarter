@@ -81,11 +81,13 @@ import {
   resolveProjectRepo,
   resolveRepoInput,
   saveFounderJob,
+  finishFounderJob,
   setInboxItemDismissed,
   setObjectiveArchived,
   setProjectPaused,
 } from "./lib/founderControlPlane.mjs";
 import { buildHqCostsPayload, buildHqPlanLimitsPayload } from "./lib/hq-cost-limits.mjs";
+import { deriveObjectiveTitle } from "../../factory/lib/hq/presenter.mjs";
 import {
   enrollFounderKey,
   getEnrolledFounderKey,
@@ -390,9 +392,21 @@ app.post("/api/founder/tasks", (req, res) => {
   } catch (e) {
     return res.status(500).json({ error: String(e.message || e) });
   }
+  // The 202 is already out; this promise is the only thing that knows how the
+  // run really ended. Both settlements land in finishFounderJob so the outcome
+  // is typed, classified, and reachable from the Founder Inbox — a rejection
+  // here used to be recorded as a raw string no view read.
   handleFactoryRequest({ version: 1, action: "start", repo: job.repo, objective: job.objective, project: job.projectId, issue: req.body?.issue || undefined })
-    .then((result) => saveFounderJob(ROOT, Object.assign(job, { status: result.status, result, updatedAt: new Date().toISOString() })))
-    .catch((error) => saveFounderJob(ROOT, Object.assign(job, { status: "error", error: error.message || String(error), updatedAt: new Date().toISOString() })));
+    .then((result) => finishFounderJob(ROOT, Object.assign(job, { result, taskId: result?.taskId || result?.task?.id || job.taskId }), {
+      result,
+      whatFailed: `Your request "${deriveObjectiveTitle(job.objective)}"`,
+      whatTheFactoryTried: "Chief of Staff intake, then the seven-stage pipeline",
+    }))
+    .catch((error) => finishFounderJob(ROOT, job, {
+      error,
+      whatFailed: `Your request "${deriveObjectiveTitle(job.objective)}"`,
+      whatTheFactoryTried: "Chief of Staff intake",
+    }));
   res.status(202).json({ job });
 });
 
@@ -503,9 +517,25 @@ app.post("/api/founder/objectives", async (req, res) => {
       writeFileSync(objectivePath, `${JSON.stringify(graph, null, 2)}\n`, "utf8");
       saveFounderJob(ROOT, Object.assign(job, { status: "running", objectiveId: graph.objectiveId, nodeCount: Object.keys(graph.nodes).length, updatedAt: new Date().toISOString() }));
       const result = await runObjectiveJob(job, { objectivePath, cfg });
-      saveFounderJob(ROOT, Object.assign(job, { status: result.status, objectiveId: graph.objectiveId, updatedAt: new Date().toISOString() }));
+      finishFounderJob(ROOT, Object.assign(job, { objectiveId: graph.objectiveId }), {
+        result,
+        whatFailed: `Your objective "${deriveObjectiveTitle(job.objective)}"`,
+        whatTheFactoryTried: `${Object.keys(graph.nodes).length} build node(s) through the seven-stage pipeline`,
+        evidencePaths: [objectivePath],
+      });
     } catch (error) {
-      saveFounderJob(ROOT, Object.assign(job, { status: "error", error: error.message || String(error), updatedAt: new Date().toISOString() }));
+      // Decomposition is a first-class failure site: when the planning call
+      // fails there is no objective state file at all, so this record is the
+      // ONLY thing standing between the founder and a silently dead request.
+      finishFounderJob(ROOT, job, {
+        error,
+        whatFailed: job.objectiveId
+          ? `Your objective "${deriveObjectiveTitle(job.objective)}"`
+          : `Planning your objective "${deriveObjectiveTitle(job.objective)}"`,
+        whatTheFactoryTried: job.objectiveId
+          ? "decomposition succeeded, then the pipeline stopped"
+          : "3 planning attempts with backoff",
+      });
     }
   })();
 
