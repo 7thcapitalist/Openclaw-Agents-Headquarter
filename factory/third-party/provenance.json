@@ -14,5 +14,9 @@
     "sourcePath": "README.md",
     "classification": "reference",
     "notes": "Research and architectural comparison cite Paperclip; no source code is included in this document."
-  }]
+  },
+  { "localPath": "factory/lib/hq/agents.mjs", "sourceId": "paperclip", "sourcePath": "packages/db/src/schema/agents.ts", "classification": "adapted", "notes": "Adapts organization, capability, availability, adapter-reference, and budget metadata into the existing HQ registry." },
+  { "localPath": "factory/test/hq-agents.test.mjs", "sourceId": "paperclip", "sourcePath": "packages/db/src/schema/agents.ts", "classification": "inspired", "notes": "Tests Paperclip-derived organization metadata and HQ-specific non-authority constraints." },
+  { "localPath": "docs/software-factory/PAPERCLIP_AGENT_ORG_MODEL.md", "sourceId": "paperclip", "sourcePath": "packages/db/src/schema/agents.ts", "classification": "reference", "notes": "Documents source attribution and safe HQ mapping." }
+  ]
 }
