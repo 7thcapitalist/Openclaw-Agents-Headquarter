@@ -110,6 +110,7 @@ const execFileAsync = promisify(execFile);
 
 const ROOT = labRoot(process.env.AGENT_LAB_ROOT);
 dotenv.config({ path: join(ROOT, ".env") });
+const FOUNDER_QUESTION_TIMEOUT_MS = Math.max(10_000, Number(process.env.FOUNDER_QUESTION_TIMEOUT_MS) || 90_000);
 
 const PORT = Number(process.env.DASHBOARD_PORT || 3000);
 const HOST = process.env.DASHBOARD_HOST || "127.0.0.1";
@@ -592,12 +593,16 @@ app.post("/api/founder/questions", async (req, res) => {
     const question = String(req.body?.question || "").trim();
     if (!/^[a-z0-9][a-z0-9-]*$/.test(agentId) || !question) return res.status(400).json({ error: "A valid agentId and question are required." });
     const askedAt = new Date().toISOString();
-    const { stdout } = await execFileAsync("openclaw", ["agent", "--agent", agentId, "--session-key", `agent:${agentId}:founder-control-plane`, "--message", question, "--json", "--timeout", "600"], { timeout: 10 * 60 * 1000, maxBuffer: 8 * 1024 * 1024 });
+    const { stdout } = await execFileAsync("openclaw", ["agent", "--agent", agentId, "--session-key", `agent:${agentId}:founder-control-plane`, "--message", question, "--json", "--timeout", String(Math.floor(FOUNDER_QUESTION_TIMEOUT_MS / 1000))], { timeout: FOUNDER_QUESTION_TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024 });
     const envelope = JSON.parse(stdout);
     const answer = envelope.result?.payloads?.map((item) => item.text).filter(Boolean).join("\n") || envelope.summary || "No answer returned.";
     const item = recordQuestion(ROOT, { id: `question-${Date.now().toString(36)}`, agentId, question, answer, askedAt, answeredAt: new Date().toISOString() });
     res.json({ question: item });
   } catch (e) {
+    if (e?.killed || e?.code === "ETIMEDOUT") {
+      const seconds = Math.ceil(FOUNDER_QUESTION_TIMEOUT_MS / 1000);
+      return res.status(504).json({ code: "OPENCLAW_TIMEOUT", error: `OpenClaw did not answer within ${seconds} seconds. Check Today for active work before asking again.` });
+    }
     res.status(500).json({ error: String(e.message || e) });
   }
 });
