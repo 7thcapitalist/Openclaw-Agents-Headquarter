@@ -2,7 +2,7 @@ import { existsSync, readdirSync } from "fs";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import { join } from "path";
-import { defaultStateRoot } from "../../../factory/lib/natural-language-intake.mjs";
+import { defaultStateRoot } from "../../../factory/lib/hq/tasks.mjs";
 import { readState } from "../../../factory/lib/task-workflow.mjs";
 import { loadPricing, summarizeCosts } from "../../../factory/lib/hq/cost.mjs";
 import { readPlanLimits } from "../../../factory/lib/hq/plan-limits.mjs";
@@ -25,7 +25,7 @@ export async function buildHqCostsPayload({
   runtimeSource = null,
 } = {}) {
   const resolvedPricing = pricing || loadPricing(hqRoot);
-  const resolvedStateRoot = stateRoot || defaultStateRoot(hqRoot, repo);
+  const resolvedStateRoot = stateRoot || defaultStateRoot(hqRoot);
   const raw = summarizeCosts({ hqRoot, stateRoot: resolvedStateRoot, pricing: resolvedPricing, now });
   const runtime = await readOpenClawSessionUsage({ source: runtimeSource, now });
   return toDashboardCosts(raw, now, buildAiUsage({ raw, runtime, authoritativeSource, now }));
@@ -264,7 +264,7 @@ export async function buildHqPlanLimitsPayload({
   now = new Date().toISOString(),
   lookbackHours = 24,
 } = {}) {
-  const resolvedStateRoot = stateRoot || defaultStateRoot(hqRoot, repo);
+  const resolvedStateRoot = stateRoot || defaultStateRoot(hqRoot);
   const { usageWindows, cooldownHistory } = collectInferredHeadroom({ hqRoot, stateRoot: resolvedStateRoot, now, lookbackHours });
   return readPlanLimits({ authoritativeSource, usageWindows, cooldownHistory, asOf: now });
 }
