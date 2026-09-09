@@ -17,6 +17,7 @@ import { costLimitsPanel } from "/cost-limits.mjs";
   // Objectives from the last Today render, keyed by objectiveId, so the
   // "Details" drill-down can render without another round-trip.
   let objectivesById = {};
+  let executionPoll = null;
 
   function showToast(msg, err) {
     toastEl.textContent = msg;
@@ -35,6 +36,7 @@ import { costLimitsPanel } from "/cost-limits.mjs";
   }
 
   function closeModal() {
+    if (executionPoll) { clearInterval(executionPoll); executionPoll = null; }
     modal.hidden = true;
   }
 
@@ -757,6 +759,49 @@ import { costLimitsPanel } from "/cost-limits.mjs";
       </div>`;
   }
 
+  function executionBadge(status) {
+    const tone = { working: "badge-type", completed: "health-healthy", blocked: "badge-warn", failed: "health-failed", pending: "badge-type" }[status] || "badge-type";
+    return `<span class="badge ${tone}">${esc(status || "pending")}</span>`;
+  }
+
+  function renderExecutionView(x) {
+    const blocked = x.blocker || null;
+    const current = x.currentAgent || x.currentStage;
+    const currentText = current
+      ? `${esc(x.currentAgent || "Factory")} · ${esc(x.currentActivity || x.currentStage || "working")}`
+      : (blocked ? "Waiting for a blocker to be resolved" : "No agent is currently running");
+    const events = (x.events || []).slice().reverse();
+    return `<div class="execution-view">
+      <div class="execution-summary">
+        <div><span class="eyebrow">${esc(x.project || "Factory")}</span><h3>${esc(x.objective || x.objectiveId)}</h3><p class="muted small">${esc(x.objectiveId)} · ${esc(x.status || "—")} · ${x.elapsedMs != null ? esc(fmtDuration(x.elapsedMs)) : "elapsed unavailable"}</p></div>
+        ${executionBadge(x.status === "active" ? "working" : x.status)}
+      </div>
+      <div class="execution-current ${blocked ? "execution-blocked" : ""}"><span class="eyebrow">${blocked ? "BLOCKED" : x.currentActivity?.startsWith("Waiting") ? "WAITING" : current ? "CURRENTLY WORKING" : "IDLE"}</span><strong>${currentText}</strong>${blocked ? `<p class="danger-text small">${esc(blocked.summary || blocked.outcome || "The objective cannot continue")}</p>` : ""}</div>
+      <h4>Execution pipeline</h4>
+      <div class="execution-pipeline">${(x.stages || []).map((s) => `<div class="execution-stage"><div><strong>${esc(s.stage)}</strong><span class="muted small">${s.agent ? ` · ${esc(s.agent)}` : ""}${s.nodeId ? ` · ${esc(s.nodeId)}` : ""}</span>${s.activity ? `<small class="muted">${esc(s.activity)}</small>` : ""}</div>${executionBadge(s.status)}</div>`).join("")}</div>
+      <h4>Live activity <span class="muted small">${events.length} recorded event${events.length === 1 ? "" : "s"}</span></h4>
+      <div class="execution-feed">${events.length ? events.map((e) => `<div class="execution-event"><time>${esc(fmtTime(e.at))}</time><div><strong>${esc(e.source || "Factory")}${e.destination ? ` → ${esc(e.destination)}` : ""}</strong><span class="muted small">${esc(e.type)}${e.stage ? ` · ${esc(e.stage)}` : ""}</span><p>${esc(e.message)}</p></div></div>`).join("") : `<p class="muted small">No execution events recorded yet.</p>`}</div>
+      ${(x.evidence || []).length ? `<h4>Evidence</h4><div class="execution-evidence">${x.evidence.map((e) => `<span>${esc(e.stage)} · ${esc(e.path)}</span>`).join("")}</div>` : ""}
+      ${x.github?.prUrl ? `<p class="small"><a href="${esc(x.github.prUrl)}" target="_blank" rel="noreferrer">Open pull request ↗</a></p>` : ""}
+    </div>`;
+  }
+
+  async function openExecutionView(id) {
+    if (executionPoll) clearInterval(executionPoll);
+    openModal("Task execution", `<p class="muted">Loading the durable execution record…</p>`);
+    const refresh = async () => {
+      try {
+        const execution = await apiJson(`/api/founder/objectives/${encodeURIComponent(id)}/execution`);
+        if (!modal.hidden) modalBody.innerHTML = renderExecutionView(execution);
+        if (execution.status !== "active" && executionPoll) { clearInterval(executionPoll); executionPoll = null; }
+      } catch (e) {
+        if (!modal.hidden) modalBody.innerHTML = `<p class="danger-text">${esc(e.message)}</p>`;
+      }
+    };
+    await refresh();
+    executionPoll = setInterval(refresh, 2500);
+  }
+
   function bindFounderControls() {
     const project = document.getElementById("founder-project");
     const selfNote = document.getElementById("founder-self-note");
@@ -871,10 +916,7 @@ import { costLimitsPanel } from "/cost-limits.mjs";
     scope.querySelectorAll("[data-report-task]").forEach((btn) => btn.onclick = () => openReportDrilldown("task", btn.dataset.reportTask));
     scope.querySelectorAll("[data-report-objective]").forEach((btn) => btn.onclick = () => openReportDrilldown("objective", btn.dataset.reportObjective));
     scope.querySelectorAll("[data-objective-details]").forEach((btn) => btn.onclick = () => {
-      const o = objectivesById[btn.dataset.objectiveDetails];
-      openModal(o?.title || "Objective", renderObjectiveDetails(o));
-      objectiveRecovery.bindObjectiveRecovery(modalBody, { request: apiJson, notify: showToast, refresh: route });
-      bindObjectiveControls(modalBody);
+      openExecutionView(btn.dataset.objectiveDetails);
     });
     scope.querySelectorAll("[data-archive-objective]").forEach((btn) => btn.onclick = () => archiveObjective(btn.dataset.archiveObjective, true));
     scope.querySelectorAll("[data-unarchive-objective]").forEach((btn) => btn.onclick = () => archiveObjective(btn.dataset.unarchiveObjective, false));
