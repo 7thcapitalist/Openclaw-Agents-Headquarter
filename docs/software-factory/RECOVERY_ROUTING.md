@@ -16,3 +16,9 @@ This changes routing only; it grants no merge, production, or credential authori
 Verification: routing regression tests cover builder-stage recovery and reject a
 repair agent verifying its own repair; the recovery workflow test exercises
 failure, diagnosis, verification, and resumption through the existing engine.
+# Verification limits
+
+The five routing/recovery workflow tests pass, including the actual repair
+and verifier runtime identities. Broader missing-result and concurrent-runner
+suites have five failures also reproduced on main e43e4df (old failure-routing
+and retry expectations). This change does not claim those suites are green.
