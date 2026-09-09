@@ -20,10 +20,10 @@ test("spend, public communication, and irreversible changes each trigger a decis
   assert.equal(classifyDecision({ text: "Run a destructive migration that will drop table events." }).trigger, "irreversible");
 });
 
-test("high-risk tasks always require a founder decision", () => {
+test("high-risk classification is enforced by the builder gate, not duplicated as intake approval", () => {
   const r = classifyDecision({ text: "Small copy tweak.", fields: { risk: "high" } });
-  assert.equal(r.outcome, "decision-request");
-  assert.equal(r.trigger, "risk:high");
+  assert.equal(r.outcome, "continue");
+  assert.equal(r.trigger, null);
 });
 
 test("a structured field trigger fires", () => {

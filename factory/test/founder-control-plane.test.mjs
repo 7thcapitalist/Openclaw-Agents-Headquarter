@@ -85,6 +85,25 @@ test("discovers factory state and builds founder project status", () => {
   assert.equal(overview.projects[0].stage, "product");
 });
 
+test("only the active builder gate is shown as approval; earlier high-risk decisions stay decisions", () => {
+  const { root, statePath } = fixture();
+  const state = JSON.parse(readFileSync(statePath, "utf8"));
+  state.task.risk = "high";
+  state.founderApprovalRequest = { taskId: state.task.id, challenge: "test", decision: "approve-high-risk-build" };
+  state.status = "blocked";
+  state.blocker = { stage: "product", outcome: "decision-required", summary: "Choose the persistence direction.", at: "2026-09-08T10:00:00.000Z" };
+  writeState(statePath, state);
+  let overview = buildFounderOverview(root, [{ id: "startup-ops", name: "Startup Ops" }]);
+  assert.equal(overview.inbox[0].kind, "decision");
+  assert.equal(overview.inbox[0].action, "respond-and-resume");
+
+  state.blocker = { stage: "builder", outcome: "decision-required", summary: "High-risk work requires founder approval.", at: "2026-09-08T10:00:00.000Z" };
+  writeState(statePath, state);
+  overview = buildFounderOverview(root, [{ id: "startup-ops", name: "Startup Ops" }]);
+  assert.equal(overview.inbox[0].kind, "approval");
+  assert.equal(overview.inbox[0].action, "one-click-approval");
+});
+
 test("objective execution view joins durable node events, dispatch, handoff, and evidence", () => {
   const { root } = fixture();
   const objectiveDir = join(root, "dashboard/backend/data/factory/startup-ops/objectives/obj-live-demo");

@@ -52,6 +52,6 @@
       "reason": "Legal / compliance implications need the founder."
     }
   ],
-  "riskBinding": { "high": "decision-request" },
+  "riskBinding": { "high": "signed-approval-before-builder" },
   "sla": { "decisionRequestReminderHours": 24, "blockingQuestionTimeoutHours": 4 }
 }
