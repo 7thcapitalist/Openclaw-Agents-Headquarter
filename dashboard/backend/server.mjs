@@ -103,6 +103,7 @@ import { runObjective } from "../../factory/lib/objective/orchestrator.mjs";
 import { founderApprovalSetupBlocker } from "../../factory/lib/hq/blocker-class.mjs";
 import { defaultStateRoot } from "../../factory/lib/natural-language-intake.mjs";
 import { readDeploymentStatus } from "../../factory/lib/deploy/status.mjs";
+import { addOvernightItem, readOvernightQueue, removeOvernightItem, startOvernight, stopOvernight, overnightLimit } from "./lib/overnightQueue.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const execFileAsync = promisify(execFile);
@@ -411,6 +412,30 @@ app.post("/api/founder/intake", async (req, res) => {
     res.status(400).json({ error: String(e.message || e) });
   }
 });
+
+// Founder-planned overnight work. The queue is persisted separately from task
+// state, runs objectives one at a time, and delegates every objective to the
+// normal factory gates. Stop leaves the current worktree/state inspectable.
+app.get("/api/founder/overnight", (_req, res) => res.json({ ...readOvernightQueue(ROOT), limit: overnightLimit }));
+app.post("/api/founder/overnight/items", (req, res) => {
+  try {
+    const projectId = String(req.body?.projectId || "").trim();
+    const repo = resolveLaunchRepo(req, projectId) || "";
+    if (!existsSync(join(repo, ".git"))) return res.status(400).json({ error: "Choose a registered project with a valid git repository." });
+    res.status(201).json(addOvernightItem(ROOT, { objective: req.body?.objective, projectId, repo }));
+  } catch (e) { res.status(400).json({ error: String(e.message || e) }); }
+});
+app.delete("/api/founder/overnight/items/:id", (req, res) => {
+  try { res.json(removeOvernightItem(ROOT, req.params.id)); }
+  catch (e) { res.status(409).json({ error: String(e.message || e) }); }
+});
+app.post("/api/founder/overnight/start", (req, res) => {
+  try {
+    const scriptPath = join(ROOT, "scripts", "factory-objective.mjs");
+    res.status(202).json(startOvernight(ROOT, { scriptPath }));
+  } catch (e) { res.status(409).json({ error: String(e.message || e) }); }
+});
+app.post("/api/founder/overnight/stop", (_req, res) => res.json(stopOvernight(ROOT)));
 
 // Decompose one founder objective into a dependency-aware task graph and run the
 // independent parts concurrently. Detached, tracked as a founder job — same

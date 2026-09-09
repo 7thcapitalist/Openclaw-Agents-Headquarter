@@ -211,7 +211,7 @@ import { costLimitsPanel } from "/cost-limits.mjs";
   // ── Today: the founder observability surface ───────────────────
 
   async function renderToday() {
-    const [state, fc, learning, objectivesResp, autonomy, costs, planLimits] = await Promise.all([
+    const [state, fc, learning, objectivesResp, autonomy, costs, planLimits, overnight] = await Promise.all([
       loadCompany(),
       apiJson("/api/founder/overview").catch(() => ({ jobs: [] })),
       loadLearning().catch(() => null),
@@ -219,6 +219,7 @@ import { costLimitsPanel } from "/cost-limits.mjs";
       apiJson("/api/hq/autonomy").catch(() => null),
       apiJson("/api/hq/costs").catch(() => null),
       apiJson("/api/hq/plan-limits").catch(() => null),
+      apiJson("/api/founder/overnight").catch(() => ({ status: "unavailable", items: [] })),
     ]);
     const objectives = objectivesResp.objectives || [];
     objectivesById = Object.fromEntries(objectives.map((o) => [o.objectiveId, o]));
@@ -266,6 +267,8 @@ import { costLimitsPanel } from "/cost-limits.mjs";
               </div>
             </form>
           </div>
+
+          ${renderOvernightPlan(overnight, projects)}
 
           ${runtimeBanner(state.runtime)}
 
@@ -345,6 +348,22 @@ import { costLimitsPanel } from "/cost-limits.mjs";
         </main>
       </section>`;
     bindFounderControls();
+  }
+
+  function renderOvernightPlan(plan, projects) {
+    if (!plan || plan.status === "unavailable") return "";
+    const running = plan.status === "running";
+    return `<section class="activity-panel overnight-panel">
+      <div class="panel-heading"><div><span class="eyebrow">Overnight work</span><h2>Plan the night</h2></div>${pill(plan.status, running ? "health-healthy" : "badge-type")}</div>
+      <p class="muted small">Queue up to ${esc(plan.limit || 8)} big objectives. Start is explicit; each item uses the normal factory worktrees, review, QA, security, and founder-merge gates.</p>
+      <form id="overnight-add" class="founder-command-row">
+        <textarea id="overnight-objective" rows="2" placeholder="One substantial objective for tonight…" required ${running ? "disabled" : ""}></textarea>
+        <select id="overnight-project" required ${running ? "disabled" : ""}><option value="">Choose project</option>${projects.map((p) => `<option value="${esc(p.key)}" data-repo="${esc(p.repo || "")}">${esc(p.name)}</option>`).join("")}</select>
+        <button class="btn" type="submit" ${running ? "disabled" : ""}>Add to tonight</button>
+      </form>
+      <div class="company-feed">${(plan.items || []).map((item, i) => `<div class="company-agent"><span class="activity-pulse ${item.status === "running" ? "pulse-live" : item.status === "failed" ? "pulse-error" : ""}"></span><div><strong>${i + 1}. ${esc(item.objective)}</strong><small class="muted">${esc(item.projectId)} · ${esc(item.status)}${item.exitCode != null ? ` · exit ${esc(item.exitCode)}` : ""}</small></div>${!running && item.status !== "complete" ? `<button class="btn secondary tiny" data-remove-night="${esc(item.id)}">Remove</button>` : ""}</div>`).join("") || `<div class="empty-state">Nothing planned yet.</div>`}</div>
+      <div class="row-actions">${running ? `<button class="btn secondary" id="stop-overnight">Stop after the current objective</button>` : `<button class="btn founder-launch" id="start-overnight" ${!(plan.items || []).some((x) => x.status === "queued" || x.status === "failed") ? "disabled" : ""}>Start overnight work →</button>`}</div>
+    </section>`;
   }
 
   function runtimeBanner(runtime) {
@@ -942,6 +961,30 @@ import { costLimitsPanel } from "/cost-limits.mjs";
       };
     });
     document.getElementById("ask-agent").onclick = () => { openModal("Ask an agent", `<label class="field-label">Agent</label><input class="modal-input" id="question-agent" value="main"/><label class="field-label">Question</label><textarea class="editor" id="question-text" placeholder="What is blocking this project?"></textarea><button class="btn" id="send-question">Ask</button><div id="question-answer"></div>`); document.getElementById("send-question").onclick = async () => { const out = document.getElementById("question-answer"); out.innerHTML = `<p class="muted">Agent is thinking…</p>`; try { const j = await apiJson("/api/founder/questions", { method: "POST", body: JSON.stringify({ agentId: document.getElementById("question-agent").value, question: document.getElementById("question-text").value }) }); out.innerHTML = `<div class="card">${esc(j.question.answer)}</div>`; } catch (e) { out.innerHTML = `<p class="danger-text">${esc(e.message)}</p>`; } }; };
+    const nightProject = document.getElementById("overnight-project");
+    nightProject?.addEventListener("change", () => {
+      const repo = nightProject.selectedOptions[0]?.dataset.repo;
+      if (repo) nightProject.dataset.repo = repo;
+    });
+    document.getElementById("overnight-add")?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      try {
+        await apiJson("/api/founder/overnight/items", { method: "POST", body: JSON.stringify({ objective: document.getElementById("overnight-objective").value, projectId: nightProject.value, repo: nightProject.selectedOptions[0]?.dataset.repo }) });
+        showToast("Added to tonight’s plan."); route();
+      } catch (err) { showToast(err.message, true); }
+    });
+    app.querySelectorAll("[data-remove-night]").forEach((btn) => btn.onclick = async () => {
+      try { await apiJson(`/api/founder/overnight/items/${encodeURIComponent(btn.dataset.removeNight)}`, { method: "DELETE" }); route(); }
+      catch (err) { showToast(err.message, true); }
+    });
+    document.getElementById("start-overnight")?.addEventListener("click", async () => {
+      try { await apiJson("/api/founder/overnight/start", { method: "POST" }); showToast("Overnight work started."); route(); }
+      catch (err) { showToast(err.message, true); }
+    });
+    document.getElementById("stop-overnight")?.addEventListener("click", async () => {
+      try { await apiJson("/api/founder/overnight/stop", { method: "POST" }); showToast("Stopping after the current objective."); route(); }
+      catch (err) { showToast(err.message, true); }
+    });
     bindObjectiveControls(app);
   }
 
