@@ -136,10 +136,13 @@ result. `run` drives all remaining stages:
 For an OpenClaw automation that owns invocation itself, call `next`, dispatch
 the returned `actor` with `promptPath` and `cwd`, then call `ingest`. Repeated
 `next` calls return the same outstanding dispatch, while a running dispatch
-cannot be claimed twice. Invocation failures retry the same stage up to the
-configured limit. Substantive review, QA, and security failures invalidate
-downstream evidence and route their findings back to the builder. A
-decision-required result or exhausted retry budget blocks advancement.
+cannot be claimed twice. Every failure is classified and recoverable failures
+remain on the original task: the factory records the failure, dispatches a
+bounded diagnosis/repair, independently verifies the repair, and then re-arms
+the failed stage. Substantive review, QA, and security failures invalidate
+downstream evidence and preserve their original findings. A founder decision,
+unsafe repair, or exhausted recovery budget blocks advancement with an
+actionable Founder Inbox explanation.
 
 The default OpenClaw agent IDs are configured under
 `openclawIntegration.agentIds` in `factory/factory.config.json`; requests may

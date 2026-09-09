@@ -26,7 +26,9 @@ export function initializeTask({ hqRoot, contractPath, repo: repoInput, branch: 
   if (existsSync(statePath)) throw new Error(`Task state already exists: ${statePath}`);
   const worktree = resolve(requestedWorktree || join(dirname(repo), ".openclaw-worktrees", `${basename(repo)}-${task.id}`));
   if (existsSync(worktree)) throw new Error(`Worktree path already exists: ${worktree}`);
-  const state = createState({ task, repo, branch, worktree, founderPublicKey: resolveFounderPublicKey(hqRoot) });
+  let maxRecoveryAttempts = 3;
+  try { maxRecoveryAttempts = JSON.parse(readFileSync(join(hqRoot, "factory", "factory.config.json"), "utf8")).openclawIntegration?.maxRecoveryAttempts || 3; } catch { /* safe default */ }
+  const state = createState({ task, repo, branch, worktree, founderPublicKey: resolveFounderPublicKey(hqRoot), maxRecoveryAttempts });
   if (git(repo, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], { allowFailure: true }).ok) {
     throw new Error(`Branch already exists: ${branch}`);
   }

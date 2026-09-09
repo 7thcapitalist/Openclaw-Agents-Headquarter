@@ -215,6 +215,15 @@ export function briefBlocker(blocker, { decisionQuestion = null } = {}) {
   const cls = classifyBlocker(blocker);
   const raw = summary;
 
+  if (blocker.whatFailed || blocker.whatFactoryTried || blocker.whatItNeedsFromFounder) {
+    return {
+      kind: "decision", needsFounder: true,
+      headline: blocker.whatFailed || "Recovery could not continue",
+      detail: [`Why: ${blocker.why || summary || "unknown"}`, `Factory tried: ${blocker.whatFactoryTried || "not recorded"}`, `Needs from you: ${blocker.whatItNeedsFromFounder || "a decision to continue"}`, `After approval: ${blocker.whatHappensAfterApproval || "the original task will resume when safe"}`].join(" "),
+      raw,
+    };
+  }
+
   // Infra text wins even if the orchestrator relabeled the outcome as
   // decision-required — the founder should see "recovering", not "answer me".
   if (RE.infra.test(summary) || cls === "infra") {

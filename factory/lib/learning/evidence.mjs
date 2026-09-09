@@ -127,6 +127,11 @@ export function toTaskRecord(state, statePath = null, { attachEvidence = true } 
     assignments: state.assignments || {},
     terminalStatus: state.status,
     blocker: state.blocker || null,
+    failures: (state.failures || []).map((failure) => ({ ...failure, error: sanitizeExcerpt(failure.error || "", { maxLength: 400 }).text })),
+    recovery: state.recovery ? {
+      maxAttempts: state.recovery.maxAttempts,
+      attempts: (state.recovery.attempts || []).map((attempt) => ({ number: attempt.number, strategy: attempt.strategy, failedStage: attempt.failedStage, classification: attempt.classification, status: attempt.status, diagnosis: attempt.diagnosis ? { ...attempt.diagnosis, summary: sanitizeExcerpt(attempt.diagnosis.summary || "", { maxLength: 400 }).text } : null, repair: attempt.repair ? { ...attempt.repair, summary: sanitizeExcerpt(attempt.repair.summary || "", { maxLength: 400 }).text } : null, verification: attempt.verification ? { ...attempt.verification, summary: sanitizeExcerpt(attempt.verification.summary || "", { maxLength: 400 }).text } : null })),
+    } : null,
     createdAt: state.createdAt || null,
     endedAt: state.updatedAt || (events.length ? events[events.length - 1].at : null),
     cycleMs: createdAtMs != null && endedAtMs != null ? Math.max(0, endedAtMs - createdAtMs) : null,

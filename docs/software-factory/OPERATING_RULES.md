@@ -98,3 +98,18 @@ A task is not done because an agent says “implemented.” It is done when:
 4. QA evidence exists,
 5. docs/state are updated where needed,
 6. no required founder decision remains unresolved.
+
+## Recovery of execution failures
+
+Every execution failure is classified as `AGENT_ERROR`, `FACTORY_ERROR`,
+`PROJECT_ERROR`, `INFRASTRUCTURE_ERROR`, `FOUNDER_DECISION_REQUIRED`, or
+`UNKNOWN`. Recoverable failures remain work on the original task: the factory
+records the immutable failure, dispatches bounded diagnosis/repair, independently
+verifies the repair through an existing review or QA assignment, and resumes the
+failed stage only after verification passes. The default recovery budget is
+three attempts (`retry-recover`, `deeper-diagnosis`, `independent-review`).
+Founder escalation must identify what failed, why, what the factory tried, what
+the founder must decide, and what approval will do. Recovery never bypasses
+high-risk approval, independent review, QA, security, release, or human merge
+gates. Successful recovery is evidence for the learning queue, not permission
+for the learning system to change factory behavior automatically.
