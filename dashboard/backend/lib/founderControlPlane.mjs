@@ -7,6 +7,7 @@ import { listProjectBriefs } from "../../../factory/lib/intel/project-brief.mjs"
 import { buildCompanyBriefing } from "../../../factory/lib/intel/founder-briefing.mjs";
 import { toTaskRecord } from "../../../factory/lib/learning/evidence.mjs";
 import { classifyBlocker, classifyObjectiveNodeBlocker } from "../../../factory/lib/hq/blocker-class.mjs";
+import { buildOutcome } from "../../../factory/lib/failure-outcome.mjs";
 import { resumeObjectiveNodes, setObjectiveRecoveryInFlight, readObjState } from "../../../factory/lib/objective/orchestrator.mjs";
 import { defaultStateRoot } from "../../../factory/lib/natural-language-intake.mjs";
 import { briefBlocker, presentObjective, isSeedProject } from "../../../factory/lib/hq/presenter.mjs";
@@ -116,6 +117,20 @@ function writeControl(root, value) {
 }
 
 const TERMINAL_TASK_STATUSES = new Set(["merge-ready", "merged"]);
+
+// A detached job that reached one of these actually delivered something the
+// founder can act on. Anything else that stops is a failure to be classified.
+const DELIVERED_JOB_STATUSES = new Set(["merge-ready", "merged", "complete", "completed"]);
+
+// The job.status the founder's existing views read, per typed outcome. `paused`
+// is distinct from `error`: it resumes on its own and must not read as broken.
+const JOB_STATUS_FOR_OUTCOME = {
+  "merge-ready": "complete",
+  "needs-founder-decision": "needs-founder",
+  "paused-credits": "paused",
+  "infra-retrying": "retrying",
+  "hard-failed": "error",
+};
 const RESULT_EVENT_OUTCOME = {
   "stage-pass": "pass",
   "stage-fail": "fail",
@@ -1002,7 +1017,15 @@ export function buildFounderOverview(root, hqProjects = []) {
     detail: item.error || "Review the objective execution record. Other queued objectives continue.",
     objective: item.objective, requestedAt: item.endedAt, action: "review-overnight",
   }));
-  const allInboxItems = [...overnightFailures, ...buildFounderInbox({ tasks, decisions, questions: control.questions, objectives: objectivesForInbox, maxAutoRetries })]
+  const baseInboxItems = [...overnightFailures, ...buildFounderInbox({ tasks, decisions, questions: control.questions, objectives: objectivesForInbox, maxAutoRetries })];
+  // Detached jobs that died before producing any state file — previously
+  // invisible. Deduped against work the inbox already speaks for, so a failure
+  // with a real state file is still reported once, by the richer source.
+  const covered = {
+    taskIds: new Set(baseInboxItems.map((item) => item.taskId).filter(Boolean)),
+    objectiveIds: new Set(baseInboxItems.map((item) => item.objectiveId).filter(Boolean)),
+  };
+  const allInboxItems = [...baseInboxItems, ...buildJobInbox(control.jobs, covered)]
     .map((item) => (dismissedMap[item.id]
       ? { ...item, dismissed: true, dismissedAt: dismissedMap[item.id].dismissedAt || null }
       : item));
@@ -1034,6 +1057,30 @@ export function buildFounderOverview(root, hqProjects = []) {
       since: task.status === "blocked" ? (task.blocker?.at || null) : (task.updatedAt || null),
     }));
 
+  // Detached jobs the system is carrying on its own — an exhausted seat waiting
+  // for its window, or a transient failure being retried. The founder sees that
+  // the work is alive and when it resumes; it never becomes an inbox item.
+  const RECOVERING_JOB_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+  for (const job of control.jobs || []) {
+    const outcome = job.outcome;
+    if (!outcome || outcome.needsFounder) continue;
+    if (!["paused-credits", "infra-retrying"].includes(outcome.outcomeClass)) continue;
+    const at = Date.parse(outcome.at || job.updatedAt || "") || 0;
+    if (at && Date.now() - at > RECOVERING_JOB_WINDOW_MS) continue;
+    autoRecovering.push({
+      taskId: job.taskId || null,
+      objectiveId: job.objectiveId || null,
+      objective: job.objective || null,
+      project: job.projectId || null,
+      stage: outcome.whatFailed || null,
+      detail: outcome.headline,
+      statePath: null,
+      autoRetries: 0,
+      resumeAfter: outcome.resumeAfter || null,
+      since: outcome.at || job.updatedAt || null,
+    });
+  }
+
   const intel = attachProjectIntelligence(root, projects, decisions);
   return {
     projects: intel.projects,
@@ -1047,6 +1094,51 @@ export function buildFounderOverview(root, hqProjects = []) {
     questions: control.questions.slice(-20).reverse(),
     activity,
   };
+}
+
+// Detached founder jobs that ended badly and produced NO state file of their own.
+//
+// POST /api/founder/tasks and /objectives answer 202 and finish their work in a
+// promise. When that promise rejected before a task or objective state file
+// existed — an intake throw, a decomposition throw on an exhausted seat — the
+// only record was `control.jobs`, which no founder-facing view read. The run
+// vanished. These items close that hole.
+//
+// `covered` holds the task and objective ids the inbox already speaks for, so a
+// failure that DID produce a state file is reported once, by the richer source.
+function buildJobInbox(jobs, covered = { taskIds: new Set(), objectiveIds: new Set() }) {
+  const items = [];
+  for (const job of jobs || []) {
+    const outcome = job.outcome;
+    // Only a classified, founder-facing outcome belongs here. paused-credits and
+    // infra-retrying are the system's problem and appear under autoRecovering.
+    if (!outcome?.needsFounder) continue;
+    if (job.taskId && covered.taskIds.has(job.taskId)) continue;
+    if (job.objectiveId && covered.objectiveIds.has(job.objectiveId)) continue;
+    items.push({
+      kind: outcome.outcomeClass === "needs-founder-decision" ? "decision" : "blocked",
+      id: `job:${job.id}`,
+      taskId: job.taskId || null,
+      objectiveId: job.objectiveId || null,
+      objective: job.objective || null,
+      project: job.projectId || null,
+      statePath: null,
+      title: outcome.headline,
+      detail: [
+        outcome.detail,
+        outcome.whatTheFactoryTried ? `What the factory tried: ${outcome.whatTheFactoryTried}` : null,
+      ].filter(Boolean).join("\n\n"),
+      recommendation: outcome.outcomeClass === "needs-founder-decision"
+        ? outcome.whatFounderMustDecide
+        : "This run stopped before it produced any reviewable work. Retry it, or adjust the request and send it again.",
+      options: outcome.outcomeClass === "needs-founder-decision" ? ["Give direction", "Keep paused"] : ["Retry", "Dismiss"],
+      risk: null,
+      requestedAt: outcome.at || job.updatedAt || job.createdAt || null,
+      action: "review-failed-job",
+      outcome,
+    });
+  }
+  return items;
 }
 
 // The Founder Inbox — a single ordered list of everything that actually needs
@@ -1317,6 +1409,42 @@ export function saveFounderJob(root, job) {
   control.jobs = control.jobs.slice(-100);
   writeControl(root, control);
   return job;
+}
+
+// Close out a detached founder job with the typed terminal outcome.
+//
+// The detached task/objective endpoints answer 202 and then run the real work in
+// a promise. Every way that promise can settle — throw, or a non-delivering
+// terminal status — must land here, so `control.jobs` always carries a
+// classified, founder-readable record instead of a raw error string that no view
+// reads. `buildFounderInbox` then surfaces the founder-facing ones.
+export function finishFounderJob(root, job, {
+  error = null,
+  result = null,
+  whatFailed = "This work",
+  whatTheFactoryTried = null,
+  resumeAfter = null,
+  evidencePaths = [],
+} = {}) {
+  const outcome = buildOutcome({
+    error,
+    // A run that finished without delivering is not a success; classify its
+    // status text the same way a thrown error would be classified.
+    detail: error ? null : (result?.blocker?.summary || result?.error || result?.status || null),
+    outcomeClass: !error && DELIVERED_JOB_STATUSES.has(String(result?.status || "")) ? "merge-ready" : null,
+    blocker: !error && result?.blocker ? result.blocker : null,
+    whatFailed,
+    whatTheFactoryTried,
+    resumeAfter,
+    evidencePaths,
+  });
+  return saveFounderJob(root, Object.assign(job, {
+    status: JOB_STATUS_FOR_OUTCOME[outcome.outcomeClass] || "error",
+    outcome,
+    // Kept for older readers; the classified record above is the source of truth.
+    error: outcome.outcomeClass === "merge-ready" ? undefined : outcome.detail,
+    updatedAt: new Date().toISOString(),
+  }));
 }
 
 export function resolveFounderDecision({ root, hqRoot, statePath, direction }) {
