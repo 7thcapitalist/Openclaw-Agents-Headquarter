@@ -20,3 +20,9 @@ test("founder question timeouts stay JSON and finish before a gateway timeout", 
   assert.match(server, /res\.status\(504\)\.json\(\{ code: "OPENCLAW_TIMEOUT"/);
   assert.match(app, /res\.status === 524 \|\| res\.status === 504/);
 });
+
+test("execution view keeps long prompts behind a collapsed disclosure", () => {
+  assert.match(app, /shortObjectiveTitle\(x\.title \|\| x\.objective \|\| "Objective"\)/);
+  assert.match(app, /<details class="operation-original-request"><summary>View original request<\/summary>/);
+  assert.match(app, /<details class="obj-original-request"><summary>Original request<\/summary>/);
+});
