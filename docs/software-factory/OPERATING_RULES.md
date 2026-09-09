@@ -22,6 +22,13 @@ long-lived worktrees. Independent changes are separate PRs, never stacked on a
 shared branch. Do not add unrelated work to an existing PR — open a new one from
 the latest `main`. Full policy: `GIT_WORKFLOW.md` (SFD-2026-008).
 
+SFD-2026-010 permits a founder-authorized, bounded multi-PR campaign to prepare
+isolated PRs from one recorded `main` baseline before merging them. Campaign PRs
+still target `main`, never share a branch/worktree, declare dependencies and
+merge order, and must be updated and fully reverified against latest `main`
+immediately before their human-authorized merge. Until that refresh succeeds,
+an open campaign PR is prepared work, not merge-ready work.
+
 ## Do not escalate
 
 Do not ask the founder about:
