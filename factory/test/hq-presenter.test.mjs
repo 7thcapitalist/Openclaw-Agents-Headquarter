@@ -118,7 +118,7 @@ test("normalizeNodeStatus maps every internal status to a founder word", () => {
   assert.equal(normalizeNodeStatus({ status: "blocked-by-dep" }), STATUS.PENDING);
   assert.equal(normalizeNodeStatus({ status: "failed", blocker: { outcome: "fail", summary: "reviewer BLOCKING: real bug" } }), STATUS.FAILED);
   assert.equal(normalizeNodeStatus({ status: "blocked", blocker: { outcome: "decision-required", summary: "which option?" } }), STATUS.WAITING_FOR_FOUNDER);
-  assert.equal(normalizeNodeStatus({ status: "failed", blocker: { outcome: "fail", summary: "Could not start the CLI" } }), STATUS.RUNNING);
+  assert.equal(normalizeNodeStatus({ status: "failed", blocker: { outcome: "fail", summary: "Could not start the CLI" } }), STATUS.RECOVERING);
 });
 
 test("statusMeta gives a word + tone + icon for each status (colour is never the only signal)", () => {
@@ -162,7 +162,19 @@ test("presentObjective: a blocked-on-rebase objective becomes FAILED with a Cont
   assert.equal(p.blockerBrief.kind, "rebase-needed");
   assert.equal(p.isSeed, false);
   assert.equal(p.nodeStatuses.length, 3);
-  assert.equal(p.nodeStatuses[1].status, STATUS.RUNNING, "infra node shows as recovering, not waiting");
+  assert.equal(p.nodeStatuses[1].status, STATUS.RECOVERING, "infra node shows as recovering, not waiting");
+});
+
+test("presentObjective: an active objective with only an infra failure is recovering, not running", () => {
+  const p = presentObjective({
+    objectiveId: "obj-recovering", project: "app", objective: "Build the API", status: "active",
+    nodes: [{ id: "obj-recovering-a", role: "backend-builder", status: "blocked",
+      blocker: { outcome: "fail", summary: "Could not start the CLI" } }],
+    integration: { id: "obj-recovering-integration", role: "integration", status: "pending" },
+  });
+  assert.equal(p.status, STATUS.RECOVERING);
+  assert.equal(p.progress.running, 0);
+  assert.match(p.headline, /recovering automatically/);
 });
 
 test("presentObjective: a complete objective with a PR offers Open PR", () => {
