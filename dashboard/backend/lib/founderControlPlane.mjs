@@ -993,7 +993,8 @@ export function buildFounderOverview(root, hqProjects = []) {
   // with the inbox "×" stay out of "Needs you" and move to a "Dismissed" fold.
   // Reversible, adds no workflow — the underlying task/decision is untouched.
   const dismissedMap = control.dismissedInbox || {};
-  const allInboxItems = buildFounderInbox({ tasks, decisions, questions: control.questions, objectives: objectivesForInbox })
+  const maxAutoRetries = Math.max(1, Number(process.env.HQ_AUTO_RETRY_MAX) || 3);
+  const allInboxItems = buildFounderInbox({ tasks, decisions, questions: control.questions, objectives: objectivesForInbox, maxAutoRetries })
     .map((item) => (dismissedMap[item.id]
       ? { ...item, dismissed: true, dismissedAt: dismissedMap[item.id].dismissedAt || null }
       : item));
@@ -1007,7 +1008,10 @@ export function buildFounderOverview(root, hqProjects = []) {
   const STALE_ACTIVE_MS = 90 * 60 * 1000;
   const autoRecovering = tasks
     .filter((task) => {
-      if (task.status === "blocked") return (task.blockerClass || classifyBlocker(task.blocker)) === "infra";
+      if (task.status === "blocked") {
+        return (task.blockerClass || classifyBlocker(task.blocker)) === "infra"
+          && (task.autoRetries || 0) < maxAutoRetries;
+      }
       if (task.status === "active") return Date.now() - (Date.parse(task.updatedAt) || Date.now()) > STALE_ACTIVE_MS;
       return false;
     })
@@ -1041,7 +1045,7 @@ export function buildFounderOverview(root, hqProjects = []) {
 // the founder: high-risk approvals, decisions a stage raised, terminally
 // blocked tasks, and any unanswered question. It is a projection of task state
 // + the control file; it adds no new state and no new workflow.
-function buildFounderInbox({ tasks, decisions, questions, objectives = [] }) {
+function buildFounderInbox({ tasks, decisions, questions, objectives = [], maxAutoRetries = 3 }) {
   const items = [];
   const byId = new Map(tasks.map((t) => [t.id, t]));
 
@@ -1085,10 +1089,14 @@ function buildFounderInbox({ tasks, decisions, questions, objectives = [] }) {
   // `blocked` with a `fail` outcome has exhausted its retry budget. Only a
   // HARD failure (a real FAIL reason) belongs here — an INFRA failure (no
   // result file, timeout, provider 5xx) is handled by the auto-retry sweep and
-  // must never page the founder.
+  // must never page the founder while retries remain. Once the bounded retry
+  // budget is exhausted, the infrastructure failure becomes an actionable
+  // Founder Inbox item so it cannot disappear silently.
   for (const task of tasks) {
     if (task.status !== "blocked" || task.blocker?.outcome !== "fail") continue;
-    if ((task.blockerClass || classifyBlocker(task.blocker)) === "infra") continue;
+    const isInfra = (task.blockerClass || classifyBlocker(task.blocker)) === "infra";
+    if (isInfra && (task.autoRetries || 0) < maxAutoRetries) continue;
+    const recoveryExhausted = isInfra;
     items.push({
       kind: "blocked",
       id: `${task.id}:${task.blocker.stage || "stage"}`,
@@ -1096,8 +1104,12 @@ function buildFounderInbox({ tasks, decisions, questions, objectives = [] }) {
       objective: task.objective || null,
       project: task.project || null,
       statePath: task.statePath || null,
-      title: `${task.blocker.stage || "A stage"} failed — needs a look`,
-      detail: task.blocker.summary || "The task cannot proceed without founder attention.",
+      title: recoveryExhausted
+        ? "Automatic recovery exhausted — needs a look"
+        : `${task.blocker.stage || "A stage"} failed — needs a look`,
+      detail: recoveryExhausted
+        ? `The system retried this infrastructure failure ${task.autoRetries || maxAutoRetries} times without a successful run. Review the failure and retry or adjust the agent route.`
+        : task.blocker.summary || "The task cannot proceed without founder attention.",
       risk: task.risk || null,
       requestedAt: task.blocker.at || null,
       action: "review-blocked-task",
