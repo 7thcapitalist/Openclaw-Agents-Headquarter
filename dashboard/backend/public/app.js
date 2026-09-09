@@ -419,7 +419,7 @@ import { costLimitsPanel } from "/cost-limits.mjs";
       if (t.status === "active" && Date.now() - (Date.parse(t.updatedAt) || Date.now()) > STALE_ACTIVE_MS) continue;
       const a = agentById[t.agent] || Object.values(agentById).find((x) => x.runtimeAgentId === t.agent);
       rows.push({
-        kind: "task", title: t.objective || t.id, sub: t.project || t.id,
+        kind: "task", taskId: t.id, title: t.objective || t.id, sub: t.project || t.id,
         role: t.agent, agent: a?.name || t.agent, stage: t.stage, status: t.status,
         elapsedMs: t.elapsedMs, lastResult: t.lastResult, blocker: t.blocker,
         next: t.status === "active" && t.stage ? nextStage(t.stage) : null,
@@ -446,7 +446,7 @@ import { costLimitsPanel } from "/cost-limits.mjs";
         ${r.lastResult?.summary ? `<span class="run-produced">just produced: ${esc(String(r.lastResult.summary).slice(0, 160))}</span>` : ""}
         ${blocked ? `<span class="danger-text small">blocked: ${esc(r.blocker?.summary || r.blocker?.outcome || "needs attention — see Founder inbox")}</span>` : (r.next ? `<span class="muted small">next: ${esc(r.next)}</span>` : "")}
       </div>
-      <div class="run-meta">${pill(r.status, blocked ? "health-failed" : "badge-type")}${r.reportId ? `<button class="btn secondary tiny" data-report-task="${esc(r.reportId)}">report</button>` : ""}</div>
+      <div class="run-meta">${pill(r.status, blocked ? "health-failed" : "badge-type")}${r.kind === "task" ? `<button class="btn secondary tiny" data-task-execution="${esc(r.taskId)}">Details</button>` : ""}${r.reportId ? `<button class="btn secondary tiny" data-report-task="${esc(r.reportId)}">report</button>` : ""}</div>
     </div>`;
   }
 
@@ -802,6 +802,22 @@ import { costLimitsPanel } from "/cost-limits.mjs";
     executionPoll = setInterval(refresh, 2500);
   }
 
+  async function openTaskExecutionView(id) {
+    if (executionPoll) clearInterval(executionPoll);
+    openModal("Task execution", `<p class="muted">Loading the durable execution record…</p>`);
+    const refresh = async () => {
+      try {
+        const execution = await apiJson(`/api/founder/tasks/${encodeURIComponent(id)}/execution`);
+        if (!modal.hidden) modalBody.innerHTML = renderExecutionView(execution);
+        if (execution.status !== "active" && executionPoll) { clearInterval(executionPoll); executionPoll = null; }
+      } catch (e) {
+        if (!modal.hidden) modalBody.innerHTML = `<p class="danger-text">${esc(e.message)}</p>`;
+      }
+    };
+    await refresh();
+    executionPoll = setInterval(refresh, 2500);
+  }
+
   function bindFounderControls() {
     const project = document.getElementById("founder-project");
     const selfNote = document.getElementById("founder-self-note");
@@ -914,6 +930,7 @@ import { costLimitsPanel } from "/cost-limits.mjs";
   // scope (the page, or the modal body after a re-render).
   function bindObjectiveControls(scope) {
     scope.querySelectorAll("[data-report-task]").forEach((btn) => btn.onclick = () => openReportDrilldown("task", btn.dataset.reportTask));
+    scope.querySelectorAll("[data-task-execution]").forEach((btn) => btn.onclick = () => openTaskExecutionView(btn.dataset.taskExecution));
     scope.querySelectorAll("[data-report-objective]").forEach((btn) => btn.onclick = () => openReportDrilldown("objective", btn.dataset.reportObjective));
     scope.querySelectorAll("[data-objective-details]").forEach((btn) => btn.onclick = () => {
       openExecutionView(btn.dataset.objectiveDetails);

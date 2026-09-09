@@ -225,6 +225,68 @@ export function findObjectiveStatePath(root, objectiveId) {
   return null;
 }
 
+// Read-only execution record for a standalone factory task. Objectives have a
+// graph-specific view below, but tasks created through /api/founder/tasks also
+// need a live drill-down in the Founder Control Plane.
+export function buildTaskExecutionView(root, taskId) {
+  const statePath = findTaskStatePath(root, taskId);
+  if (!statePath) return null;
+  const state = readState(statePath);
+  const stageOrder = ["product", "architect", "builder", "reviewer", "qa", "security", "release"];
+  const currentDispatch = state.currentDispatch || null;
+  const stages = stageOrder.map((stage) => {
+    const result = state.stages?.[stage] || { status: "pending" };
+    const active = currentDispatch?.stage === stage && currentDispatch.status === "running";
+    const status = active ? "working"
+      : result.status === "pass" ? "completed"
+        : result.status === "fail" ? "failed"
+          : result.status === "decision-required" ? "blocked" : "pending";
+    const dispatch = (state.dispatches || []).filter((item) => item.stage === stage).at(-1);
+    return {
+      stage,
+      status,
+      agent: currentDispatch?.stage === stage ? currentDispatch.actor : state.assignments?.[stage] || null,
+      startedAt: active ? currentDispatch.startedAt || null : dispatch?.startedAt || result.startedAt || null,
+      finishedAt: dispatch?.completedAt || result.completedAt || null,
+      activity: active ? `Working on ${stage}` : result.summary || dispatch?.summary || null,
+      blocker: result.status === "decision-required" ? state.blocker || null : null,
+    };
+  });
+  const events = (state.events || []).filter((event) => event.at).map((event) => ({
+    at: event.at,
+    source: event.actor || state.assignments?.[event.stage] || "factory",
+    destination: event.stage ? state.assignments?.[event.stage] || null : null,
+    type: event.type || "event",
+    stage: event.stage || null,
+    nodeId: state.task.id,
+    message: event.summary || event.detail || event.reason || String(event.type || "Execution event").replaceAll("-", " "),
+  }));
+  const createdMs = Date.parse(state.createdAt || "");
+  const lastAt = events.at(-1)?.at || state.updatedAt || null;
+  const terminal = ["merge-ready", "merged"].includes(String(state.status || ""));
+  const endMs = terminal && lastAt ? Date.parse(lastAt) : Date.now();
+  return {
+    objectiveId: state.task.id,
+    objective: state.task.outcome,
+    project: state.task.project || basename(state.repo || "factory"),
+    repo: state.repo,
+    status: state.status,
+    createdAt: state.createdAt || null,
+    updatedAt: state.updatedAt || null,
+    elapsedMs: Number.isFinite(createdMs) ? Math.max(0, endMs - createdMs) : null,
+    currentStage: currentDispatch?.stage || state.currentStage || null,
+    currentAgent: currentDispatch?.actor || state.assignments?.[state.currentStage] || null,
+    currentActivity: currentDispatch?.status === "running" ? `Working on ${currentDispatch.stage}` : null,
+    blocker: state.blocker || null,
+    stages,
+    events,
+    evidence: stageOrder.flatMap((stage) => (state.stages?.[stage]?.evidence || []).map((item) => ({
+      stage, path: item.path || item, recordedAt: item.recordedAt || state.stages[stage].completedAt || null,
+    }))),
+    github: state.githubPublish || null,
+  };
+}
+
 // Read-only execution record for the founder. The objective state is the
 // source of truth for the graph; each node's task state is the source of truth
 // for dispatches, stage results, evidence, and handoffs. Keeping this join
