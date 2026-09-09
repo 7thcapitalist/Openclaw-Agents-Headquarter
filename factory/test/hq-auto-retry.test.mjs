@@ -121,3 +121,27 @@ test("an `active` task orphaned by a host restart is revived; a fresh `active` t
   assert.ok(!driven.includes(join(stateRoot, "proj", "tasks", "task-fresh", "state.json")));
   assert.equal(JSON.parse(readFileSync(join(stateRoot, "proj", "tasks", "task-notime", "state.json"), "utf8")).autoRetries, undefined);
 });
+
+test("auto-retry reconciles a stale owning objective node", async () => {
+  const root = hqRoot();
+  const stateRoot = join(root, "state");
+  const taskPath = writeTask(stateRoot, "task-objective", {
+    status: "blocked",
+    blocker: { outcome: "fail", stage: "builder", summary: "agent did not write its result file" },
+    currentStage: "builder",
+  });
+  const objectiveDir = join(stateRoot, "proj", "objectives", "obj-reconcile");
+  mkdirSync(objectiveDir, { recursive: true });
+  writeFileSync(join(objectiveDir, "objective-state.json"), JSON.stringify({
+    objectiveId: "obj-reconcile", status: "blocked", nodes: {
+      "task-objective": { id: "task-objective", status: "blocked", blocker: { outcome: "decision-required", summary: "stale" }, statePath: taskPath },
+    }, events: [],
+  }));
+
+  await retryStuckTasks({ hqRoot: root, stateRoot, runTask: async () => ({ status: "active" }), execute: async () => {} });
+  const objective = JSON.parse(readFileSync(join(objectiveDir, "objective-state.json"), "utf8"));
+  assert.equal(objective.status, "active");
+  assert.equal(objective.nodes["task-objective"].status, "running");
+  assert.equal(objective.nodes["task-objective"].blocker, null);
+  assert.equal(objective.events.at(-1).type, "node-reconciled");
+});

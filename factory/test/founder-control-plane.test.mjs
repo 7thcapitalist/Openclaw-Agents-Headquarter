@@ -426,6 +426,21 @@ test("buildObjectivesView: infra recovery vs founder decision on mixed blockers"
   assert.equal(shaped.blockedOn, idB);
   assert.equal(view.summary.needsFounder, 1);
 
+  // Auto-retry updates the task state first. The founder view must not keep
+  // reporting the old objective-level infrastructure blocker while that task
+  // is actually running again.
+  const resumed = JSON.parse(readFileSync(join(root, "dashboard/backend/data/factory/app/tasks", idA, "state.json"), "utf8"));
+  resumed.status = "active";
+  resumed.blocker = null;
+  resumed.currentDispatch = { id: `${idA}-builder-4`, stage: "builder", status: "running" };
+  writeFileSync(join(root, "dashboard/backend/data/factory/app/tasks", idA, "state.json"), JSON.stringify(resumed));
+  const resumedView = buildObjectivesView(root).objectives.find((o) => o.objectiveId === objectiveId);
+  const resumedNode = resumedView.nodes.find((n) => n.id === idA);
+  assert.equal(resumedNode.status, "running");
+  assert.equal(resumedNode.taskStatus, "active");
+  assert.equal(resumedNode.blocker, null);
+  assert.equal(resumedView.status, "active");
+
   assert.equal(findObjectiveStatePath(root, "../etc/passwd"), null);
   assert.equal(findObjectiveStatePath(root, "not-an-obj"), null);
   assert.equal(findObjectiveStatePath(root, "obj-missing-zzzz"), null);

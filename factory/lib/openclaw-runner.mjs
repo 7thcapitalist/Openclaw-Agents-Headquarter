@@ -1,7 +1,7 @@
 import { execFile } from "child_process";
 import { promisify } from "util";
 import { setTimeout as delay } from "timers/promises";
-import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, unlinkSync, writeFileSync, readFileSync } from "fs";
 import { basename, dirname, join } from "path";
 import { PROTOCOL_VERSION, computeDispatchPaths, failDispatch, ingestResult, markDispatchRunning, prepareDispatch, readResultFile } from "./openclaw-protocol.mjs";
 import { parseAgentMeta } from "./hq/agent-meta.mjs";
@@ -17,6 +17,23 @@ const execFileAsync = promisify(execFile);
 // frozen. All three read-only against the same worktree; order of results does
 // not matter because the engine still applies them one at a time.
 export const DEFAULT_CONCURRENT_GROUPS = [["reviewer", "qa", "security"]];
+
+// The task workflow uses logical actors (for example `codex`) while OpenClaw
+// dispatches to configured runtime agent ids (for example `backend-builder`).
+// Keep that translation at the runner boundary so every caller, including
+// recovery and scheduled retries, uses the same routing contract.
+export function configuredAgentIds(hqRoot, agentIds = {}) {
+  let fromConfig = {};
+  try {
+    const config = JSON.parse(readFileSync(join(hqRoot, "factory", "factory.config.json"), "utf8"));
+    // Only import stage+harness routes implicitly. Legacy direct callers and
+    // unit harnesses may intentionally use logical actors such as `openclaw`;
+    // broad stage/actor defaults are supplied explicitly by the orchestrator.
+    fromConfig = Object.fromEntries(Object.entries(config.openclawIntegration?.agentIds || {})
+      .filter(([key]) => key.includes(":")));
+  } catch { /* isolated unit tests may not have a factory config */ }
+  return { ...fromConfig, ...agentIds };
+}
 
 export function isYieldedExecution(executed) {
   let envelope;
@@ -70,8 +87,17 @@ export async function runOneStage({ hqRoot, statePath, agentIds = {}, maxAttempt
     if (["merge-ready", "blocked"].includes(resumed.status)) writeCompletionReport({ statePath });
     return resumed;
   }
+  const routes = configuredAgentIds(hqRoot, agentIds);
   markDispatchRunning({ statePath, dispatchId: prepared.dispatchId });
-  const agentId = selectAgentId(prepared, agentIds);
+  let agentId;
+  try {
+    agentId = selectAgentId(prepared, routes, { strict: Object.keys(routes).some((key) => key === `${prepared.stage}:${prepared.actor}` || key.startsWith(`${prepared.stage}:`)) });
+  } catch (error) {
+    const diagnostic = `Factory routing error: ${error.message || error}`;
+    const response = failDispatch({ statePath, dispatchId: prepared.dispatchId, error: diagnostic, maxAttemptsPerStage });
+    if (["merge-ready", "blocked"].includes(response.status)) writeCompletionReport({ statePath });
+    return response;
+  }
   const sessionKey = `agent:${agentId}:factory-${prepared.dispatchId}`;
   let response;
   const startedAt = Date.now();
@@ -235,10 +261,11 @@ export async function runConcurrentGroupIfReady({ hqRoot, statePath, agentIds = 
     ? { version: PROTOCOL_VERSION, status: "dispatch", taskId: state.task.id, waiting: true }
     : null;
 
+  const routes = configuredAgentIds(hqRoot, agentIds);
   const members = group.map((stage) => {
     const { dispatchId, resultPath } = computeDispatchPaths({ state, stage, statePath });
     const actor = state.assignments[stage];
-    const agentId = selectAgentId({ stage, actor }, agentIds);
+    const agentId = selectAgentId({ stage, actor }, routes, { strict: Object.keys(routes).some((key) => key === `${stage}:${actor}` || key.startsWith(`${stage}:`)) });
     const promptPath = writeHandoff({ hqRoot, statePath, state, resultPath, dispatchId, stage });
     return { stage, actor, dispatchId, resultPath, promptPath, agentId };
   });
@@ -337,11 +364,13 @@ export async function executeOpenClaw({ agentId, messageFile, sessionKey, cwd })
   );
 }
 
-function selectAgentId(dispatch, agentIds) {
-  return agentIds[dispatch.kind === "recovery-diagnose" ? "recovery" : `${dispatch.stage}:${dispatch.actor}`]
+export function selectAgentId(dispatch, agentIds, { strict = false } = {}) {
+  const selected = agentIds[dispatch.kind === "recovery-diagnose" ? "recovery" : `${dispatch.stage}:${dispatch.actor}`]
     || agentIds[dispatch.stage]
-    || agentIds[dispatch.actor]
-    || dispatch.actor;
+    || agentIds[dispatch.actor];
+  if (selected) return selected;
+  if (!strict) return dispatch.actor;
+  throw new Error(`no runtime agent is configured for stage '${dispatch.stage}' and logical actor '${dispatch.actor}'`);
 }
 
 // Write a schema-valid `fail` result (+ its evidence file) for a concurrent
