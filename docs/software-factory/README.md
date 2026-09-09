@@ -180,4 +180,7 @@ in [`PAPERCLIP_INTEGRATION_PLAN.md`](PAPERCLIP_INTEGRATION_PLAN.md). It keeps th
 current GitHub/HQ factory authoritative while evaluating Paperclip through
 isolated, reversible phases.
 
+Third-party reuse follows the pinned, machine-checked attribution contract in
+[`THIRD_PARTY_PROVENANCE.md`](THIRD_PARTY_PROVENANCE.md).
+
 See `docs/software-factory/FIRST_WEEK.md` for how to learn the system by using it.

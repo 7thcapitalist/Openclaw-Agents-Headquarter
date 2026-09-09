@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Third-party provenance manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "sources", "artifacts"],
+  "properties": {
+    "version": { "const": 1 },
+    "sources": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "name", "repository", "commit", "license", "licenseNotice"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+          "name": { "type": "string", "minLength": 1 },
+          "repository": { "type": "string", "pattern": "^https://" },
+          "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+          "license": { "type": "string", "minLength": 1 },
+          "licenseNotice": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["localPath", "sourceId", "sourcePath", "classification", "notes"],
+        "properties": {
+          "localPath": { "type": "string", "minLength": 1 },
+          "sourceId": { "type": "string", "minLength": 1 },
+          "sourcePath": { "type": "string", "minLength": 1 },
+          "classification": { "enum": ["copied", "adapted", "inspired", "reference"] },
+          "notes": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}
