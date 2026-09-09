@@ -68,7 +68,10 @@ import { costLimitsPanel } from "/cost-limits.mjs";
     try {
       data = text ? JSON.parse(text) : {};
     } catch {
-      throw new Error(`Server returned non-JSON (${res.status})`);
+      if (res.status === 524 || res.status === 504) {
+        throw new Error("The dashboard gateway timed out waiting for OpenClaw. The request may still be running; check Today before trying again.");
+      }
+      throw new Error(`The dashboard returned an unexpected response (${res.status}). Please try again.`);
     }
     if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
     return data;
@@ -116,6 +119,12 @@ import { costLimitsPanel } from "/cost-limits.mjs";
 
   function projectName(projects, id) {
     return byId(projects)[id]?.name || id || "Global HQ";
+  }
+
+  function workTargets(state, projects = state.projects || []) {
+    return state.headquarters
+      ? [...projects, { ...state.headquarters, isHeadquarters: true }]
+      : projects;
   }
 
   function agentName(agents, id) {
@@ -362,7 +371,7 @@ import { costLimitsPanel } from "/cost-limits.mjs";
       <p class="muted small">Queue up to ${esc(plan.limit || 8)} big objectives. Start is explicit; each item uses the normal factory worktrees, review, QA, security, and founder-merge gates.</p>
       <form id="overnight-add" class="founder-command-row">
         <textarea id="overnight-objective" rows="2" placeholder="One substantial objective for tonight…" required ${running ? "disabled" : ""}></textarea>
-        <select id="overnight-project" required ${running ? "disabled" : ""}><option value="">Choose project</option>${projects.map((p) => `<option value="${esc(p.key)}" data-repo="${esc(p.repo || "")}">${esc(p.name)}</option>`).join("")}</select>
+        <select id="overnight-project" required ${running ? "disabled" : ""}><option value="">Choose project</option>${projects.map((p) => `<option value="${esc(p.key)}" data-repo="${esc(p.repo || "")}">${esc(p.name)}${p.isHeadquarters ? " (factory)" : ""}</option>`).join("")}</select>
         <button class="btn" type="submit" ${running ? "disabled" : ""}>Add to tonight</button>
       </form>
       <div class="company-feed">${(plan.items || []).map((item, i) => `<div class="company-agent"><span class="activity-pulse ${item.status === "running" ? "pulse-live" : item.status === "failed" ? "pulse-error" : ""}"></span><div><strong>${i + 1}. ${esc(item.objective)}</strong><small class="muted">${esc(item.projectId)} · ${esc(item.status)}${item.exitCode != null ? ` · exit ${esc(item.exitCode)}` : ""}</small></div>${!running && item.status !== "complete" ? `<button class="btn secondary tiny" data-remove-night="${esc(item.id)}">Remove</button>` : ""}</div>`).join("") || `<div class="empty-state">Nothing planned yet.</div>`}</div>
@@ -375,10 +384,11 @@ import { costLimitsPanel } from "/cost-limits.mjs";
     const active = [...groups.running, ...groups.waiting, ...groups.blocked];
     const workingAgents = runningRows.filter((row) => row.status === "working");
     const nowLine = workingAgents.length ? `${workingAgents.length} agent${workingAgents.length === 1 ? " is" : "s are"} working right now.` : "No agents are actively working right now.";
+    const targets = workTargets(state, projects);
     return `<div class="founder-home">
       <header class="founder-topline"><div><span class="eyebrow">Founder command center</span><h1>What is the factory doing?</h1><p>${esc(nowLine)} Here is the work that matters.</p></div><button class="btn secondary" id="ask-agent">Ask the factory</button></header>
-      <form id="founder-command" class="founder-launcher"><textarea id="founder-objective" rows="1" placeholder="Start a new outcome…" required></textarea><select id="founder-project" required><option value="">Choose project</option>${projects.map((p) => `<option value="${esc(p.key)}" data-repo="${esc(p.repo || "")}">${esc(p.name)}</option>`).join("")}</select><input id="founder-repo" type="hidden"/><input id="founder-decompose" type="checkbox" checked hidden/><button class="btn founder-launch" type="submit">Start an outcome</button></form>
-      ${renderOvernightPlan(overnight, projects)}
+      <form id="founder-command" class="founder-launcher"><textarea id="founder-objective" rows="1" placeholder="Start a new outcome…" required></textarea><select id="founder-project" required><option value="">Choose project</option>${targets.map((p) => `<option value="${esc(p.key)}" data-repo="${esc(p.repo || "")}">${esc(p.name)}${p.isHeadquarters ? " (factory)" : ""}</option>`).join("")}</select><input id="founder-repo" type="hidden"/><input id="founder-decompose" type="checkbox" checked hidden/><button class="btn founder-launch" type="submit">Start an outcome</button></form>
+      ${renderOvernightPlan(overnight, targets)}
       <div class="founder-pulse"><div><span class="eyebrow">Factory pulse</span><strong>${active.length ? `${active.length} active objective${active.length === 1 ? "" : "s"}` : "All clear"}</strong></div><div><span>Working</span><b>${workingAgents.length}</b></div><div><span>Waiting for you</span><b class="${inboxActionable ? "pulse-attention" : ""}">${inboxActionable}</b></div><div><span>Recently complete</span><b>${groups.recentlyCompleted.length}</b></div></div>
       <div class="founder-columns"><main>
         <section class="founder-section"><div class="section-heading"><div><span class="eyebrow">In motion</span><h2>Active objectives</h2></div><span class="section-count">${active.length}</span></div>${active.map((o) => founderObjectiveCard(o)).join("") || `<div class="quiet-state">Nothing is running. Start an outcome above.</div>`}</section>
@@ -1229,6 +1239,7 @@ import { costLimitsPanel } from "/cost-limits.mjs";
         </div>
       </div>
       ${state.headquarters ? `<div class="hq-infra-note muted small">${esc(state.headquarters.name)} is Headquarters infrastructure, not a project — it is not listed below. See Today for its status.</div>` : ""}
+      ${state.headquarters ? `<article class="hq-infra-card"><div><span class="eyebrow">Factory infrastructure</span><h2>${esc(state.headquarters.name)}</h2><p class="muted small">Work on the Headquarters itself using the same review, QA, security, and founder-merge gates as every project.</p></div><a class="btn secondary" href="#/project/${encodeURIComponent(state.headquarters.key)}">Open factory →</a></article>` : ""}
       <div class="project-grid">
         ${projects.map((p) => {
           const href = `#/project/${encodeURIComponent(p.key)}`;
