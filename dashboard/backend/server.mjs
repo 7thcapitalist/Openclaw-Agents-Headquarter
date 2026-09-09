@@ -62,6 +62,7 @@ import {
   buildFounderOverview,
   buildObjectivesView,
   buildObjectiveExecutionView,
+  buildTaskExecutionView,
   buildRolePolicy,
   discoverFactoryTasks,
   findObjectiveStatePath,
@@ -262,6 +263,17 @@ app.get("/api/founder/objectives/:id/execution", (req, res) => {
     if (!/^obj-[a-z0-9-]+$/i.test(req.params.id)) return res.status(400).json({ error: "Invalid objective id." });
     const execution = buildObjectiveExecutionView(ROOT, req.params.id);
     if (!execution) return res.status(404).json({ error: "No such objective." });
+    res.json(execution);
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+app.get("/api/founder/tasks/:id/execution", (req, res) => {
+  try {
+    if (!/^[a-z0-9][a-z0-9-]*$/i.test(req.params.id)) return res.status(400).json({ error: "Invalid task id." });
+    const execution = buildTaskExecutionView(ROOT, req.params.id);
+    if (!execution) return res.status(404).json({ error: "No such factory task." });
     res.json(execution);
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
