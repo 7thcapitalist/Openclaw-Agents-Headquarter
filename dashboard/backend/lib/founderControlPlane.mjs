@@ -13,6 +13,8 @@ import { briefBlocker, presentObjective, isSeedProject } from "../../../factory/
 
 const CONTROL_FILE = "control-plane.json";
 
+import { readOvernightQueue } from "./overnightQueue.mjs";
+
 // ── project + model-policy readers (read-only, guarded) ───────────────────────
 
 function readJsonSafe(path) {
@@ -994,7 +996,13 @@ export function buildFounderOverview(root, hqProjects = []) {
   // Reversible, adds no workflow — the underlying task/decision is untouched.
   const dismissedMap = control.dismissedInbox || {};
   const maxAutoRetries = Math.max(1, Number(process.env.HQ_AUTO_RETRY_MAX) || 3);
-  const allInboxItems = buildFounderInbox({ tasks, decisions, questions: control.questions, objectives: objectivesForInbox, maxAutoRetries })
+  const overnightFailures = readOvernightQueue(root).items.filter(item => item.status === "failed").map(item => ({
+    id: `overnight:${item.id}`, kind: "blocked", project: item.projectId,
+    title: "Overnight objective stopped before delivery",
+    detail: item.error || "Review the objective execution record. Other queued objectives continue.",
+    objective: item.objective, requestedAt: item.endedAt, action: "review-overnight",
+  }));
+  const allInboxItems = [...overnightFailures, ...buildFounderInbox({ tasks, decisions, questions: control.questions, objectives: objectivesForInbox, maxAutoRetries })]
     .map((item) => (dismissedMap[item.id]
       ? { ...item, dismissed: true, dismissedAt: dismissedMap[item.id].dismissedAt || null }
       : item));
