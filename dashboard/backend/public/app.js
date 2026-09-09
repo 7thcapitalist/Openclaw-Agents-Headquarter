@@ -393,7 +393,8 @@ import { costLimitsPanel } from "/cost-limits.mjs";
   function founderObjectiveCard(o, compact = false) {
     const running = (o.nodeBriefs || []).find((n) => n.status === "RUNNING");
     const current = running ? `${running.role || "Agent"} · ${running.stage || "working"}` : (o.nextAction?.label || "Waiting for the next safe step");
-    return `<article class="founder-objective ${compact ? "is-compact" : ""}" data-objective-details="${esc(o.objectiveId)}"><div class="objective-head"><div><span class="eyebrow">${esc(o.project || "Factory")}</span><h3>${esc(o.title || o.objective || "Untitled objective")}</h3></div><span class="objective-status status-${esc(String(o.statusTone || "info"))}">${esc(o.statusLabel || o.status6 || "In progress")}</span></div><p class="objective-headline">${esc(o.headline || "The team is moving this outcome forward.")}</p><div class="objective-progress"><span style="width:${Math.max(0, Math.min(100, Number(o.progress?.percent) || 0))}%"></span></div><div class="objective-now"><span>NOW</span><strong>${esc(current)}</strong></div><div class="objective-foot"><span>${esc(o.progress?.label || "Progress updating")}</span><button class="btn secondary tiny" data-objective-details="${esc(o.objectiveId)}">Watch factory ↗</button></div></article>`;
+    const title = objectiveView.shortObjectiveTitle(o.title || o.objective || o.objectiveId);
+    return `<article class="founder-objective ${compact ? "is-compact" : ""}" data-objective-details="${esc(o.objectiveId)}"><div class="objective-head"><div><span class="eyebrow">${esc(o.project || "Factory")}</span><h3>${esc(title)}</h3></div><span class="objective-status status-${esc(String(o.statusTone || "info"))}">${esc(o.statusLabel || o.status6 || "In progress")}</span></div><p class="objective-headline">${esc(o.headline || "The team is moving this outcome forward.")}</p><div class="objective-progress"><span style="width:${Math.max(0, Math.min(100, Number(o.progress?.percent) || 0))}%"></span></div><div class="objective-now"><span>NOW</span><strong>${esc(current)}</strong></div><div class="objective-foot"><span>${esc(o.progress?.label || "Progress updating")}</span><button class="btn secondary tiny" data-objective-details="${esc(o.objectiveId)}">Watch factory ↗</button></div></article>`;
   }
 
   function runtimeBanner(runtime) {
@@ -469,7 +470,7 @@ import { costLimitsPanel } from "/cost-limits.mjs";
       if (t.status === "active" && Date.now() - (Date.parse(t.updatedAt) || Date.now()) > STALE_ACTIVE_MS) continue;
       const a = agentById[t.agent] || Object.values(agentById).find((x) => x.runtimeAgentId === t.agent);
       rows.push({
-        kind: "task", taskId: t.id, title: t.objective || t.id, sub: t.project || t.id,
+        kind: "task", taskId: t.id, title: objectiveView.shortObjectiveTitle(t.objective || t.id), sub: t.project || t.id,
         role: t.agent, agent: a?.name || t.agent, stage: t.stage, status: t.status,
         elapsedMs: t.elapsedMs, lastResult: t.lastResult, blocker: t.blocker,
         next: t.status === "active" && t.stage ? nextStage(t.stage) : null,

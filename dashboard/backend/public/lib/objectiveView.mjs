@@ -19,6 +19,27 @@ export function objectiveStatusBadgeClass(o) {
   return STATUS_TONE_CLASS[o?.statusTone] || "badge-type";
 }
 
+// Founder surfaces must stay scannable even when an older presenter or a
+// standalone task only provides the original prompt. Keep the complete prompt
+// on the object for drill-downs, but never let it become a dashboard heading.
+export function shortObjectiveTitle(value, { maxWords = 8, maxChars = 72, fallback = "Untitled objective" } = {}) {
+  const text = String(value || "")
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/[`*_>#]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!text) return fallback;
+
+  const firstClause = text.split(/\s+(?:so that|so the|because|with acceptance criteria|acceptance criteria:|requirements?:)\s+|[.!?;:\n]/i)[0].trim();
+  const words = (firstClause || text).split(" ").filter(Boolean).slice(0, maxWords);
+  let title = words.join(" ").replace(/[,:;.!?]+$/, "").trim();
+  if (!title) return fallback;
+  if (title.length > maxChars) {
+    title = title.slice(0, maxChars).replace(/\s+\S*$/, "").trim();
+  }
+  return title || fallback;
+}
+
 // title · project · status · progress · current stage/agent · next action.
 // The point of the whole change: a founder reads this line in a second; the
 // full prompt, parts, retries, and event history are one click away.
@@ -72,7 +93,7 @@ export function renderObjectiveCard(o, { esc }) {
   return `<article class="obj-card obj-card-compact">
     <div class="obj-card-head">
       <div>
-        <strong>${esc(o.title || o.objectiveId)}</strong>
+        <strong>${esc(shortObjectiveTitle(o.title || o.objective || o.objectiveId))}</strong>
         <span class="muted small">${objectiveSummaryLine(o, { esc })}</span>
       </div>
       <span class="badge ${STATUS_TONE_CLASS[o.statusTone] || "badge-type"}">${esc(o.statusLabel || o.status6 || "—")}</span>
@@ -90,7 +111,7 @@ export function renderObjectiveCard(o, { esc }) {
 
 // One-line HISTORY / ARCHIVED row — present and reachable, never dominating.
 export function renderObjectiveHistoryRow(o, { esc }) {
-  const title = o.status === "invalid" ? o.objectiveId : (o.title || o.objectiveId);
+  const title = o.status === "invalid" ? o.objectiveId : shortObjectiveTitle(o.title || o.objective || o.objectiveId);
   return `<div class="obj-history-row">
     <div class="obj-history-main">
       <strong>${esc(title)}</strong>
