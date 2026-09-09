@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   buildFounderOverview,
   buildObjectivesView,
+  buildObjectiveExecutionView,
   buildRecoveryPlan,
   discoverFactoryTasks,
   findObjectiveStatePath,
@@ -82,6 +83,46 @@ test("discovers factory state and builds founder project status", () => {
   const overview = buildFounderOverview(root, [{ id: "startup-ops", name: "Startup Ops", status: "active" }]);
   assert.equal(overview.projects[0].taskCount, 1);
   assert.equal(overview.projects[0].stage, "product");
+});
+
+test("objective execution view joins durable node events, dispatch, handoff, and evidence", () => {
+  const { root } = fixture();
+  const objectiveDir = join(root, "dashboard/backend/data/factory/startup-ops/objectives/obj-live-demo");
+  const taskDir = join(root, "dashboard/backend/data/factory/startup-ops/tasks/task-live");
+  mkdirSync(objectiveDir, { recursive: true });
+  mkdirSync(join(taskDir, "worktree", "evidence"), { recursive: true });
+  writeFileSync(join(taskDir, "worktree", "evidence", "product.md"), "product evidence\n");
+  const task = createState({
+    task: { id: "task-live", issue: "local:live", outcome: "Ship live observability", acceptanceCriteria: ["timeline works"], project: "startup-ops", workType: "ui", risk: "low" },
+    repo: join(root, "repo"), branch: "factory/task-live", worktree: join(taskDir, "worktree"),
+    now: "2026-09-08T17:42:00.000Z",
+  });
+  task.stages.product = { status: "pass", actor: "openclaw", summary: "Requirements shaped", evidence: [{ path: "evidence/product.md", recordedAt: "2026-09-08T17:42:05.000Z" }], completedAt: "2026-09-08T17:42:05.000Z" };
+  task.currentStage = "architect";
+  task.currentDispatch = { id: "task-live-architect-1", stage: "architect", actor: "claude", status: "running", startedAt: "2026-09-08T17:42:07.000Z" };
+  task.events.push(
+    { at: "2026-09-08T17:42:05.000Z", type: "stage-pass", stage: "product", actor: "openclaw", summary: "Requirements shaped" },
+    { at: "2026-09-08T17:42:05.000Z", type: "handoff-ready", stage: "architect" },
+    { at: "2026-09-08T17:42:07.000Z", type: "dispatch-running", stage: "architect", actor: "claude" },
+  );
+  const statePath = join(taskDir, "state.json");
+  writeState(statePath, task);
+  writeFileSync(join(objectiveDir, "objective-state.json"), JSON.stringify({
+    objectiveId: "obj-live-demo", objective: "Ship live observability", project: "startup-ops", repo: join(root, "repo"), status: "running",
+    createdAt: "2026-09-08T17:42:00.000Z", updatedAt: "2026-09-08T17:42:07.000Z",
+    nodes: { "task-live": { id: "task-live", role: "builder", status: "running", statePath } },
+    integration: { id: "obj-live-demo-integration", role: "integration", status: "pending" },
+    events: [{ at: "2026-09-08T17:42:00.000Z", type: "objective-created", detail: "Objective accepted" }],
+  }, null, 2));
+
+  const view = buildObjectiveExecutionView(root, "obj-live-demo", { now: Date.parse("2026-09-08T17:42:10.000Z") });
+  assert.equal(view.currentStage, "architect");
+  assert.equal(view.currentAgent, "claude");
+  assert.equal(view.stages.find((s) => s.stage === "product").status, "completed");
+  assert.equal(view.stages.find((s) => s.stage === "architect").status, "working");
+  assert.ok(view.events.some((e) => e.type === "handoff" && e.destination === "claude"));
+  assert.ok(view.evidence.some((e) => e.path === "evidence/product.md"));
+  assert.deepEqual(view.events.map((e) => e.at), [...view.events].sort((a, b) => String(a.at).localeCompare(String(b.at))).map((e) => e.at));
 });
 
 test("persists project pause independently of task lifecycle", () => {
