@@ -400,6 +400,7 @@ import { costLimitsPanel } from "/cost-limits.mjs";
         if (!["running", "blocked", "blocked-by-dep"].includes(n.status)) continue;
         rows.push({
           kind: "objective-node",
+          objectiveId: o.objectiveId,
           title: n.title || n.id.replace(`${o.objectiveId}-`, "").replace(/-/g, " "),
           sub: `part of: ${String(o.objective).slice(0, 60)}${o.objective.length > 60 ? "…" : ""}`,
           role: n.role, agent: n.role, model: n.model, stage: n.stage, status: n.status,
@@ -446,7 +447,7 @@ import { costLimitsPanel } from "/cost-limits.mjs";
         ${r.lastResult?.summary ? `<span class="run-produced">just produced: ${esc(String(r.lastResult.summary).slice(0, 160))}</span>` : ""}
         ${blocked ? `<span class="danger-text small">blocked: ${esc(r.blocker?.summary || r.blocker?.outcome || "needs attention — see Founder inbox")}</span>` : (r.next ? `<span class="muted small">next: ${esc(r.next)}</span>` : "")}
       </div>
-      <div class="run-meta">${pill(r.status, blocked ? "health-failed" : "badge-type")}${r.kind === "task" ? `<button class="btn secondary tiny" data-task-execution="${esc(r.taskId)}">Details</button>` : ""}${r.reportId ? `<button class="btn secondary tiny" data-report-task="${esc(r.reportId)}">report</button>` : ""}</div>
+      <div class="run-meta">${pill(r.status, blocked ? "health-failed" : "badge-type")}${r.kind === "task" ? `<button class="btn secondary tiny" data-task-execution="${esc(r.taskId)}">Details</button>` : r.kind === "objective-node" ? `<button class="btn secondary tiny" data-objective-execution="${esc(r.objectiveId)}">Details</button>` : ""}${r.reportId ? `<button class="btn secondary tiny" data-report-task="${esc(r.reportId)}">report</button>` : ""}</div>
     </div>`;
   }
 
@@ -931,6 +932,7 @@ import { costLimitsPanel } from "/cost-limits.mjs";
   function bindObjectiveControls(scope) {
     scope.querySelectorAll("[data-report-task]").forEach((btn) => btn.onclick = () => openReportDrilldown("task", btn.dataset.reportTask));
     scope.querySelectorAll("[data-task-execution]").forEach((btn) => btn.onclick = () => openTaskExecutionView(btn.dataset.taskExecution));
+    scope.querySelectorAll("[data-objective-execution]").forEach((btn) => btn.onclick = () => openExecutionView(btn.dataset.objectiveExecution));
     scope.querySelectorAll("[data-report-objective]").forEach((btn) => btn.onclick = () => openReportDrilldown("objective", btn.dataset.reportObjective));
     scope.querySelectorAll("[data-objective-details]").forEach((btn) => btn.onclick = () => {
       openExecutionView(btn.dataset.objectiveDetails);
