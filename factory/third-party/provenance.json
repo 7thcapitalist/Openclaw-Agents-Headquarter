@@ -35,5 +35,9 @@
     "sourcePath": "packages/db/src/schema/cost_events.ts",
     "classification": "reference",
     "notes": "Documents the pinned Paperclip source and HQ-specific adaptations."
-  }]
+  },
+  { "localPath": "factory/lib/wakeups/worker.mjs", "sourceId": "paperclip", "sourcePath": "server/src/services/heartbeat.ts", "classification": "inspired", "notes": "Combines Paperclip-derived wakeup and lease concepts in a bounded HQ OpenClaw worker." },
+  { "localPath": "factory/test/wakeup-worker.test.mjs", "sourceId": "paperclip", "sourcePath": "server/src/services/heartbeat.ts", "classification": "inspired", "notes": "Tests claim, lease, retry, dead-letter, and execution-boundary behavior." },
+  { "localPath": "docs/software-factory/PAPERCLIP_WAKEUP_WORKER.md", "sourceId": "paperclip", "sourcePath": "docs/guides/agent-developer/heartbeat-protocol.md", "classification": "reference", "notes": "Documents bounded local wakeup activation and rollback behavior." }
+  ]
 }
