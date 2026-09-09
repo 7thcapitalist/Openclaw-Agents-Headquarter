@@ -9,7 +9,7 @@ import { toTaskRecord } from "../../../factory/lib/learning/evidence.mjs";
 import { classifyBlocker, classifyObjectiveNodeBlocker } from "../../../factory/lib/hq/blocker-class.mjs";
 import { resumeObjectiveNodes, setObjectiveRecoveryInFlight, readObjState } from "../../../factory/lib/objective/orchestrator.mjs";
 import { defaultStateRoot } from "../../../factory/lib/natural-language-intake.mjs";
-import { presentObjective, isSeedProject } from "../../../factory/lib/hq/presenter.mjs";
+import { briefBlocker, presentObjective, isSeedProject } from "../../../factory/lib/hq/presenter.mjs";
 
 const CONTROL_FILE = "control-plane.json";
 
@@ -373,7 +373,11 @@ export function buildObjectiveExecutionView(root, objectiveId, { now = Date.now(
     .find(({ task }) => task?.currentDispatch?.status === "running")
     || nodes.map((node) => ({ node, task: taskByNode.get(node.id) })).find(({ task }) => task?.status === "active");
   const currentDispatch = current?.task?.currentDispatch || null;
-  const blocker = current?.task?.blocker || nodes.find((node) => node.blocker)?.blocker || objective.blocker || null;
+  const taskWithBlocker = nodes
+    .map((node) => ({ node, task: taskByNode.get(node.id) }))
+    .find(({ node, task }) => task?.blocker || node.blocker);
+  const rawBlocker = current?.task?.blocker || taskWithBlocker?.task?.blocker || taskWithBlocker?.node?.blocker || objective.blocker || null;
+  const blocker = rawBlocker ? briefBlocker(rawBlocker) : null;
   const terminal = ["complete", "completed", "merge-ready", "merged"].includes(String(objective.status || "").toLowerCase());
   const createdMs = Date.parse(objective.createdAt || "");
   const lastAt = events.at(-1)?.at || objective.updatedAt || null;
@@ -391,6 +395,7 @@ export function buildObjectiveExecutionView(root, objectiveId, { now = Date.now(
     currentAgent: currentDispatch?.actor || (current?.task?.currentStage ? current.task.assignments?.[current.task.currentStage] : null),
     currentActivity: currentDispatch ? `Working on ${currentDispatch.stage}` : current?.task?.status === "active" ? `Waiting to dispatch ${current.task.currentStage}` : null,
     blocker,
+    rawBlocker,
     stages,
     events,
     evidence: nodes.flatMap((node) => Object.entries(taskByNode.get(node.id)?.stages || {}).flatMap(([stage, result]) => (result.evidence || []).map((item) => ({ nodeId: node.id, stage, path: item.path || item, recordedAt: item.recordedAt || result.completedAt || null })))),

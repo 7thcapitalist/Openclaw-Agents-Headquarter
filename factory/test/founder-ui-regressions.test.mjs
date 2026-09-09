@@ -21,6 +21,13 @@ test("founder question timeouts stay JSON and finish before a gateway timeout", 
   assert.match(app, /res\.status === 524 \|\| res\.status === 504/);
 });
 
+test("execution blocker callout distinguishes automatic recovery from founder attention", () => {
+  assert.match(app, /blocked\.autoRecovering \? "Factory recovery"/);
+  assert.match(app, /blocked\.headline/);
+  assert.match(app, /blocked\.detail/);
+  assert.doesNotMatch(app, /blocked\.whatItNeedsFromFounder \|\| blocked\.summary/);
+});
+
 test("execution view keeps long prompts behind a collapsed disclosure", () => {
   assert.match(app, /shortObjectiveTitle\(x\.title \|\| x\.objective \|\| "Objective"\)/);
   assert.match(app, /<details class="operation-original-request"><summary>View original request<\/summary>/);
