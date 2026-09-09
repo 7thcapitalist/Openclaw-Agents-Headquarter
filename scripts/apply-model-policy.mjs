@@ -8,14 +8,15 @@
 //
 // Policy (see docs/software-factory/MODEL_POLICY.md for the rationale):
 //
-//   default (main / builders inherit)  openai/gpt-5.6-sol  -> gpt-5.4-mini -> gpt-4.1
+//   default (main / builders inherit)  openai/gpt-5.6-sol  -> openai/gpt-5.6-luna -> Claude
 //     cheap, fast orchestration/routing — never Opus, never a big model for glue.
 //   product                            github-copilot/gpt-4.1 -> gpt-5.4-mini
 //   objective decomposition/intake    configured to the architect agent, below
-//     (Claude primary -> Copilot fallback), rather than the shared OpenAI seat.
-//   qa                                 github-copilot/gpt-4.1 -> gpt-5.4-mini
-//     (kept a different harness from the builder for independence + load spread)
-//   architect, reviewer, security,     anthropic/claude-sonnet-5 -> gpt-4.1
+//     (Claude primary -> Codex/OpenAI fallback), rather than failing when the
+//     Claude seat is exhausted.
+//   qa                                 github-copilot/gpt-4.1 -> Codex -> Claude
+//     (kept a different harness from the builder by default; both seats remain available)
+//   architect, reviewer, security,     anthropic/claude-sonnet-5 -> Codex -> gpt-4.1
 //   release, research, learning
 //     release moved off the shared OpenAI CLI seat (2026-09-07): it kept
 //     failing "did not write its result file" and stranding otherwise-green
@@ -37,20 +38,30 @@ const BACKUP = `${CONFIG}.before-model-policy`;
 const DRY_RUN = process.argv.includes("--dry-run");
 
 const OPENAI_MAIN = "openai/gpt-5.6-sol";
+const LUNA = "openai/gpt-5.6-luna";
 const MINI = "openai/gpt-5.4-mini";
 const COPILOT = "github-copilot/gpt-4.1";
 const CLAUDE = "anthropic/claude-sonnet-5";
 
-const DEFAULT_MODEL = { primary: OPENAI_MAIN, fallbacks: [MINI, COPILOT] };
+// The first fallback crosses the subscription boundary. The remaining
+// fallbacks are cheaper/secondary routes for hosts where one of those providers
+// is not configured. This is intentionally explicit: a provider quota error is
+// handled by OpenClaw's model chain instead of stranding a factory stage.
+const DEFAULT_MODEL = { primary: OPENAI_MAIN, fallbacks: [LUNA, CLAUDE, MINI, COPILOT] };
 const ROUTES = {
-  architect: { primary: CLAUDE, fallbacks: [COPILOT] },
-  reviewer: { primary: CLAUDE, fallbacks: [COPILOT] },
-  security: { primary: CLAUDE, fallbacks: [COPILOT] },
-  research: { primary: CLAUDE, fallbacks: [COPILOT] },
-  learning: { primary: CLAUDE, fallbacks: [COPILOT] },
-  qa: { primary: COPILOT, fallbacks: [MINI] },
-  product: { primary: COPILOT, fallbacks: [MINI] },
-  release: { primary: CLAUDE, fallbacks: [COPILOT] },
+  // Keep these explicit even though they currently match defaults: these are
+  // real Codex-backed agent entries and must carry their own Claude backup.
+  main: { primary: OPENAI_MAIN, fallbacks: [LUNA, CLAUDE, MINI, COPILOT] },
+  "backend-builder": { primary: OPENAI_MAIN, fallbacks: [LUNA, CLAUDE, MINI, COPILOT] },
+  "frontend-builder": { primary: OPENAI_MAIN, fallbacks: [LUNA, CLAUDE, MINI, COPILOT] },
+  architect: { primary: CLAUDE, fallbacks: [LUNA, OPENAI_MAIN, COPILOT, MINI] },
+  reviewer: { primary: CLAUDE, fallbacks: [LUNA, OPENAI_MAIN, COPILOT, MINI] },
+  security: { primary: CLAUDE, fallbacks: [LUNA, OPENAI_MAIN, COPILOT, MINI] },
+  research: { primary: CLAUDE, fallbacks: [LUNA, OPENAI_MAIN, COPILOT, MINI] },
+  learning: { primary: CLAUDE, fallbacks: [LUNA, OPENAI_MAIN, COPILOT, MINI] },
+  qa: { primary: COPILOT, fallbacks: [LUNA, OPENAI_MAIN, CLAUDE, MINI] },
+  product: { primary: COPILOT, fallbacks: [LUNA, OPENAI_MAIN, CLAUDE, MINI] },
+  release: { primary: CLAUDE, fallbacks: [LUNA, OPENAI_MAIN, COPILOT, MINI] },
 };
 
 function withModels(entry, refs) {
@@ -72,10 +83,15 @@ export function planModelPolicy(config) {
   const curDefault = JSON.stringify(defaults.model);
   const wantDefault = JSON.stringify(DEFAULT_MODEL);
   if (curDefault !== wantDefault) {
-    defaults.models = { ...(defaults.models || {}) };
-    for (const r of [OPENAI_MAIN, MINI, COPILOT]) defaults.models[r] = defaults.models[r] || {};
     defaults.model = structuredClone(DEFAULT_MODEL);
-    changes.push(`defaults.model: ${JSON.parse(curDefault || "null")?.primary ?? "?"} -> ${OPENAI_MAIN} (fallbacks ${MINI}, ${COPILOT})`);
+    changes.push(`defaults.model: ${JSON.parse(curDefault || "null")?.primary ?? "?"} -> ${OPENAI_MAIN} (fallbacks ${LUNA}, ${CLAUDE}, ${MINI}, ${COPILOT})`);
+  }
+  defaults.models = { ...(defaults.models || {}) };
+  for (const r of [OPENAI_MAIN, LUNA, CLAUDE, MINI, COPILOT]) {
+    if (!defaults.models[r]) {
+      defaults.models[r] = {};
+      changes.push(`defaults.models: registered ${r}`);
+    }
   }
 
   // 2. per-role routes

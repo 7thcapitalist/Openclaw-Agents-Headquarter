@@ -48,6 +48,21 @@ export async function runOneStage({ hqRoot, statePath, agentIds = {}, maxAttempt
   const prepared = prepareDispatch({ hqRoot, statePath });
   if (prepared.status !== "dispatch") return prepared;
   const owned = readState(statePath).currentDispatch;
+  // A dispatcher can be restarted after it has claimed a dispatch but before
+  // it writes the result. The state file is durable, so prepareDispatch returns
+  // that same running dispatch on the next invocation. It is still owned by a
+  // possible worker; never claim it twice and never turn this normal recovery
+  // case into an exception. The recovery layer may later clear a genuinely
+  // orphaned dispatch after its stale-work threshold.
+  if (owned?.status === "running" && !owned.yieldedAt) {
+    if (existsSync(prepared.resultPath)) {
+      const resumed = ingestResult({ statePath, result: readResultFile(prepared.resultPath), maxAttemptsPerStage });
+      if (resumed.status === "merge-ready") resumed.githubPublish = publishAndRecord({ hqRoot, statePath, publish });
+      if (["merge-ready", "blocked"].includes(resumed.status)) writeCompletionReport({ statePath });
+      return resumed;
+    }
+    return { ...prepared, waiting: true };
+  }
   if (owned?.status === "running" && owned.yieldedAt) {
     if (!existsSync(prepared.resultPath)) return { ...prepared, waiting: true };
     const resumed = ingestResult({ statePath, result: readResultFile(prepared.resultPath), maxAttemptsPerStage });

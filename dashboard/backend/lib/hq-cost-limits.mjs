@@ -16,7 +16,66 @@ export async function buildHqCostsPayload({
   now = new Date().toISOString(),
 } = {}) {
   const resolvedPricing = pricing || loadPricing(hqRoot);
-  return summarizeCosts({ hqRoot, stateRoot: stateRoot || defaultStateRoot(hqRoot, repo), pricing: resolvedPricing, now });
+  const raw = summarizeCosts({ hqRoot, stateRoot: stateRoot || defaultStateRoot(hqRoot, repo), pricing: resolvedPricing, now });
+  return toDashboardCosts(raw, now);
+}
+
+// Keep the calculation API rich, but expose the view-model contract consumed by
+// dashboard/backend/public/cost-limits.mjs. This adapter also makes the live
+// endpoint useful when a bucket has tokens but no billable price.
+function toDashboardCosts(raw, now) {
+  const day = String(now).slice(0, 10);
+  const recentTasks = Object.entries(raw.byTask || {}).map(([taskId, bucket]) => ({
+    taskId,
+    project: bucket.projects?.[0] || "Global HQ",
+    totalTokens: bucket.tokensIn + bucket.tokensOut,
+    estimatedUsd: bucket.costUsd,
+    hasUnknownPricing: bucket.dispatchesUnpriced > 0 || bucket.dispatchesMissingUsage > 0,
+    stages: (bucket.stages || []).map((stage) => ({ stage })),
+    _latest: bucket.days?.at(-1) || "",
+  })).sort((a, b) => b._latest.localeCompare(a._latest) || a.taskId.localeCompare(b.taskId))
+    .map(({ _latest, ...task }) => task);
+  const today = raw.byDay?.[day] || emptyDashboardBucket();
+  const last7Days = Object.entries(raw.byDay || {})
+    .filter(([key]) => key >= dayOffset(day, -6))
+    .map(([, bucket]) => bucket)
+    .reduce(mergeBuckets, emptyDashboardBucket());
+  return {
+    ...raw,
+    recentTasks,
+    totals: {
+      ...raw.totals,
+      today: dashboardBucket(today),
+      last7Days: dashboardBucket(last7Days),
+      byProject: Object.entries(raw.byProject || {}).map(([project, bucket]) => ({ project, ...dashboardBucket(bucket) })),
+    },
+  };
+}
+
+function dashboardBucket(bucket) {
+  return {
+    totalTokens: (bucket.tokensIn || 0) + (bucket.tokensOut || 0),
+    estimatedUsd: bucket.costUsd ?? null,
+    taskCount: bucket.tasks?.length || 0,
+  };
+}
+
+function emptyDashboardBucket() {
+  return { tokensIn: 0, tokensOut: 0, costUsd: null, tasks: [] };
+}
+
+function mergeBuckets(total, bucket) {
+  total.tokensIn += bucket.tokensIn || 0;
+  total.tokensOut += bucket.tokensOut || 0;
+  total.tasks = [...new Set([...total.tasks, ...(bucket.tasks || [])])];
+  if (bucket.costUsd != null) total.costUsd = (total.costUsd || 0) + bucket.costUsd;
+  return total;
+}
+
+function dayOffset(day, offset) {
+  const date = new Date(`${day}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + offset);
+  return date.toISOString().slice(0, 10);
 }
 
 export async function buildHqPlanLimitsPayload({

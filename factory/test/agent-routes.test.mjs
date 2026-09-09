@@ -23,7 +23,7 @@ function modelPolicyFixture() {
     agents: {
       defaults: { model: { primary: "old/model" }, models: {} },
       entries: Object.fromEntries(
-        ["architect", "reviewer", "security", "research", "learning", "qa", "product", "release"]
+        ["main", "backend-builder", "frontend-builder", "architect", "reviewer", "security", "research", "learning", "qa", "product", "release"]
           .map((id) => [id, {}]),
       ),
     },
@@ -33,10 +33,24 @@ function modelPolicyFixture() {
 test("model policy is idempotent and moves product primary off OpenAI", () => {
   const first = planModelPolicy(modelPolicyFixture());
   assert.ok(first.changes.length > 0);
+  assert.deepEqual(first.nextConfig.agents.defaults.model, {
+    primary: "openai/gpt-5.6-sol",
+    fallbacks: ["openai/gpt-5.6-luna", "anthropic/claude-sonnet-5", "openai/gpt-5.4-mini", "github-copilot/gpt-4.1"],
+  });
   assert.deepEqual(first.nextConfig.agents.entries.product.model, {
     primary: "github-copilot/gpt-4.1",
-    fallbacks: ["openai/gpt-5.4-mini"],
+    fallbacks: ["openai/gpt-5.6-luna", "openai/gpt-5.6-sol", "anthropic/claude-sonnet-5", "openai/gpt-5.4-mini"],
   });
+  assert.deepEqual(first.nextConfig.agents.entries.architect.model, {
+    primary: "anthropic/claude-sonnet-5",
+    fallbacks: ["openai/gpt-5.6-luna", "openai/gpt-5.6-sol", "github-copilot/gpt-4.1", "openai/gpt-5.4-mini"],
+  });
+  for (const id of ["main", "backend-builder", "frontend-builder"]) {
+    assert.deepEqual(first.nextConfig.agents.entries[id].model, {
+      primary: "openai/gpt-5.6-sol",
+      fallbacks: ["openai/gpt-5.6-luna", "anthropic/claude-sonnet-5", "openai/gpt-5.4-mini", "github-copilot/gpt-4.1"],
+    });
+  }
 
   const second = planModelPolicy(first.nextConfig);
   assert.equal(second.changes.length, 0);
@@ -141,4 +155,22 @@ test("optional routing config defaults safely and missing policy entries are ski
   const plan = planModelPolicy(fixture);
   assert.ok(plan.warnings.some((warning) => warning.startsWith("architect:")));
   assert.ok(plan.warnings.some((warning) => warning.startsWith("product:")));
+});
+
+test("an already-selected default still gets newly required fallback models registered", () => {
+  const fixture = modelPolicyFixture();
+  fixture.agents.defaults.model = {
+    primary: "openai/gpt-5.6-sol",
+    fallbacks: ["anthropic/claude-sonnet-5", "openai/gpt-5.4-mini", "github-copilot/gpt-4.1"],
+  };
+  fixture.agents.defaults.models = {};
+  const plan = planModelPolicy(fixture);
+  assert.deepEqual(Object.keys(plan.nextConfig.agents.defaults.models).sort(), [
+    "anthropic/claude-sonnet-5",
+    "github-copilot/gpt-4.1",
+    "openai/gpt-5.4-mini",
+    "openai/gpt-5.6-luna",
+    "openai/gpt-5.6-sol",
+  ]);
+  assert.ok(plan.changes.some((change) => change.includes("registered anthropic/claude-sonnet-5")));
 });

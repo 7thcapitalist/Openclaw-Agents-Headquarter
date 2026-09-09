@@ -104,7 +104,8 @@ export function normalizeCosts(payload) {
 export function normalizePlanLimits(payload) {
   const ok = Boolean(payload && typeof payload === "object" && !payload.__error);
   const source = ok ? payload : {};
-  const providers = Array.isArray(source.providers) ? source.providers.map((provider) => {
+  const rawProviders = Array.isArray(source.providers) ? source.providers : inferredProviderRows(source);
+  const providers = rawProviders.map((provider) => {
     const officialSource = provider?.official && typeof provider.official === "object" ? provider.official : null;
     const official = officialSource ? {
       limit: finiteNumber(officialSource.limit),
@@ -143,7 +144,7 @@ export function normalizePlanLimits(payload) {
       lastCooldown,
       reason: text(provider?.reason, state === "unavailable" ? "no usable signal" : ""),
     };
-  }) : [];
+  });
 
   return {
     ok,
@@ -151,6 +152,29 @@ export function normalizePlanLimits(payload) {
     unavailableReason: text(source.unavailableReason, ""),
     providers,
   };
+}
+
+function inferredProviderRows(source) {
+  if (!Array.isArray(source.usageWindows)) return [];
+  const cooldownByProvider = new Map();
+  for (const item of Array.isArray(source.cooldownHistory) ? source.cooldownHistory : []) {
+    const key = text(item?.provider, "unknown");
+    const previous = cooldownByProvider.get(key);
+    if (!previous || String(item?.at || "") > String(previous.at || "")) cooldownByProvider.set(key, item);
+  }
+  return source.usageWindows.map((window) => ({
+    provider: window.provider,
+    label: window.label,
+    confidence: "inferred",
+    asOf: source.asOf,
+    inferred: {
+      window: window.label,
+      calls: window.dispatches,
+      tokens: (window.tokensIn || 0) + (window.tokensOut || 0),
+      note: "dashboard dispatches only",
+    },
+    lastCooldown: cooldownByProvider.get(window.provider) || null,
+  }));
 }
 
 function badge(label, kind) {

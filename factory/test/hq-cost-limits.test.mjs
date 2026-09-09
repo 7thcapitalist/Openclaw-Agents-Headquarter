@@ -249,6 +249,8 @@ test("payload builders resolve their own state root from hqRoot alone (server ca
   const costs = await buildHqCostsPayload({ hqRoot: root, pricing, now: "2026-09-08T12:30:00Z" });
   assert.equal(costs.version, 1);
   assert.equal(costs.totals.dispatches, 0);
+  assert.ok(Array.isArray(costs.recentTasks));
+  assert.ok(costs.totals.today);
 
   const limits = await buildHqPlanLimitsPayload({ hqRoot: root, now: "2026-09-08T12:30:00Z" });
   assert.equal(limits.available, false);
