@@ -238,6 +238,10 @@ import { costLimitsPanel } from "/cost-limits.mjs";
     // "your request was received, agents are on it" confirmation.
     const liveJobs = jobs.filter((j) => j.status === "starting" || j.status === "running" || j.status === "decomposing");
 
+    app.innerHTML = renderFounderHome({ state, projects, agents, inbox, objectives, allTasks, runningRows, liveJobs, autoRecovering, finishedTasks, inboxActionable, overnight });
+    bindFounderControls();
+    return;
+
     app.innerHTML = `
       <section class="hq-layout">
         ${renderAgentRail(agents, state.runtime)}
@@ -364,6 +368,32 @@ import { costLimitsPanel } from "/cost-limits.mjs";
       <div class="company-feed">${(plan.items || []).map((item, i) => `<div class="company-agent"><span class="activity-pulse ${item.status === "running" ? "pulse-live" : item.status === "failed" ? "pulse-error" : ""}"></span><div><strong>${i + 1}. ${esc(item.objective)}</strong><small class="muted">${esc(item.projectId)} · ${esc(item.status)}${item.exitCode != null ? ` · exit ${esc(item.exitCode)}` : ""}</small></div>${!running && item.status !== "complete" ? `<button class="btn secondary tiny" data-remove-night="${esc(item.id)}">Remove</button>` : ""}</div>`).join("") || `<div class="empty-state">Nothing planned yet.</div>`}</div>
       <div class="row-actions">${running ? `<button class="btn secondary" id="stop-overnight">Stop after the current objective</button>` : `<button class="btn founder-launch" id="start-overnight" ${!(plan.items || []).some((x) => x.status === "queued" || x.status === "failed") ? "disabled" : ""}>Start overnight work →</button>`}</div>
     </section>`;
+  }
+
+  function renderFounderHome({ state, projects, agents, inbox, objectives, allTasks, runningRows, liveJobs, autoRecovering, finishedTasks, inboxActionable, overnight }) {
+    const groups = objectiveView.groupObjectives(objectives);
+    const active = [...groups.running, ...groups.waiting, ...groups.blocked];
+    const workingAgents = runningRows.filter((row) => row.status === "working");
+    const nowLine = workingAgents.length ? `${workingAgents.length} agent${workingAgents.length === 1 ? " is" : "s are"} working right now.` : "No agents are actively working right now.";
+    return `<div class="founder-home">
+      <header class="founder-topline"><div><span class="eyebrow">Founder command center</span><h1>What is the factory doing?</h1><p>${esc(nowLine)} Here is the work that matters.</p></div><button class="btn secondary" id="ask-agent">Ask the factory</button></header>
+      <form id="founder-command" class="founder-launcher"><textarea id="founder-objective" rows="1" placeholder="Start a new outcome…" required></textarea><select id="founder-project" required><option value="">Choose project</option>${projects.map((p) => `<option value="${esc(p.key)}" data-repo="${esc(p.repo || "")}">${esc(p.name)}</option>`).join("")}</select><input id="founder-repo" type="hidden"/><input id="founder-decompose" type="checkbox" checked hidden/><button class="btn founder-launch" type="submit">Start an outcome</button></form>
+      ${renderOvernightPlan(overnight, projects)}
+      <div class="founder-pulse"><div><span class="eyebrow">Factory pulse</span><strong>${active.length ? `${active.length} active objective${active.length === 1 ? "" : "s"}` : "All clear"}</strong></div><div><span>Working</span><b>${workingAgents.length}</b></div><div><span>Waiting for you</span><b class="${inboxActionable ? "pulse-attention" : ""}">${inboxActionable}</b></div><div><span>Recently complete</span><b>${groups.recentlyCompleted.length}</b></div></div>
+      <div class="founder-columns"><main>
+        <section class="founder-section"><div class="section-heading"><div><span class="eyebrow">In motion</span><h2>Active objectives</h2></div><span class="section-count">${active.length}</span></div>${active.map((o) => founderObjectiveCard(o)).join("") || `<div class="quiet-state">Nothing is running. Start an outcome above.</div>`}</section>
+        <section class="founder-section"><div class="section-heading"><div><span class="eyebrow">Live floor</span><h2>Agents at work</h2></div></div>${[...liveJobs.map((j) => ({ title: j.objective, sub: "Starting the team", status: "starting" })), ...autoRecovering.map((r) => ({ title: r.objective || r.taskId, sub: "Recovering a safe infrastructure failure", status: "recovering" })), ...runningRows].map((r) => `<div class="agent-work-row"><span class="status-dot ${r.status === "working" ? "is-working" : "is-waiting"}"></span><div><strong>${esc(r.title || r.objective || "Factory work")}</strong><span>${esc(r.sub || `${r.agent || "Agent"} · ${r.stage || "next stage"}`)}</span></div><em>${esc(r.status || "waiting")}</em></div>`).join("") || `<div class="quiet-state">The floor is quiet.</div>`}</section>
+      </main><aside>
+        <section class="founder-section attention-section"><div class="section-heading"><div><span class="eyebrow">Your turn</span><h2>Needs you</h2></div><span class="section-count">${inboxActionable}</span></div>${inbox.slice(0, 4).map((x) => inboxItem(x)).join("") || `<div class="quiet-state">No decisions waiting.</div>`}</section>
+        <section class="founder-section"><div class="section-heading"><div><span class="eyebrow">Recently</span><h2>Completed</h2></div></div>${groups.recentlyCompleted.slice(0, 3).map((o) => founderObjectiveCard(o, true)).join("") || `<div class="quiet-state">No recent completions.</div>`}</section>
+      </aside></div>
+    </div>`;
+  }
+
+  function founderObjectiveCard(o, compact = false) {
+    const running = (o.nodeBriefs || []).find((n) => n.status === "RUNNING");
+    const current = running ? `${running.role || "Agent"} · ${running.stage || "working"}` : (o.nextAction?.label || "Waiting for the next safe step");
+    return `<article class="founder-objective ${compact ? "is-compact" : ""}" data-objective-details="${esc(o.objectiveId)}"><div class="objective-head"><div><span class="eyebrow">${esc(o.project || "Factory")}</span><h3>${esc(o.title || o.objective || "Untitled objective")}</h3></div><span class="objective-status status-${esc(String(o.statusTone || "info"))}">${esc(o.statusLabel || o.status6 || "In progress")}</span></div><p class="objective-headline">${esc(o.headline || "The team is moving this outcome forward.")}</p><div class="objective-progress"><span style="width:${Math.max(0, Math.min(100, Number(o.progress?.percent) || 0))}%"></span></div><div class="objective-now"><span>NOW</span><strong>${esc(current)}</strong></div><div class="objective-foot"><span>${esc(o.progress?.label || "Progress updating")}</span><button class="btn secondary tiny" data-objective-details="${esc(o.objectiveId)}">Watch factory ↗</button></div></article>`;
   }
 
   function runtimeBanner(runtime) {
@@ -787,24 +817,13 @@ import { costLimitsPanel } from "/cost-limits.mjs";
 
   function renderExecutionView(x) {
     const blocked = x.blocker || null;
-    const current = x.currentAgent || x.currentStage;
-    const currentText = current
-      ? `${esc(x.currentAgent || "Factory")} · ${esc(x.currentActivity || x.currentStage || "working")}`
-      : (blocked ? "Waiting for a blocker to be resolved" : "No agent is currently running");
     const events = (x.events || []).slice().reverse();
-    return `<div class="execution-view">
-      <div class="execution-summary">
-        <div><span class="eyebrow">${esc(x.project || "Factory")}</span><h3>${esc(x.objective || x.objectiveId)}</h3><p class="muted small">${esc(x.objectiveId)} · ${esc(x.status || "—")} · ${x.elapsedMs != null ? esc(fmtDuration(x.elapsedMs)) : "elapsed unavailable"}</p></div>
-        ${executionBadge(x.status === "active" ? "working" : x.status)}
-      </div>
-      <div class="execution-current ${blocked ? "execution-blocked" : ""}"><span class="eyebrow">${blocked ? "BLOCKED" : x.currentActivity?.startsWith("Waiting") ? "WAITING" : current ? "CURRENTLY WORKING" : "IDLE"}</span><strong>${currentText}</strong>${blocked ? `<p class="danger-text small">${esc(blocked.summary || blocked.outcome || "The objective cannot continue")}</p>` : ""}</div>
-      <h4>Execution pipeline</h4>
-      <div class="execution-pipeline">${(x.stages || []).map((s) => `<div class="execution-stage"><div><strong>${esc(s.stage)}</strong><span class="muted small">${s.agent ? ` · ${esc(s.agent)}` : ""}${s.nodeId ? ` · ${esc(s.nodeId)}` : ""}</span>${s.activity ? `<small class="muted">${esc(s.activity)}</small>` : ""}</div>${executionBadge(s.status)}</div>`).join("")}</div>
-      <h4>Live activity <span class="muted small">${events.length} recorded event${events.length === 1 ? "" : "s"}</span></h4>
-      <div class="execution-feed">${events.length ? events.map((e) => `<div class="execution-event"><time>${esc(fmtTime(e.at))}</time><div><strong>${esc(e.source || "Factory")}${e.destination ? ` → ${esc(e.destination)}` : ""}</strong><span class="muted small">${esc(e.type)}${e.stage ? ` · ${esc(e.stage)}` : ""}</span><p>${esc(e.message)}</p></div></div>`).join("") : `<p class="muted small">No execution events recorded yet.</p>`}</div>
-      ${(x.evidence || []).length ? `<h4>Evidence</h4><div class="execution-evidence">${x.evidence.map((e) => `<span>${esc(e.stage)} · ${esc(e.path)}</span>`).join("")}</div>` : ""}
-      ${x.github?.prUrl ? `<p class="small"><a href="${esc(x.github.prUrl)}" target="_blank" rel="noreferrer">Open pull request ↗</a></p>` : ""}
-    </div>`;
+    const stageLabel = { product: "Shaping the outcome", architect: "Designing the approach", builder: "Building", reviewer: "Independent review", qa: "Quality check", security: "Security check", release: "Preparing delivery" };
+    const humanStatus = { working: "working", completed: "complete", blocked: "needs attention", failed: "stopped", pending: "waiting" };
+    return `<div class="operation-room"><header class="operation-header"><div><span class="eyebrow">${esc(x.project || "Factory")} · live operation</span><h2>${esc(x.objective || "Objective")}</h2><p>${esc(x.currentActivity || (blocked ? "The team is waiting for a decision." : "The team is coordinating the next move."))}</p></div><div class="operation-stat"><strong>${x.elapsedMs != null ? esc(fmtDuration(x.elapsedMs)) : "—"}</strong><span>in motion</span></div></header>
+      <div class="operation-lane">${(x.stages || []).map((s, i) => `<div class="lane-step lane-${esc(s.status)}"><div class="lane-marker">${s.status === "completed" ? "✓" : s.status === "working" ? "●" : "○"}</div><div class="lane-copy"><span>${esc(humanStatus[s.status] || s.status)}</span><strong>${esc(s.agent || "Factory team")}</strong><p>${esc(s.activity || stageLabel[s.stage] || s.stage)}</p>${s.status === "working" ? `<em>Working now</em>` : ""}</div>${i < (x.stages || []).length - 1 ? `<div class="lane-connector"></div>` : ""}</div>`).join("")}</div>
+      ${blocked ? `<section class="operation-callout"><span class="eyebrow">Your attention</span><strong>${esc(blocked.whatItNeedsFromFounder || blocked.summary || "The team needs your direction")}</strong><p>${esc(blocked.why || "This is the point where the factory cannot safely decide for you.")}</p></section>` : ""}
+      <div class="operation-grid"><section><div class="operation-section-title"><span class="eyebrow">Handoffs &amp; activity</span><h3>Watch the team work</h3></div><div class="handoff-stream">${events.length ? events.map((e) => `<div class="handoff-item"><span class="handoff-line"></span><time>${esc(fmtTime(e.at))}</time><div><strong>${esc(e.source || "Factory")}${e.destination ? ` <span>→</span> ${esc(e.destination)}` : ""}</strong><p>${esc(e.message)}</p></div></div>`).join("") : `<p class="quiet-state">The first handoff is being prepared.</p>`}</div></section><aside><div class="operation-section-title"><span class="eyebrow">Evidence</span><h3>Confidence</h3></div><div class="confidence-list"><div><strong>${(x.stages || []).filter((s) => s.status === "completed").length}</strong><span>stages complete</span></div><div><strong>${(x.evidence || []).length}</strong><span>proof artifacts</span></div><div><strong>${blocked ? "Paused" : "Protected"}</strong><span>${blocked ? "awaiting direction" : "within factory gates"}</span></div></div>${x.github?.prUrl ? `<a class="btn secondary" href="${esc(x.github.prUrl)}" target="_blank" rel="noreferrer">Open delivery ↗</a>` : ""}</aside></div></div>`;
   }
 
   async function openExecutionView(id) {
@@ -960,7 +979,6 @@ import { costLimitsPanel } from "/cost-limits.mjs";
         } catch (e) { showToast(e.message, true); }
       };
     });
-    document.getElementById("ask-agent").onclick = () => { openModal("Ask an agent", `<label class="field-label">Agent</label><input class="modal-input" id="question-agent" value="main"/><label class="field-label">Question</label><textarea class="editor" id="question-text" placeholder="What is blocking this project?"></textarea><button class="btn" id="send-question">Ask</button><div id="question-answer"></div>`); document.getElementById("send-question").onclick = async () => { const out = document.getElementById("question-answer"); out.innerHTML = `<p class="muted">Agent is thinking…</p>`; try { const j = await apiJson("/api/founder/questions", { method: "POST", body: JSON.stringify({ agentId: document.getElementById("question-agent").value, question: document.getElementById("question-text").value }) }); out.innerHTML = `<div class="card">${esc(j.question.answer)}</div>`; } catch (e) { out.innerHTML = `<p class="danger-text">${esc(e.message)}</p>`; } }; };
     const nightProject = document.getElementById("overnight-project");
     nightProject?.addEventListener("change", () => {
       const repo = nightProject.selectedOptions[0]?.dataset.repo;
@@ -985,6 +1003,7 @@ import { costLimitsPanel } from "/cost-limits.mjs";
       try { await apiJson("/api/founder/overnight/stop", { method: "POST" }); showToast("Stopping after the current objective."); route(); }
       catch (err) { showToast(err.message, true); }
     });
+    document.getElementById("ask-agent")?.addEventListener("click", () => { openModal("Ask the factory", `<label class="field-label">Question</label><textarea class="editor" id="question-text" placeholder="What is blocking this work?"></textarea><button class="btn" id="send-question">Ask</button><div id="question-answer"></div>`); document.getElementById("send-question").onclick = async () => { const out = document.getElementById("question-answer"); out.innerHTML = `<p class="muted">The factory is thinking…</p>`; try { const j = await apiJson("/api/founder/questions", { method: "POST", body: JSON.stringify({ agentId: "main", question: document.getElementById("question-text").value }) }); out.innerHTML = `<div class="card">${esc(j.question.answer)}</div>`; } catch (e) { out.innerHTML = `<p class="danger-text">${esc(e.message)}</p>`; } }; });
     bindObjectiveControls(app);
   }
 
@@ -1002,6 +1021,10 @@ import { costLimitsPanel } from "/cost-limits.mjs";
   // Wire the objective card / history-row / details-modal controls within a
   // scope (the page, or the modal body after a re-render).
   function bindObjectiveControls(scope) {
+    scope.querySelectorAll(".founder-objective").forEach((card) => card.addEventListener("click", (event) => {
+      if (event.target.closest("button, a")) return;
+      openExecutionView(card.dataset.objectiveDetails);
+    }));
     scope.querySelectorAll("[data-report-task]").forEach((btn) => btn.onclick = () => openReportDrilldown("task", btn.dataset.reportTask));
     scope.querySelectorAll("[data-task-execution]").forEach((btn) => btn.onclick = () => openTaskExecutionView(btn.dataset.taskExecution));
     scope.querySelectorAll("[data-objective-execution]").forEach((btn) => btn.onclick = () => openExecutionView(btn.dataset.objectiveExecution));
