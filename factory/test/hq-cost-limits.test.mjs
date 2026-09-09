@@ -240,6 +240,41 @@ test("buildHqPlanLimitsPayload derives inferred windows from state files and let
   assert.equal(official.providers.openai.limit, 7);
 });
 
+test("builders resolve the production state root from hqRoot alone when no stateRoot is injected", async () => {
+  const fixture = makeFixtureRoot();
+  const stateRoot = join(fixture.root, "dashboard", "backend", "data", "factory");
+  writeTaskState(stateRoot, makeTask("issue-4001", "delta"), [
+    {
+      stage: "qa",
+      actor: "openclaw",
+      completedAt: "2026-09-08T08:00:00Z",
+      usage: { provider: "openai", model: "gpt-5.6-sol", tokensIn: 100, tokensOut: 20, durationMs: 10 },
+    },
+  ], {
+    blocker: { stage: "qa", outcome: "fail", summary: "429 rate limit", at: "2026-09-08T08:10:00Z" },
+  });
+
+  const costs = await buildHqCostsPayload({ hqRoot: fixture.root, pricing, now: "2026-09-08T10:00:00Z" });
+  assert.equal(costs.byProject.delta.dispatches, 1);
+  assert.equal(costs.totals.dispatches, 1);
+
+  const limits = await buildHqPlanLimitsPayload({ hqRoot: fixture.root, now: "2026-09-08T10:00:00Z" });
+  assert.equal(limits.available, true);
+  assert.equal(limits.source, "inferred");
+  assert.equal(limits.usageWindows[0].provider, "openai");
+  assert.equal(limits.cooldownHistory.length, 1);
+});
+
+test("builders degrade without throwing when the production state root does not exist", async () => {
+  const fixture = makeFixtureRoot();
+
+  const costs = await buildHqCostsPayload({ hqRoot: fixture.root, pricing, now: "2026-09-08T10:00:00Z" });
+  assert.equal(costs.totals.dispatches, 0);
+
+  const limits = await buildHqPlanLimitsPayload({ hqRoot: fixture.root, now: "2026-09-08T10:00:00Z" });
+  assert.equal(limits.available, false);
+});
+
 function makeFixtureRoot() {
   const root = mkdtempSync(join(tmpdir(), "hq-cost-limits-"));
   return { root };

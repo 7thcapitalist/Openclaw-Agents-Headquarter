@@ -1,6 +1,6 @@
 import { existsSync, readdirSync } from "fs";
 import { join } from "path";
-import { defaultStateRoot } from "../../../factory/lib/natural-language-intake.mjs";
+import { defaultStateRoot } from "../../../factory/lib/hq/tasks.mjs";
 import { readState } from "../../../factory/lib/task-workflow.mjs";
 import { loadPricing, summarizeCosts } from "../../../factory/lib/hq/cost.mjs";
 import { readPlanLimits } from "../../../factory/lib/hq/plan-limits.mjs";
