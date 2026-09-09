@@ -269,7 +269,7 @@ function groupTasksByProject(tasks, unifiedProjects) {
 }
 
 function deriveTaskDecisions(tasks) {
-  return tasks
+  const blocked = tasks
     .filter((t) => t.blocker?.outcome === "decision-required" || t.decisionCard)
     .map((t) => ({
       kind: "task-blocker",
@@ -285,6 +285,23 @@ function deriveTaskDecisions(tasks) {
       requestedAt: t.blocker?.at || null,
       resumable: Boolean(t.statePath),
     }));
+  const deferred = tasks
+    .filter((t) => ["merge-ready", "merged"].includes(t.status) && Array.isArray(t.deferredDecisions))
+    .flatMap((t) => t.deferredDecisions.map((d) => ({
+      kind: "post-task-decision",
+      id: `${t.id}:${d.id}`,
+      taskId: t.id,
+      project: t.project || null,
+      statePath: t.statePath || null,
+      question: d.question,
+      why: d.why,
+      recommendation: d.recommendation || "The agents completed the safe work; choose the option that best matches your intent.",
+      options: d.options,
+      risk: t.risk || null,
+      requestedAt: d.requestedAt || null,
+      resumable: false,
+    })));
+  return [...blocked, ...deferred];
 }
 
 function slimTask(task) {

@@ -217,9 +217,15 @@ export function briefBlocker(blocker, { decisionQuestion = null } = {}) {
 
   if (blocker.whatFailed || blocker.whatFactoryTried || blocker.whatItNeedsFromFounder) {
     return {
-      kind: "decision", needsFounder: true,
+      kind: "decision",
+      needsFounder: true,
       headline: blocker.whatFailed || "Recovery could not continue",
-      detail: [`Why: ${blocker.why || summary || "unknown"}`, `Factory tried: ${blocker.whatFactoryTried || "not recorded"}`, `Needs from you: ${blocker.whatItNeedsFromFounder || "a decision to continue"}`, `After approval: ${blocker.whatHappensAfterApproval || "the original task will resume when safe"}`].join(" "),
+      detail: [
+        `Why: ${blocker.why || summary || "unknown"}`,
+        `Factory tried: ${blocker.whatFactoryTried || "not recorded"}`,
+        `Needs from you: ${blocker.whatItNeedsFromFounder || "a decision to continue"}`,
+        `After approval: ${blocker.whatHappensAfterApproval || "the original task will resume when safe"}`,
+      ].join(" "),
       raw,
     };
   }

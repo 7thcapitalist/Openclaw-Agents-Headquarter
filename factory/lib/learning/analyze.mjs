@@ -182,8 +182,20 @@ export function classifyDecisionFriction(records, now) {
 export function classifyRecoverySuccesses(records, now) {
   return records.filter((record) => (record.recovery?.attempts || []).some((attempt) => attempt.status === "verified"))
     .map((record) => {
-      const first = record.recovery.attempts.find((attempt) => attempt.status === "verified");
-      return makeFinding({ kind: "success", scope: "global", project: record.project, targetRole: first.failedStage, fingerprint: fingerprint(["recovery-success", first.classification, slugify(first.failedStage || "unknown")]), title: `Recovery pattern verified at ${first.failedStage || "unknown"}`, observation: `Task ${record.id} recovered a ${first.classification} through diagnosis, repair, and independent verification.`, evidence: [...(first.diagnosis?.evidence || []).map((e) => ({ path: `${record.id}:recovery:diagnosis:${e.path || e}`, excerpt: first.diagnosis.summary })), ...(first.verification?.evidence || []).map((e) => ({ path: `${record.id}:recovery:verification:${e.path || e}`, excerpt: first.verification.summary }))].slice(0, 4), recommendation: "Review this recovery finding before promoting it into a durable factory rule; learning must not change behavior automatically.", confidence: "high", taskIds: [record.id], raisedAt: now });
+      const attempts = record.recovery.attempts.filter((attempt) => attempt.status === "verified");
+      const first = attempts[0];
+      return makeFinding({
+        kind: "success", scope: "global", project: record.project, targetRole: first.failedStage,
+        fingerprint: fingerprint(["recovery-success", first.classification, slugify(first.failedStage || "unknown")]),
+        title: `Recovery pattern verified at ${first.failedStage || "unknown"}`,
+        observation: `Task ${record.id} recovered a ${first.classification} through diagnosis, repair, and independent verification.`,
+        evidence: [
+          ...(first.diagnosis?.evidence || []).map((e) => ({ path: `${record.id}:recovery:diagnosis:${e.path || e}`, excerpt: first.diagnosis.summary })),
+          ...(first.verification?.evidence || []).map((e) => ({ path: `${record.id}:recovery:verification:${e.path || e}`, excerpt: first.verification.summary })),
+        ].slice(0, 4),
+        recommendation: "Review this recovery finding before promoting it into a durable factory rule; learning must not change behavior automatically.",
+        confidence: "high", taskIds: [record.id], raisedAt: now,
+      });
     });
 }
 

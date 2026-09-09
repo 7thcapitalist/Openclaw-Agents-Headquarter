@@ -28,7 +28,7 @@ export function writeHandoff({ hqRoot, statePath, state, companyState = null, re
     .join("\n") || "- none";
   const resultInstructions = resultPath
     ? `\n## Machine result contract\n\nBefore ending, write exactly one JSON object to:\n\n${resultPath}\n\n` +
-      `Schema: {"version":1,"dispatchId":"${dispatchId}","stage":"${stage}","actor":"${resultActor}","outcome":"pass|fail|decision-required","summary":"...","evidence":["relative/path"]}\n\n` +
+      `Schema: {"version":1,"dispatchId":"${dispatchId}","stage":"${stage}","actor":"${resultActor}","outcome":"pass|fail|decision-required|decision-deferred","summary":"...","evidence":["relative/path"],"decision":{"question":"...","options":["A ...","B ...","Other"]}}\n\n` +
     "Evidence paths must be relative, non-empty files inside the assigned worktree, written under `evidence/` (e.g. `evidence/qa-test-output.log`). `evidence/` is git-ignored — it holds your gate proof, not product files, so never place code, tests, or docs there. Do not report PASS unless the evidence exists. You must write this result file even when returning FAIL or decision-required.\n"
     : "";
   let contextBlock;
@@ -68,7 +68,7 @@ export function writeHandoff({ hqRoot, statePath, state, companyState = null, re
     `## Completed handoffs\n\n${completed}\n\n## Returned findings\n\n${returned}\n\n## Role instructions\n\n${prompt.trim()}\n\n` +
     knowledgeBlock +
     "## Execution boundary\n\nPerform all repository inspection, edits, and commands in the assigned Worktree above. Do not edit the source repository or another worktree. Do not merge, deploy, or push to main.\n\n" +
-    "## Required completion\n\nRecord PASS, FAIL, or decision-required with a summary and one or more evidence paths inside the worktree. A failure is routed according to factory policy.\n" + resultInstructions;
+    "## Required completion\n\nKeep working through ordinary uncertainty. Record decision-deferred when the safe work is complete but the founder may want to choose between legitimate options later; it does not block the pipeline. Use decision-required only when no safe progress is possible or a real safety/authority gate must stop the work. Deferred decisions must be plain language, include 2 options plus Other, and include your recommendation. Record PASS or FAIL with a summary and evidence when no founder input is needed.\n" + resultInstructions;
   const path = join(dirname(statePath), `handoff-${stage}.md`);
   writeFileSync(path, body, "utf8");
   return path;
