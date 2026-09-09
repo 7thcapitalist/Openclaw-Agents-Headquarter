@@ -772,9 +772,13 @@ export function buildObjectivesView(root, { now = Date.now() } = {}) {
       node.model = modelForRole(node.role || "integration");
       if (task) Object.assign(node, {
         title: task.objective || node.title || null,
+        // The task state is the live execution source of truth. Objective
+        // state can legitimately lag while auto-retry resumes a task; never
+        // show a stale objective-level blocker over a currently running task.
+        status: task.status === "active" ? "running" : node.status,
         stage: task.stage, taskStatus: task.status, elapsedMs: task.elapsedMs,
-        lastResult: task.lastResult, blocker: node.blocker || task.blocker,
-        decisionRequired: (node.blocker || task.blocker)?.outcome === "decision-required",
+        lastResult: task.lastResult, blocker: task.status === "active" ? (task.blocker || null) : (task.blocker || node.blocker),
+        decisionRequired: (task.status === "active" ? task.blocker : (task.blocker || node.blocker))?.outcome === "decision-required",
         decisionCard: task.decisionCard || null,
         retries: (task.events || []).filter((e) => e.type === "failure-routed").length,
         statePath: task.statePath,
@@ -784,6 +788,7 @@ export function buildObjectivesView(root, { now = Date.now() } = {}) {
         ? (task.events || []).filter((e) => e.type === "stage-pass").map((e) => e.stage)
         : [];
     }
+    if (allNodes.some((n) => n.taskStatus === "active")) obj.status = "active";
     obj.prUrl = obj.integration?.githubPublish?.prUrl || null;
     // Only genuine founder decisions / non-infra blocks — infra goes to recovery.
     obj.blockedOn = allNodes.find((n) => {
