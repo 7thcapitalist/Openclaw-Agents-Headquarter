@@ -6,6 +6,7 @@ import {
   objectiveSummaryLine,
   renderObjectiveCard,
   renderObjectiveHistoryRow,
+  shortObjectiveTitle,
 } from "../../dashboard/backend/public/lib/objectiveView.mjs";
 
 function esc(s) {
@@ -43,6 +44,19 @@ test("objective card shows the short human title, never the raw objective prompt
   assert.doesNotMatch(html, /ops team/);
   assert.match(html, /data-objective-details="obj-deadbeef"/);
   assert.match(html, /data-archive-objective="obj-deadbeef"/);
+});
+
+test("shortObjectiveTitle collapses legacy long prompts for founder surfaces", () => {
+  const title = shortObjectiveTitle("Build a calm founder command center so the founder can understand what the factory is doing without reading raw JSON or logs.");
+  assert.equal(title, "Build a calm founder command center");
+  assert.ok(title.length <= 72);
+  assert.equal(shortObjectiveTitle(""), "Untitled objective");
+});
+
+test("objective cards fall back to a compact title when the presenter title is missing", () => {
+  const html = renderObjectiveCard({ ...sample, title: "", objective: "Implement a much better operational experience for the founder with detailed observability." }, { esc });
+  assert.match(html, /Implement a much better operational experience/);
+  assert.doesNotMatch(html, /detailed observability/);
 });
 
 test("summary line is compact and title-free: project · status · progress · stage", () => {
