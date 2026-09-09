@@ -22,6 +22,7 @@
   "openclawIntegration": {
     "protocolVersion": 1,
     "maxAttemptsPerStage": 3,
+    "maxRecoveryAttempts": 3,
     "_concurrentGroupsDoc": "Each inner array is a set of pipeline stages the runner dispatches concurrently once the branch is frozen (builder done). The engine still applies results one at a time and all gates are unchanged. Set to [] to force fully sequential.",
     "concurrentGroups": [["reviewer", "qa", "security"]],
     "agentIds": {
@@ -40,6 +41,7 @@
       "release": "release",
       "openclaw": "main",
       "learning": "learning",
+      "recovery": "recovery",
       "research": "research"
     }
   },

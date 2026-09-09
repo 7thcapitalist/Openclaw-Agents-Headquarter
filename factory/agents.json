@@ -86,6 +86,17 @@
       "reportsTo": "chief-of-staff"
     },
     {
+      "id": "recovery",
+      "name": "Recovery Agent",
+      "role": "Failure diagnosis and repair",
+      "responsibility": "Investigates classified execution failures before changing anything, performs only safe reversible repairs, and records diagnosis and repair evidence for independent QA verification.",
+      "stages": [],
+      "harness": "multiple",
+      "runtimeAgentId": "recovery",
+      "reportsTo": "chief-of-staff",
+      "notes": "Runs only as a recovery sub-state of the original task; it is not a parallel task registry or replacement objective."
+    },
+    {
       "id": "release-manager",
       "name": "Release Manager Agent",
       "role": "Merge readiness",

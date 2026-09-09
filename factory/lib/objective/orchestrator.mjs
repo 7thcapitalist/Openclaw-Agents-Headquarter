@@ -17,6 +17,7 @@ import { publishAndRecord } from "../openclaw-runner.mjs";
 import { ensureBranchHasCommit } from "../hq/github-publish.mjs";
 import { assertAcyclic, buildNodesComplete, descendants, isDeadlocked, readyNodes, GATE_SATISFIED } from "./graph.mjs";
 import { classifyBlocker, classifyObjectiveNodeBlocker, founderApprovalSetupBlocker, isFounderApprovalSetupFailure } from "../hq/blocker-class.mjs";
+import { classifyFailure } from "../failure-classification.mjs";
 
 const INTEGRATION_SYNTHETIC_STAGES = new Set(["product", "architect", "builder"]);
 
@@ -578,7 +579,8 @@ export async function runObjective({ hqRoot, objectivePath, maxConcurrent = 3, e
           blockDescendants(objectivePath, nodeId);
           return;
         }
-        patchNode(objectivePath, nodeId, { status: "failed", blocker: { summary: message } }, { type: "node-failed", detail: message });
+        const classification = classifyFailure({ error: message, source: "factory" });
+        patchNode(objectivePath, nodeId, { status: "blocked", blocker: { stage: "orchestrator", outcome: "decision-required", founderAction: true, classification, whatFailed: `The factory could not continue objective node ${nodeId}.`, why: message, whatFactoryTried: "Recorded the orchestration error and stopped before advancing dependent work.", whatItNeedsFromFounder: "Review the factory error and approve or direct the repair if it is safe to continue.", whatHappensAfterApproval: "The original objective node will resume from its last durable state.", summary: `Factory error (${classification}): ${message}` } }, { type: "node-blocked", detail: message });
       })
       .finally(() => inFlight.delete(nodeId));
     inFlight.set(nodeId, p);

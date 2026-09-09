@@ -219,7 +219,7 @@ export async function runToTerminal(options) {
 // caller then does a normal sequential `runOneStage`).
 export async function runConcurrentGroupIfReady({ hqRoot, statePath, agentIds = {}, maxAttemptsPerStage = 3, execute = executeOpenClaw, publish = publishMergeReadyTask, groups = DEFAULT_CONCURRENT_GROUPS, waitForResult = waitForYieldedResult }) {
   const state = readState(statePath);
-  if (state.status !== "active" || state.currentDispatch) return null;
+  if (state.status !== "active" || state.currentDispatch || state.recovery?.active) return null;
   if (state.yieldedGroup) {
     if (state.yieldedGroup.some((m) => !existsSync(m.resultPath))) {
       return { version: PROTOCOL_VERSION, status: "dispatch", taskId: state.task.id, waiting: true };
@@ -338,7 +338,7 @@ export async function executeOpenClaw({ agentId, messageFile, sessionKey, cwd })
 }
 
 function selectAgentId(dispatch, agentIds) {
-  return agentIds[`${dispatch.stage}:${dispatch.actor}`]
+  return agentIds[dispatch.kind === "recovery-diagnose" ? "recovery" : `${dispatch.stage}:${dispatch.actor}`]
     || agentIds[dispatch.stage]
     || agentIds[dispatch.actor]
     || dispatch.actor;

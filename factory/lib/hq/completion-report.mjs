@@ -145,6 +145,13 @@ export function buildCompletionReport(state, { now = Date.now() } = {}) {
     out.push("");
   }
 
+  if ((state.failures || []).length || (state.recovery?.attempts || []).length) {
+    out.push("## Recovery record");
+    for (const failure of state.failures || []) out.push(`- **${failure.classification || "UNKNOWN"}** at ${failure.stage || "?"} (${failure.agent || "?"}): ${truncate(failure.error || "", 240)}`);
+    for (const attempt of state.recovery?.attempts || []) out.push(`- Attempt ${attempt.number} (${attempt.strategy}) — ${attempt.status}; diagnosis: ${truncate(attempt.diagnosis?.summary || "not recorded", 180)}; verification: ${truncate(attempt.verification?.summary || "not recorded", 180)}`);
+    out.push("");
+  }
+
   out.push("## GitHub");
   out.push(...githubSection(state));
   out.push("");

@@ -144,5 +144,5 @@ function requiredPath(request) {
 }
 
 function stateResponse(state) {
-  return { version: 1, status: state.status, taskId: state.task.id, currentStage: state.currentStage, blocker: state.blocker || null };
+  return { version: 1, status: state.status, taskId: state.task.id, currentStage: state.currentStage, blocker: state.blocker || null, recovery: state.recovery || null, failures: state.failures || [] };
 }

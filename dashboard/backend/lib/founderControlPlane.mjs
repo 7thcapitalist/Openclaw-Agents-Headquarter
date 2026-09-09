@@ -171,6 +171,8 @@ function taskView(path) {
     agentStatus: dispatch?.status || (state.status === "active" ? "waiting" : state.status),
     blocker: state.blocker || null,
     blockerClass: classifyBlocker(state.blocker),
+    failureClasses: [...new Set((state.failures || []).map((failure) => failure.classification).filter(Boolean))],
+    recovery: state.recovery || { maxAttempts: 0, attempts: [], active: null },
     autoRetries: state.autoRetries || 0,
     updatedAt,
     createdAt: state.createdAt,
@@ -338,6 +340,11 @@ export function buildObjectiveExecutionView(root, objectiveId, { now = Date.now(
     if (event.type === "stage-fail" || event.type === "dispatch-failed") return "failed";
     if (event.type === "stage-decision-required") return "decision-required";
     if (event.type === "dispatch-ready") return "agent-started";
+    if (event.type === "recovery-diagnosing") return "recovery-diagnosing";
+    if (event.type === "recovery-repair-attempted") return "recovery-repair-attempted";
+    if (event.type === "recovery-verifying") return "recovery-verifying";
+    if (event.type === "recovery-verification") return "recovery-verification";
+    if (event.type === "recovery-verified") return "recovery-verified";
     return event.type || "event";
   };
   const events = rawEvents.filter((event) => event.at).map((event) => {
@@ -350,6 +357,11 @@ export function buildObjectiveExecutionView(root, objectiveId, { now = Date.now(
     const message = event.summary || stageResult?.summary || event.detail || event.reason
       || (event.type === "dispatch-running" ? `Started ${event.stage} work` : null)
       || (event.type === "dispatch-ready" ? `Assigned ${event.stage} work` : null)
+      || (event.type === "recovery-diagnosing" ? "Recovery Agent is diagnosing the failure" : null)
+      || (event.type === "recovery-repair-attempted" ? "Recovery Agent attempted a repair" : null)
+      || (event.type === "recovery-verifying" ? "QA is independently verifying the repair" : null)
+      || (event.type === "recovery-verification" ? `Recovery verification ${event.outcome || "completed"}` : null)
+      || (event.type === "recovery-verified" ? "Recovery verified; original task resumed" : null)
       || (event.type === "handoff-ready" ? `Handoff ready for ${event.stage}` : null)
       || (event.type === "stage-pass" ? `${event.stage} completed` : null)
       || String(event.type || "Execution event").replaceAll("-", " ");
