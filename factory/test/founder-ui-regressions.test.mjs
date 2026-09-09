@@ -27,3 +27,9 @@ test("execution blocker callout distinguishes automatic recovery from founder at
   assert.match(app, /blocked\.detail/);
   assert.doesNotMatch(app, /blocked\.whatItNeedsFromFounder \|\| blocked\.summary/);
 });
+
+test("execution view keeps long prompts behind a collapsed disclosure", () => {
+  assert.match(app, /shortObjectiveTitle\(x\.title \|\| x\.objective \|\| "Objective"\)/);
+  assert.match(app, /<details class="operation-original-request"><summary>View original request<\/summary>/);
+  assert.match(app, /<details class="obj-original-request"><summary>Original request<\/summary>/);
+});
