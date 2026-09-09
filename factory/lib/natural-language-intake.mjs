@@ -29,6 +29,12 @@ export async function createContractFromObjective({ objective, repo, issue, proj
     fields: { risk: contract.risk, workType: contract.workType },
     protocol: decisionProtocol,
   });
+  const boundRisk = contract.risk === "high" ? decisionProtocol.riskBinding?.high : null;
+  if (boundRisk && classification.outcome === "continue") {
+    classification.outcome = "decision-request";
+    classification.reason = `High-risk work requires ${boundRisk}.`;
+    classification.trigger = "risk:high";
+  }
   let advisory;
   if (SURFACED_OUTCOMES.has(classification.outcome)) {
     advisory = {
