@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "sources": [{
+    "id": "paperclip",
+    "name": "Paperclip",
+    "repository": "https://github.com/paperclipai/paperclip",
+    "commit": "6abeb67334348dcb6fde2d591a27ffc7efc7118d",
+    "license": "MIT",
+    "licenseNotice": "factory/third-party/licenses/PAPERCLIP-MIT.txt"
+  }],
+  "artifacts": [{
+    "localPath": "docs/software-factory/PAPERCLIP_INTEGRATION_PLAN.md",
+    "sourceId": "paperclip",
+    "sourcePath": "README.md",
+    "classification": "reference",
+    "notes": "Research and architectural comparison cite Paperclip; no source code is included in this document."
+  }]
+}
