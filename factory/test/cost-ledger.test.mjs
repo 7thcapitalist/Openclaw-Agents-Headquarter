@@ -1,0 +1,12 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync } from "fs";
+import { join } from "path";
+import { tmpdir } from "os";
+import { appendCostEvent, createCostEvent, readCostEvents, summarizeCostLedger } from "../lib/hq/cost-ledger.mjs";
+const path = () => join(mkdtempSync(join(tmpdir(), "hq-cost-ledger-")), "cost.ndjson");
+const make = (extra = {}) => createCostEvent({ source: "openclaw", sourceEventId: "source-1", provider: "openai", model: "gpt-5", inputTokens: 100, cachedInputTokens: 20, outputTokens: 10, costMicros: 2500, agentId: "builder", projectId: "hq", taskId: "issue-84", stage: "builder", ...extra }, { now: () => "2026-09-09T20:00:00Z", id: () => extra.eventId || "event-1" });
+test("append is idempotent by event and source identity", () => { const file = path(); assert.equal(appendCostEvent(file, make()).accepted, true); assert.equal(appendCostEvent(file, make({ eventId: "event-other" })).duplicate, true); assert.equal(readCostEvents(file).length, 1); });
+test("unknown pricing remains explicit and dimensions aggregate deterministically", () => { const summary = summarizeCostLedger([make(), make({ eventId: "event-2", sourceEventId: "source-2", model: "unknown", costMicros: null, costConfidence: "unavailable" })]); assert.equal(summary.totals.inputTokens, 200); assert.equal(summary.totals.costMicros, 2500); assert.equal(summary.totals.unpricedEvents, 1); assert.equal(summary.byAgent.builder.events, 2); });
+test("corrections and reversals preserve history without double counting", () => { const original = make(); const correction = make({ eventId: "correction", sourceEventId: "correction", eventType: "correction", replacesEventId: original.eventId, inputTokens: 50, costMicros: 1200 }); const reversal = make({ eventId: "reversal", sourceEventId: "reversal", eventType: "reversal", replacesEventId: correction.eventId, inputTokens: 0, outputTokens: 0, costMicros: 0 }); assert.equal(summarizeCostLedger([original, correction]).totals.costMicros, 1200); const summary = summarizeCostLedger([original, correction, reversal]); assert.equal(summary.totals.events, 0); assert.equal(summary.recordedEvents, 3); });
+test("ledger rejects negative values and corrections to unknown events", () => { assert.throws(() => make({ inputTokens: -1 }), /inputTokens/); const file = path(); assert.throws(() => appendCostEvent(file, make({ eventType: "correction", replacesEventId: "missing" })), /unknown event/); });

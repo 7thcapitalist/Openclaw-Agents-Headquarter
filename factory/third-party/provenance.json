@@ -15,6 +15,27 @@
     "classification": "reference",
     "notes": "Research and architectural comparison cite Paperclip; no source code is included in this document."
   },
+  {
+    "localPath": "factory/lib/hq/cost-ledger.mjs",
+    "sourceId": "paperclip",
+    "sourcePath": "packages/db/src/schema/cost_events.ts",
+    "classification": "adapted",
+    "notes": "Adapts Paperclip cost-event fields to an append-only NDJSON ledger with HQ correlation, corrections, and reversals."
+  },
+  {
+    "localPath": "factory/test/cost-ledger.test.mjs",
+    "sourceId": "paperclip",
+    "sourcePath": "packages/db/src/schema/cost_events.ts",
+    "classification": "inspired",
+    "notes": "Exercises behavior derived from Paperclip cost-event identity and aggregation semantics."
+  },
+  {
+    "localPath": "docs/software-factory/PAPERCLIP_COST_LEDGER.md",
+    "sourceId": "paperclip",
+    "sourcePath": "packages/db/src/schema/cost_events.ts",
+    "classification": "reference",
+    "notes": "Documents the pinned Paperclip source and HQ-specific adaptations."
+  },
   { "localPath": "factory/lib/packages/agent-company-linter.mjs", "sourceId": "paperclip", "sourcePath": "docs/companies/companies-spec.md", "classification": "adapted", "notes": "Implements the safe read-only subset of Paperclip Agent Companies discovery and validation." },
   { "localPath": "factory/test/agent-company-linter.test.mjs", "sourceId": "paperclip", "sourcePath": "docs/companies/companies-spec.md", "classification": "inspired", "notes": "Tests portable package and safety behavior derived from the specification." },
   { "localPath": "scripts/lint-agent-company.mjs", "sourceId": "paperclip", "sourcePath": "docs/companies/companies-spec.md", "classification": "inspired", "notes": "Provides a read-only JSON CLI for the adapted package linter." },
