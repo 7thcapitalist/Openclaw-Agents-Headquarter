@@ -11,9 +11,10 @@
 
 import { classifyBlocker, isFounderApprovalSetupFailure } from "./blocker-class.mjs";
 
-// ── the six founder-facing statuses ──────────────────────────────────────────
+// ── the founder-facing statuses ──────────────────────────────────────────────
 export const STATUS = {
   RUNNING: "RUNNING",
+  RECOVERING: "RECOVERING",
   COMPLETE: "COMPLETE",
   BLOCKED: "BLOCKED",
   FAILED: "FAILED",
@@ -23,6 +24,7 @@ export const STATUS = {
 
 const STATUS_META = {
   RUNNING: { label: "Running", tone: "info", icon: "▶" },
+  RECOVERING: { label: "Recovering", tone: "warn", icon: "↻" },
   COMPLETE: { label: "Complete", tone: "good", icon: "✓" },
   BLOCKED: { label: "Blocked", tone: "warn", icon: "‖" },
   FAILED: { label: "Failed", tone: "bad", icon: "✕" },
@@ -309,7 +311,7 @@ export function normalizeNodeStatus(node) {
   if (s === "blocked-by-dep") return STATUS.PENDING;
   if (s === "blocked" || s === "failed") {
     const brief = briefBlocker(node?.blocker);
-    if (brief?.autoRecovering) return STATUS.RUNNING;
+    if (brief?.autoRecovering) return STATUS.RECOVERING;
     if (brief?.needsFounder) return STATUS.WAITING_FOR_FOUNDER;
     return s === "failed" ? STATUS.FAILED : STATUS.BLOCKED;
   }
@@ -345,6 +347,7 @@ export function presentObjective(obj) {
   const total = allNodes.length;
   const done = nodeStatuses.filter((x) => x.status === STATUS.COMPLETE).length;
   const running = nodeStatuses.filter((x) => x.status === STATUS.RUNNING).length;
+  const recovering = nodeStatuses.filter((x) => x.status === STATUS.RECOVERING).length;
   const failedNodes = nodeStatuses.filter((x) => x.status === STATUS.FAILED);
   const waitingNodes = nodeStatuses.filter((x) => x.status === STATUS.WAITING_FOR_FOUNDER);
   const plainBlocked = nodeStatuses.filter((x) => x.status === STATUS.BLOCKED);
@@ -352,18 +355,31 @@ export function presentObjective(obj) {
   let status;
   switch (obj?.status) {
     case "complete": status = STATUS.COMPLETE; break;
-    case "active": status = STATUS.RUNNING; break;
+    case "active":
+      // The objective flag means the orchestrator has not reached a terminal
+      // state; it does not prove an agent is currently executing. Derive the
+      // Founder status from node evidence so stale/failed dispatches cannot be
+      // presented as live work.
+      if (waitingNodes.length) status = STATUS.WAITING_FOR_FOUNDER;
+      else if (failedNodes.length) status = STATUS.FAILED;
+      else if (plainBlocked.length) status = STATUS.BLOCKED;
+      else if (running) status = STATUS.RUNNING;
+      else if (recovering) status = STATUS.RECOVERING;
+      else status = STATUS.PENDING;
+      break;
     case "invalid": status = STATUS.FAILED; break;
     default: {
       // blocked / integration-blocked / incomplete: let the nodes decide.
       if (waitingNodes.length) status = STATUS.WAITING_FOR_FOUNDER;
       else if (failedNodes.length) status = STATUS.FAILED;
       else if (plainBlocked.length) status = STATUS.BLOCKED;
-      else if (running.length || done < total) status = STATUS.RUNNING; // only infra hiccups left
+      else if (running) status = STATUS.RUNNING;
+      else if (recovering) status = STATUS.RECOVERING;
+      else if (done < total) status = STATUS.PENDING;
       else status = STATUS.BLOCKED;
     }
   }
-  if (status === STATUS.RUNNING && total > 0 && done === 0 && running === 0) status = STATUS.PENDING;
+  if (status === STATUS.RUNNING && total > 0 && done === 0 && running === 0) status = recovering ? STATUS.RECOVERING : STATUS.PENDING;
 
   const meta = statusMeta(status);
 
@@ -398,7 +414,8 @@ export function presentObjective(obj) {
   else if (status === STATUS.WAITING_FOR_FOUNDER) headline = blockerBrief?.headline || "Needs a decision from you.";
   else if (status === STATUS.FAILED) headline = blockerBrief?.headline || "A part failed and can't continue on its own.";
   else if (status === STATUS.BLOCKED) headline = blockerBrief?.headline || "Stuck — needs a look.";
-  else if (status === STATUS.RUNNING) headline = running ? `${running} part${running === 1 ? "" : "s"} building now · ${progress.label}` : `${progress.label} · recovering from an infra hiccup`;
+  else if (status === STATUS.RUNNING) headline = `${running} part${running === 1 ? "" : "s"} working now · ${progress.label}`;
+  else if (status === STATUS.RECOVERING) headline = recovering ? `${recovering} part${recovering === 1 ? "" : "s"} recovering automatically · ${progress.label}` : `${progress.label} · recovery pending`;
   else headline = "Queued — not started yet.";
 
   return {

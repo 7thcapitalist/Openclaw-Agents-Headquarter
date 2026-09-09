@@ -725,10 +725,10 @@ export function objectiveLifecycle(obj, {
   // no matter how old it is.
   if (status === "WAITING_FOR_FOUNDER" || status === "BLOCKED") return "active";
   if (status === "COMPLETE") return age <= recentCompleteMs ? "active" : "history";
-  // RUNNING / PENDING / FAILED: active only while there is recent movement or a
-  // recovery is still pending. Otherwise it's abandoned — send it to history.
-  if (status === "RUNNING" || status === "PENDING" || status === "FAILED") {
-    if ((obj?.recovery?.count || 0) > 0) return "active";
+  // RUNNING / RECOVERING / PENDING / FAILED: active only while there is recent
+  // movement. A historical recovery record is evidence of what happened, not
+  // proof that an agent is still working now.
+  if (status === "RUNNING" || status === "RECOVERING" || status === "PENDING" || status === "FAILED") {
     return age <= staleMs ? "active" : "history";
   }
   return "history";
@@ -834,7 +834,7 @@ export function buildObjectivesView(root, { now = Date.now() } = {}) {
     }
     try {
       const raw = readObjState(statePath);
-      const plan = buildRecoveryPlan(raw);
+      const plan = buildRecoveryPlan(raw, { now });
       obj.recovery = {
         count: plan.nodes.length,
         nodes: plan.nodes.map(({ role, title, reason }) => ({ role, title, reason })),

@@ -547,6 +547,12 @@ test("buildRecoveryPlan / buildObjectivesView: only hard/decision → recovery.c
   assert.equal(shaped.recovery.count, 0);
 });
 
+test("objectiveLifecycle does not keep an old recovery record in Active objectives", () => {
+  const now = Date.parse("2026-09-09T12:00:00.000Z");
+  assert.equal(objectiveLifecycle({ status6: "RECOVERING", updatedAt: "2026-09-07T12:00:00.000Z", recovery: { count: 3 } }, { now }), "history");
+  assert.equal(objectiveLifecycle({ status6: "RECOVERING", updatedAt: "2026-09-09T11:30:00.000Z", recovery: { count: 3 } }, { now }), "active");
+});
+
 // ── objective lifecycle bucketing + founder archive ─────────────────────────
 
 function writeObjectiveFixture(root, {
@@ -588,7 +594,7 @@ test("objectiveLifecycle: presenter status + freshness + archive decide the buck
   // Running/pending: active only while fresh, or while a recovery is pending.
   assert.equal(objectiveLifecycle({ status6: "RUNNING", updatedAt: fresh }, { now }), "active");
   assert.equal(objectiveLifecycle({ status6: "RUNNING", updatedAt: old }, { now }), "history");
-  assert.equal(objectiveLifecycle({ status6: "RUNNING", updatedAt: old, recovery: { count: 2 } }, { now }), "active");
+  assert.equal(objectiveLifecycle({ status6: "RUNNING", updatedAt: old, recovery: { count: 2 } }, { now }), "history");
   assert.equal(objectiveLifecycle({ status6: "FAILED", updatedAt: old }, { now }), "history");
 
   // Completed: active only if recent.
