@@ -1,6 +1,9 @@
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync } from "fs";
+import { existsSync, mkdirSync, readFileSync } from "fs";
 import { dirname, join } from "path";
-import { completeStage, readState, recordRecoveryResult, routeStageFailure, startRecovery, verifyEvidence, writeState } from "./task-workflow.mjs";
+import { randomUUID } from "crypto";
+import { completeStage, recordRecoveryResult, routeStageFailure, startRecovery, verifyEvidence } from "./task-workflow.mjs";
+import { mutateTransactionalState } from "./store/transactional-json.mjs";
+import { writeHandoff } from "./handoff.mjs";
 
 // Which stages the workflow can route a failure AWAY from.
 //
@@ -16,7 +19,6 @@ import { completeStage, readState, recordRecoveryResult, routeStageFailure, star
 // re-dispatching it unchanged just repeats the failure. Those keep going to
 // recovery first, which diagnoses before anyone retries.
 const ROUTABLE_STAGES = new Set(["reviewer", "qa", "security", "release"]);
-import { writeHandoff } from "./handoff.mjs";
 
 export const PROTOCOL_VERSION = 1;
 
@@ -33,33 +35,60 @@ export function computeDispatchPaths({ state, stage, statePath }) {
 }
 
 export function prepareDispatch({ hqRoot, statePath, now = new Date().toISOString() }) {
-  const state = readState(statePath);
-  if (state.status !== "active") return terminalResponse(state);
-  if (state.currentDispatch?.status === "ready" || state.currentDispatch?.status === "running") {
-    return dispatchResponse(state.currentDispatch, state);
+  let freshDispatch = null;
+  const nextState = mutateTransactionalState(statePath, {
+    // Preparing a dispatch is derived deterministically from state that is
+    // itself only readable inside the transaction (the current attempt
+    // count), so there is no stable idempotency key to pass in up front.
+    // Correctness instead comes from the read-decide-write happening as one
+    // atomic unit: a second concurrent caller's transaction only starts
+    // after the first commits, and by then it observes the dispatch the
+    // first one just created and takes the early-return branch below.
+    commandId: `prepare:${randomUUID()}`,
+    now,
+    mutate: (state) => {
+      if (!state) throw new Error(`No state at ${statePath}`);
+      if (state.status !== "active") return undefined;
+      if (state.currentDispatch?.status === "ready" || state.currentDispatch?.status === "running") return undefined;
+      const recovery = state.recovery?.active;
+      const stage = recovery?.failedStage || state.currentStage;
+      const { dispatchId, resultPath, attempt } = computeDispatchPaths({ state, stage, statePath });
+      const dispatch = {
+        id: dispatchId,
+        stage,
+        actor: recovery ? (recovery.phase === "diagnose" ? "recovery" : state.assignments[recovery.verificationStage || "qa"]) : state.assignments[stage],
+        kind: recovery ? `recovery-${recovery.phase}` : "stage",
+        ...(recovery?.phase === "verify" ? { verificationStage: recovery.verificationStage || "qa" } : {}),
+        status: "ready",
+        attempt,
+        promptPath: handoffPathFor(statePath, stage),
+        resultPath,
+        createdAt: now,
+      };
+      freshDispatch = dispatch;
+      const next = structuredClone(state);
+      next.currentDispatch = dispatch;
+      next.updatedAt = now;
+      next.events.push({ at: now, type: "dispatch-ready", stage, actor: dispatch.actor, dispatchId });
+      return next;
+    },
+  });
+  if (nextState.status !== "active") return terminalResponse(nextState);
+  if (freshDispatch) {
+    // File I/O (the handoff prompt) happens once, after the transaction that
+    // decided this dispatch is the one that gets to exist has committed —
+    // never inside the transaction itself.
+    mkdirSync(dirname(freshDispatch.resultPath), { recursive: true });
+    writeHandoff({ hqRoot, statePath, state: nextState, resultPath: freshDispatch.resultPath, dispatchId: freshDispatch.id });
   }
-  const recovery = state.recovery?.active;
-  const stage = recovery?.failedStage || state.currentStage;
-  const { dispatchId, resultPath, attempt } = computeDispatchPaths({ state, stage, statePath });
-  mkdirSync(dirname(resultPath), { recursive: true });
-  const promptPath = writeHandoff({ hqRoot, statePath, state, resultPath, dispatchId });
-  const dispatch = {
-    id: dispatchId,
-    stage,
-    actor: recovery ? (recovery.phase === "diagnose" ? "recovery" : state.assignments[recovery.verificationStage || "qa"]) : state.assignments[stage],
-    kind: recovery ? `recovery-${recovery.phase}` : "stage",
-    ...(recovery?.phase === "verify" ? { verificationStage: recovery.verificationStage || "qa" } : {}),
-    status: "ready",
-    attempt,
-    promptPath,
-    resultPath,
-    createdAt: now,
-  };
-  state.currentDispatch = dispatch;
-  state.updatedAt = now;
-  state.events.push({ at: now, type: "dispatch-ready", stage, actor: dispatch.actor, dispatchId });
-  writeState(statePath, state);
-  return dispatchResponse(dispatch, state);
+  return dispatchResponse(nextState.currentDispatch, nextState);
+}
+
+// Mirrors handoff.mjs's own (deterministic, state-independent) path so it can
+// be computed inside the transaction, before the file itself is written
+// (writeHandoff() is real file I/O and must run after the commit).
+function handoffPathFor(statePath, stage) {
+  return join(dirname(statePath), `handoff-${stage}.md`);
 }
 
 // A dispatch names its worker twice. `actor` is the workflow's logical actor
@@ -89,121 +118,143 @@ function dispatchIdentityMismatch(result, dispatch) {
 // the agent will report.
 export function recordDispatchAgentId({ statePath, dispatchId, agentId }) {
   if (!agentId) return null;
-  return withStateLock(statePath, () => {
-    const state = readState(statePath);
-    if (state.currentDispatch?.id !== dispatchId) return null;
-    if (state.currentDispatch.agentId === agentId) return state.currentDispatch.agentId;
-    state.currentDispatch.agentId = agentId;
-    writeState(statePath, state);
-    return agentId;
+  const nextState = mutateTransactionalState(statePath, {
+    commandId: `agent-id:${dispatchId}:${agentId}`,
+    mutate: (state) => {
+      if (!state || state.currentDispatch?.id !== dispatchId) return undefined;
+      if (state.currentDispatch.agentId === agentId) return undefined;
+      const next = structuredClone(state);
+      next.currentDispatch.agentId = agentId;
+      return next;
+    },
   });
+  return nextState?.currentDispatch?.id === dispatchId ? (nextState.currentDispatch.agentId ?? null) : null;
 }
 
 export function markDispatchRunning({ statePath, dispatchId, now = new Date().toISOString() }) {
-  return withStateLock(statePath, () => {
-    const state = readState(statePath);
-    assertCurrentDispatch(state, dispatchId);
-    if (state.currentDispatch.status === "running") throw new Error(`Dispatch ${dispatchId} is already running.`);
-    if (state.currentDispatch.status !== "ready") throw new Error(`Dispatch ${dispatchId} is not ready.`);
-    state.currentDispatch.status = "running";
-    state.currentDispatch.startedAt = now;
-    state.updatedAt = now;
-    state.events.push({ at: now, type: "dispatch-running", stage: state.currentStage, actor: state.currentDispatch.actor, dispatchId });
-    writeState(statePath, state);
-    return dispatchResponse(state.currentDispatch, state);
+  const nextState = mutateTransactionalState(statePath, {
+    // Stable per dispatch: a retried call after a crash or a timed-out
+    // response replays the original success instead of erroring on
+    // "already running".
+    commandId: `running:${dispatchId}`,
+    now,
+    mutate: (state) => {
+      assertCurrentDispatch(state, dispatchId);
+      if (state.currentDispatch.status === "running") throw new Error(`Dispatch ${dispatchId} is already running.`);
+      if (state.currentDispatch.status !== "ready") throw new Error(`Dispatch ${dispatchId} is not ready.`);
+      const next = structuredClone(state);
+      next.currentDispatch.status = "running";
+      next.currentDispatch.startedAt = now;
+      next.updatedAt = now;
+      next.events.push({ at: now, type: "dispatch-running", stage: next.currentStage, actor: next.currentDispatch.actor, dispatchId });
+      return next;
+    },
   });
+  return dispatchResponse(nextState.currentDispatch, nextState);
 }
 
 export function ingestResult({ statePath, result, agentMeta = null, maxAttemptsPerStage = 3, now = new Date().toISOString() }) {
   validateAgentResult(result);
-  const state = readState(statePath);
-  assertCurrentDispatch(state, result.dispatchId);
-  const dispatch = state.currentDispatch;
-  if (result.stage !== dispatch.stage || !actorMatchesDispatch(result.actor, dispatch)) {
-    throw new Error(dispatchIdentityMismatch(result, dispatch));
-  }
-  // Past the identity gate, the workflow speaks only logical actors: the
-  // independence gates (builder != reviewer != qa) and every stage record
-  // compare against `assignments`. Normalise here so a runtime-id self-report
-  // never leaks into state and trip those comparisons downstream.
-  const actor = dispatch.actor;
-  if (dispatch.kind?.startsWith("recovery-")) {
-    const evidence = verifyEvidence(result.evidence, state.worktree);
-    const next = recordRecoveryResult(state, {
-      outcome: result.outcome === "decision-deferred" ? "pass" : result.outcome,
-      actor, summary: result.summary, evidence, diagnosis: result.diagnosis || null,
-      maxAttemptsPerStage, now,
-    });
-    next.dispatches = [...(state.dispatches || []), { ...dispatch, status: "completed", outcome: result.outcome, summary: result.summary, completedAt: now, ...(agentMeta ? { usage: sanitizeUsage(agentMeta) } : {}) }];
-    delete next.currentDispatch;
-    writeState(statePath, next);
-    return terminalResponse(next);
-  }
-  const evidence = verifyEvidence(result.evidence, state.worktree);
-  const deferredDecision = result.outcome === "decision-deferred" ? result.decision : null;
-  let next = completeStage(state, {
-    stage: result.stage,
-    actor,
-    outcome: result.outcome === "decision-deferred" ? "pass" : result.outcome,
-    summary: result.summary,
-    evidence,
-    deferredDecision,
+  // Stable per dispatch: two processes (or a retried delivery) ingesting the
+  // same result must apply exactly once and both observe the same outcome,
+  // never advance the workflow twice.
+  const commandId = `ingest:${result.dispatchId}`;
+  const next = mutateTransactionalState(statePath, {
+    commandId,
     now,
+    mutate: (state) => {
+      assertCurrentDispatch(state, result.dispatchId);
+      const dispatch = state.currentDispatch;
+      if (result.stage !== dispatch.stage || !actorMatchesDispatch(result.actor, dispatch)) {
+        throw new Error(dispatchIdentityMismatch(result, dispatch));
+      }
+      // Past the identity gate, the workflow speaks only logical actors: the
+      // independence gates (builder != reviewer != qa) and every stage record
+      // compare against `assignments`. Normalise here so a runtime-id
+      // self-report never leaks into state and trips those comparisons
+      // downstream.
+      const actor = dispatch.actor;
+      if (dispatch.kind?.startsWith("recovery-")) {
+        const evidence = verifyEvidence(result.evidence, state.worktree);
+        const recovered = recordRecoveryResult(state, {
+          outcome: result.outcome === "decision-deferred" ? "pass" : result.outcome,
+          actor, summary: result.summary, evidence, diagnosis: result.diagnosis || null,
+          maxAttemptsPerStage, now,
+        });
+        recovered.dispatches = [...(state.dispatches || []), { ...dispatch, status: "completed", outcome: result.outcome, summary: result.summary, completedAt: now, ...(agentMeta ? { usage: sanitizeUsage(agentMeta) } : {}) }];
+        delete recovered.currentDispatch;
+        return recovered;
+      }
+      const evidence = verifyEvidence(result.evidence, state.worktree);
+      const deferredDecision = result.outcome === "decision-deferred" ? result.decision : null;
+      let completed = completeStage(state, {
+        stage: result.stage,
+        actor,
+        outcome: result.outcome === "decision-deferred" ? "pass" : result.outcome,
+        summary: result.summary,
+        evidence,
+        deferredDecision,
+        now,
+      });
+      const finished = { ...dispatch, status: "completed", outcome: result.outcome, summary: result.summary, completedAt: now };
+      if (agentMeta) finished.usage = sanitizeUsage(agentMeta);
+      completed.dispatches = [...(state.dispatches || []), finished];
+      delete completed.currentDispatch;
+      if (result.outcome === "fail") {
+        // For a review stage the workflow's own loop runs first: a FAIL verdict
+        // there is a judgement about the code, and it belongs back with the
+        // builder. `routeStageFailure` already draws the right distinctions (review
+        // FAIL to builder, infrastructure retried in place, release conflicts kept
+        // at release) — since #56 it was simply unreachable. It returns the state
+        // unchanged when it declines, which is how the per-stage budget still ends
+        // the loop: once the stage has spent its attempts, recovery takes over and,
+        // failing that, escalates to the founder.
+        const routed = ROUTABLE_STAGES.has(result.stage)
+          ? routeStageFailure(completed, { failedStage: result.stage, maxAttemptsPerStage, now })
+          : completed;
+        completed = routed !== completed
+          ? routed
+          : startRecovery(completed, { failedStage: result.stage, actor, error: result.summary, evidence, source: "project", maxRecoveryAttempts: state.recovery?.maxAttempts || 3, now });
+      }
+      return completed;
+    },
   });
-  const finished = { ...dispatch, status: "completed", outcome: result.outcome, summary: result.summary, completedAt: now };
-  if (agentMeta) {
-    finished.usage = sanitizeUsage(agentMeta);
-  }
-  next.dispatches = [...(state.dispatches || []), finished];
-  delete next.currentDispatch;
-  if (result.outcome === "fail") {
-    // For a review stage the workflow's own loop runs first: a FAIL verdict
-    // there is a judgement about the code, and it belongs back with the
-    // builder. `routeStageFailure` already draws the right distinctions (review
-    // FAIL to builder, infrastructure retried in place, release conflicts kept
-    // at release) — since #56 it was simply unreachable. It returns the state
-    // unchanged when it declines, which is how the per-stage budget still ends
-    // the loop: once the stage has spent its attempts, recovery takes over and,
-    // failing that, escalates to the founder.
-    const routed = ROUTABLE_STAGES.has(result.stage)
-      ? routeStageFailure(next, { failedStage: result.stage, maxAttemptsPerStage, now })
-      : next;
-    next = routed !== next
-      ? routed
-      : startRecovery(next, { failedStage: result.stage, actor, error: result.summary, evidence, source: "project", maxRecoveryAttempts: state.recovery?.maxAttempts || 3, now });
-  }
-  writeState(statePath, next);
   return terminalResponse(next);
 }
 
 export function failDispatch({ statePath, dispatchId, error, maxAttemptsPerStage = 3, now = new Date().toISOString() }) {
-  const state = readState(statePath);
-  assertCurrentDispatch(state, dispatchId);
-  const dispatch = state.currentDispatch;
-  if (dispatch.kind?.startsWith("recovery-")) {
-    const next = recordRecoveryResult(state, { outcome: "fail", actor: dispatch.actor, summary: String(error), evidence: [], maxAttemptsPerStage, now });
-    next.dispatches = [...(state.dispatches || []), { ...dispatch, status: "failed", error: String(error), completedAt: now }];
-    delete next.currentDispatch;
-    writeState(statePath, next);
-    return terminalResponse(next);
-  }
-  state.status = "blocked";
-  state.blocker = { stage: dispatch.stage, outcome: "fail", summary: String(error), actor: dispatch.actor, at: now };
-  state.dispatches = [...(state.dispatches || []), { ...dispatch, status: "failed", error: String(error), completedAt: now }];
-  delete state.currentDispatch;
-  state.updatedAt = now;
-  state.events.push({ at: now, type: "dispatch-failed", stage: dispatch.stage, actor: dispatch.actor, dispatchId });
-  // Same order as the verdict path above, and for the same reason. A review
-  // member whose agent never started has nothing for the builder to fix, so
-  // `routeStageFailure` retries that stage in place rather than rebuilding the
-  // world — but it has to be reached to do so.
-  const routedFirst = ROUTABLE_STAGES.has(dispatch.stage)
-    ? routeStageFailure(state, { failedStage: dispatch.stage, targetStage: dispatch.stage, maxAttemptsPerStage, now })
-    : state;
-  const next = routedFirst !== state
-    ? routedFirst
-    : startRecovery(state, { failedStage: dispatch.stage, actor: dispatch.actor, error: String(error), source: "harness", maxRecoveryAttempts: state.recovery?.maxAttempts || 3, now });
-  writeState(statePath, next);
+  const next = mutateTransactionalState(statePath, {
+    commandId: `fail:${dispatchId}`,
+    now,
+    mutate: (state) => {
+      assertCurrentDispatch(state, dispatchId);
+      const dispatch = state.currentDispatch;
+      if (dispatch.kind?.startsWith("recovery-")) {
+        const recovered = recordRecoveryResult(state, { outcome: "fail", actor: dispatch.actor, summary: String(error), evidence: [], maxAttemptsPerStage, now });
+        recovered.dispatches = [...(state.dispatches || []), { ...dispatch, status: "failed", error: String(error), completedAt: now }];
+        delete recovered.currentDispatch;
+        return recovered;
+      }
+      const blocked = structuredClone(state);
+      blocked.status = "blocked";
+      blocked.blocker = { stage: dispatch.stage, outcome: "fail", summary: String(error), actor: dispatch.actor, at: now };
+      blocked.dispatches = [...(state.dispatches || []), { ...dispatch, status: "failed", error: String(error), completedAt: now }];
+      delete blocked.currentDispatch;
+      blocked.updatedAt = now;
+      blocked.events.push({ at: now, type: "dispatch-failed", stage: dispatch.stage, actor: dispatch.actor, dispatchId });
+      // Same order as ingestResult's verdict path above, and for the same
+      // reason: a review member whose agent never started has nothing for
+      // the builder to fix, so routeStageFailure retries that stage in
+      // place rather than rebuilding the world — but it has to be reached
+      // first, before recovery gets a chance to intercept every `fail`.
+      const routedFirst = ROUTABLE_STAGES.has(dispatch.stage)
+        ? routeStageFailure(blocked, { failedStage: dispatch.stage, targetStage: dispatch.stage, maxAttemptsPerStage, now })
+        : blocked;
+      return routedFirst !== blocked
+        ? routedFirst
+        : startRecovery(blocked, { failedStage: dispatch.stage, actor: dispatch.actor, error: String(error), source: "harness", maxRecoveryAttempts: state.recovery?.maxAttempts || 3, now });
+    },
+  });
   return terminalResponse(next);
 }
 
@@ -275,22 +326,3 @@ function toInteger(value) {
   return Math.trunc(parsed);
 }
 
-function withStateLock(statePath, action) {
-  const lockPath = `${statePath}.lock`;
-  let fd;
-  try {
-    try {
-      fd = openSync(lockPath, "wx");
-    } catch (error) {
-      if (error.code !== "EEXIST") throw error;
-      const ageMs = Date.now() - statSync(lockPath).mtimeMs;
-      if (ageMs < 5 * 60 * 1000) throw new Error("Task state is locked by another dispatcher.");
-      unlinkSync(lockPath);
-      fd = openSync(lockPath, "wx");
-    }
-    return action();
-  } finally {
-    if (fd !== undefined) closeSync(fd);
-    if (fd !== undefined && existsSync(lockPath)) unlinkSync(lockPath);
-  }
-}

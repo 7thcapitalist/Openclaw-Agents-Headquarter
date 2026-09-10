@@ -1,7 +1,9 @@
 import { openSync, closeSync, unlinkSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "fs";
 import { basename, dirname, join, resolve } from "path";
 import { homedir } from "os";
-import { isAwaitingFounderApproval, readState, resumeState, writeState } from "../../../factory/lib/task-workflow.mjs";
+import { isAwaitingFounderApproval, readState, resumeState } from "../../../factory/lib/task-workflow.mjs";
+import { mutateTransactionalState } from "../../../factory/lib/store/transactional-json.mjs";
+import { randomUUID } from "crypto";
 import { writeHandoff } from "../../../factory/lib/handoff.mjs";
 import { listProjectBriefs } from "../../../factory/lib/intel/project-brief.mjs";
 import { buildCompanyBriefing } from "../../../factory/lib/intel/founder-briefing.mjs";
@@ -1460,23 +1462,31 @@ export function resolveFounderDecision({ root, hqRoot, statePath, direction }) {
   const path = resolve(statePath);
   const allowedRoot = resolve(factoryRoot(root));
   if (!path.startsWith(`${allowedRoot}/`)) throw new Error("Task state is outside the factory state directory.");
-  const state = readState(path);
-  if (["merge-ready", "merged"].includes(state.status) && Array.isArray(state.deferredDecisions) && state.deferredDecisions.length) {
-    const at = new Date().toISOString();
-    const pending = state.deferredDecisions.find((item) => !item.founderResponse) || state.deferredDecisions[0];
-    pending.founderResponse = String(direction).trim();
-    state.events.push({ at, type: "deferred-decision-recorded", stage: pending.stage, actor: "founder", direction: pending.founderResponse, decisionId: pending.id });
-    writeState(path, state);
-    return taskView(path);
-  }
-  if (state.status !== "blocked" || state.blocker?.outcome !== "decision-required") throw new Error("Task is not waiting for a founder decision.");
-  if (state.task.risk === "high" && state.blocker?.stage === "builder") throw new Error("High-risk build approval requires the signed approval flow.");
-  const at = new Date().toISOString();
-  state.founderDecisions = [...(state.founderDecisions || []), { at, direction: String(direction).trim(), blocker: state.blocker }];
-  state.events.push({ at, type: "founder-decision-recorded", stage: state.currentStage, actor: "founder", direction: String(direction).trim() });
-  writeState(path, state);
-  const next = resumeState(state, at);
-  writeState(path, next);
-  writeHandoff({ hqRoot, statePath: path, state: next });
+  // No stable idempotency key reaches this layer today (the dashboard route
+  // does not pass one) — atomicity, not replay-dedup, is what makes this
+  // safe against a concurrent retry or resume racing here; a follow-up could
+  // thread a real key from the HTTP request to also dedupe an exact retry.
+  const commandId = `founder-decision:${randomUUID()}`;
+  const next = mutateTransactionalState(path, {
+    commandId,
+    mutate: (state) => {
+      if (["merge-ready", "merged"].includes(state.status) && Array.isArray(state.deferredDecisions) && state.deferredDecisions.length) {
+        const at = new Date().toISOString();
+        const revised = structuredClone(state);
+        const pending = revised.deferredDecisions.find((item) => !item.founderResponse) || revised.deferredDecisions[0];
+        pending.founderResponse = String(direction).trim();
+        revised.events.push({ at, type: "deferred-decision-recorded", stage: pending.stage, actor: "founder", direction: pending.founderResponse, decisionId: pending.id });
+        return revised;
+      }
+      if (state.status !== "blocked" || state.blocker?.outcome !== "decision-required") throw new Error("Task is not waiting for a founder decision.");
+      if (state.task.risk === "high" && state.blocker?.stage === "builder") throw new Error("High-risk build approval requires the signed approval flow.");
+      const at = new Date().toISOString();
+      const decided = structuredClone(state);
+      decided.founderDecisions = [...(decided.founderDecisions || []), { at, direction: String(direction).trim(), blocker: decided.blocker }];
+      decided.events.push({ at, type: "founder-decision-recorded", stage: decided.currentStage, actor: "founder", direction: String(direction).trim() });
+      return resumeState(decided, at);
+    },
+  });
+  if (next.status === "active") writeHandoff({ hqRoot, statePath: path, state: next });
   return taskView(path);
 }
