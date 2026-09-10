@@ -1,5 +1,5 @@
 import { execFileSync } from "child_process";
-import { existsSync, mkdirSync, readFileSync } from "fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "fs";
 import { basename, dirname, join, resolve } from "path";
 import { createState, taskStatePath, validateTaskContract, writeState } from "./task-workflow.mjs";
 import { writeHandoff } from "./handoff.mjs";
@@ -38,9 +38,38 @@ export function initializeTask({ hqRoot, contractPath, repo: repoInput, branch: 
   state.baseSha = baseShaResult.ok ? String(baseShaResult.stdout).trim() || null : null;
   mkdirSync(dirname(worktree), { recursive: true });
   git(repo, ["worktree", "add", "-b", branch, worktree]);
+  ensureEvidenceIgnored({ worktree, branch, git });
   writeState(statePath, state);
   writeHandoff({ hqRoot, statePath, state });
   return { task: task.id, state: statePath, branch, worktree, next: "product" };
+}
+
+// Every stage handoff tells agents to write their gate proof to `evidence/` and
+// promises that directory is git-ignored. Nothing guaranteed it: in a project
+// that does not already ignore it, the factory's own evidence files show up as
+// untracked and — because Prettier and ESLint honour .gitignore — break the
+// project's `verify` gate with warnings about factory markdown rather than
+// product code. Establish the promise once, on the task branch, before any
+// agent runs, as an isolated commit that never mixes into the deliverable.
+// Best-effort by construction: this is a convenience that keeps the factory's
+// own proof artifacts out of the deliverable, never a precondition for running
+// the task. A read-only tree, a detached index, or a commit hook that rejects
+// the change must leave initialization intact, so every failure path returns
+// false instead of propagating.
+export function ensureEvidenceIgnored({ worktree, branch, git = runGit }) {
+  try {
+    const gitignore = join(worktree, ".gitignore");
+    const current = existsSync(gitignore) ? readFileSync(gitignore, "utf8") : "";
+    if (/^\s*\/?evidence\/?\s*$/m.test(current)) return false;
+    const prefix = current && !current.endsWith("\n") ? "\n" : "";
+    appendFileSync(gitignore, `${prefix}\n# Factory gate evidence (per-task proof artifacts, never product files)\nevidence/\n`, "utf8");
+    const staged = git(worktree, ["add", ".gitignore"], { allowFailure: true });
+    if (!staged?.ok) return false;
+    const committed = git(worktree, ["commit", "-m", `chore(factory): ignore evidence/ on ${branch}`, "--no-verify"], { allowFailure: true });
+    return Boolean(committed?.ok);
+  } catch {
+    return false;
+  }
 }
 
 export function runGit(repo, args, options = {}) {
