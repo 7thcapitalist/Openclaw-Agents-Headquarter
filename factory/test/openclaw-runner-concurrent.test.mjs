@@ -118,19 +118,12 @@ async function advanceToStage(statePath, execute, target) {
   throw new Error(`never reached ${target}`);
 }
 
-// ── KNOWN REGRESSION (#56), documented not blessed ───────────────────────────
-// The two tests below assert the review-group contract the factory was designed
-// around: a review member that FAILS on the code sends the work back to the
-// builder; one that fails on infrastructure retries in place. Since #56 put
-// recovery in front of every `fail` outcome, routeStageFailure() is never
-// reached and neither happens — an ordinary "QA found a bug" burns the recovery
-// budget and then escalates to the founder.
-//
-// Rewriting these to match today's behaviour would hide the defect, so they are
-// skipped with a reason. The recommended fix is in the handoff: route an
-// explicit stage FAIL verdict through routeStageFailure(), and reserve recovery
-// for failures where the agent produced no verdict at all.
-test("a failing review member routes back to builder and discards the siblings' results", { skip: "KNOWN REGRESSION since #56 (see docs/software-factory/handoffs/2026-09-09-reliability-overhaul.md): recovery intercepts every `fail` outcome so routeStageFailure() never runs, and a reviewer/QA verdict about the code no longer returns the work to the builder. Skipped, not rewritten, so the regression stays visible." }, async () => {
+// ── the review-group contract ────────────────────────────────────────────────
+// A review member that FAILS on the code sends the work back to the builder;
+// one that fails on infrastructure retries in place. These were skipped between
+// #56 and the routing fix, because recovery sat in front of every `fail`
+// outcome and routeStageFailure() was unreachable.
+test("a failing review member routes back to builder and discards the siblings' results", async () => {
   const { statePath } = makeFixture();
   await advanceToStage(statePath, makeExecute(), "reviewer");
 
@@ -158,7 +151,7 @@ test("runConcurrentGroupIfReady returns null when not parked at a group head", a
   assert.equal(out, null);
 });
 
-test("a review member whose agent fails on infra retries in place with a legible reason, no rebuild", { skip: "KNOWN REGRESSION since #56 (see docs/software-factory/handoffs/2026-09-09-reliability-overhaul.md): recovery intercepts every `fail` outcome so routeStageFailure() never runs, and a reviewer/QA verdict about the code no longer returns the work to the builder. Skipped, not rewritten, so the regression stays visible." }, async () => {
+test("a review member whose agent fails on infra retries in place with a legible reason, no rebuild", async () => {
   const { statePath } = makeFixture();
   await advanceToStage(statePath, makeExecute(), "reviewer");
 
