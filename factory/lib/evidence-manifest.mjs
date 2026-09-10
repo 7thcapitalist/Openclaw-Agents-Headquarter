@@ -21,7 +21,7 @@
 // command inside one is ever executed by the factory.
 
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { criteriaForState } from "./evidence-criteria.mjs";
@@ -54,6 +54,29 @@ export function resolveContainedPath(worktree, relPath) {
   const abs = resolve(root, String(relPath ?? ""));
   if (abs !== root && !abs.startsWith(`${root}/`)) {
     throw new Error(`Evidence escapes worktree: ${relPath}`);
+  }
+
+  // Lexical containment alone is not containment. `resolve()` never touches the
+  // filesystem, so `evidence/passwd.link -> /etc/passwd` passed this check and
+  // was then read and hashed off the factory host — as could ~/.secrets or a
+  // file the agent can change out of band. Resolve symlinks and re-check.
+  let realAbs;
+  try {
+    realAbs = realpathSync(abs);
+  } catch {
+    // Missing file: the existence check downstream reports it properly. There is
+    // nothing to escape through yet.
+    return abs;
+  }
+  const realRoot = (() => {
+    try {
+      return realpathSync(root);
+    } catch {
+      return root;
+    }
+  })();
+  if (realAbs !== realRoot && !realAbs.startsWith(`${realRoot}/`)) {
+    throw new Error(`Evidence escapes worktree via a symlink: ${relPath}`);
   }
   return abs;
 }
@@ -149,7 +172,16 @@ export function buildManifest(state, {
       });
     }
   }
-  const byId = new Set(described.map((a) => a.id));
+  // Duplicate ids let a criterion cite "run" and silently get whichever artifact
+  // happens to be first — a fabricated screenshot shadowing the real failing
+  // command output. Ids must be unique.
+  const byId = new Set();
+  for (const artifact of described) {
+    if (byId.has(artifact.id)) {
+      throw new Error(`Duplicate evidence artifact id: ${artifact.id}`);
+    }
+    byId.add(artifact.id);
+  }
 
   const proofs = normalizeCriteriaProofs(state, stage, criteriaProofs, byId);
 
@@ -272,7 +304,7 @@ export function verifyManifest(state, manifest, {
   if (dispatchId && manifest.dispatchId !== dispatchId) {
     fail(`Evidence belongs to dispatch ${manifest.dispatchId}, not ${dispatchId}.`);
   }
-  if (attempt !== null && Number(manifest.attempt) !== Number(attempt)) {
+  if (attempt !== null && attempt !== undefined && Number(manifest.attempt) !== Number(attempt)) {
     fail(`Evidence is from attempt ${manifest.attempt}, not ${attempt}.`);
   }
   if (commitSha && manifest.commitSha && manifest.commitSha !== commitSha) {
@@ -333,8 +365,22 @@ export function verifyManifest(state, manifest, {
         fail(`Criterion ${criterion.id} cites ${proof.path}, which exited ${proof.exitStatus}.`);
       }
     }
-    if (!commandProofs.length && !cited.some((a) => a.type === "manual-scenario" || a.type === "screenshot")) {
+    const humanProofs = cited.filter((a) => a.type === "manual-scenario" || a.type === "screenshot");
+    if (!commandProofs.length && !humanProofs.length) {
       fail(`Criterion ${criterion.id} cites no executable or observable proof.`);
+    }
+    // Human evidence — a screenshot, a manual scenario — genuinely cannot carry
+    // a subprocess exit status, so it is accepted as proof. What stops a text
+    // file relabelled "screenshot" from proving a test is not the type (which is
+    // agent-supplied and never checked against content) but `kind`: an agent's
+    // own result can only ever produce `asserted`, which is rejected above.
+    // Reaching here on human evidence means a stage independent of the builder
+    // attested it.
+    //
+    // It is still recorded as human-attested rather than machine-observed, so
+    // the completion report can say which kind of proof a criterion rests on.
+    if (!commandProofs.length && humanProofs.length) {
+      criterion.attestation = "human";
     }
   }
 
