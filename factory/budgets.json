@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "_comment": "Founder-set cost visibility thresholds. Enforcement is alert-only by design: crossing a limit reports, it never pauses an agent, cancels work, or overrides an approval. A hard stop requires a founder Decision Card and fault-injection proof (docs/software-factory/PAPERCLIP_BUDGET_ALERTS.md). limitMicros is USD micros: 1_000_000 = $1.",
+  "policies": [
+    {
+      "id": "company-monthly",
+      "scopeType": "company",
+      "scopeId": "openclaw",
+      "window": "calendar-month-utc",
+      "limitMicros": 200000000,
+      "warnPercent": 75
+    },
+    {
+      "id": "project-openclaw-factory-monthly",
+      "scopeType": "project",
+      "scopeId": "openclaw-factory",
+      "window": "calendar-month-utc",
+      "limitMicros": 120000000,
+      "warnPercent": 75
+    },
+    {
+      "id": "project-lifemaxing-monthly",
+      "scopeType": "project",
+      "scopeId": "lifemaxing",
+      "window": "calendar-month-utc",
+      "limitMicros": 60000000,
+      "warnPercent": 75
+    }
+  ]
+}
