@@ -110,6 +110,7 @@ import { defaultStateRoot } from "../../factory/lib/natural-language-intake.mjs"
 import { readDeploymentStatus } from "../../factory/lib/deploy/status.mjs";
 import { addOvernightItem, readOvernightQueue, removeOvernightItem, startOvernight, stopOvernight, overnightLimit } from "./lib/overnightQueue.mjs";
 import { buildOperationsSnapshot } from "../../factory/lib/hq/operations.mjs";
+import { buildDecisionHistory } from "../../factory/lib/hq/decision-history.mjs";
 import { buildPermissionsSnapshot } from "../../factory/lib/hq/permissions-snapshot.mjs";
 import { buildGoalsSnapshot } from "../../factory/lib/hq/goals.mjs";
 import { buildBudgetSnapshot } from "../../factory/lib/hq/budget-snapshot.mjs";
@@ -848,6 +849,14 @@ app.get("/api/hq/operations", (_req, res) => {
 app.get("/api/hq/permissions", (_req, res) => {
   try { res.json(buildPermissionsSnapshot({ hqRoot: ROOT })); }
   catch (e) { res.status(500).json({ version: 1, available: false, enforcement: "unknown", error: String(e.message || e) }); }
+});
+
+// Read-only, and deliberately has no POST sibling. The authority is the
+// founder's signed assertion verified in task-workflow.mjs; this only reports
+// what already happened.
+app.get("/api/hq/decisions", (_req, res) => {
+  try { res.json(buildDecisionHistory({ hqRoot: ROOT })); }
+  catch (e) { res.status(500).json({ version: 1, available: false, error: String(e.message || e) }); }
 });
 
 app.get("/api/hq/goals", (_req, res) => {
