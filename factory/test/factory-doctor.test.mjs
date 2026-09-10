@@ -98,7 +98,9 @@ test("runDoctor composes all checks with an injected run fn", () => {
   };
   const run = (args) => ({ ok: true, out: canned[args.join(" ")] ?? "" });
   const results = runDoctor({ run, configText: JSON.stringify({ plugins: { entries: { acpx: { config: { agents: { cursor: {} } } } } } }), hqRoot: mkdtempSync(join(tmpdir(), "doctor-compose-")) });
-  assert.equal(results.length, 6);
+  assert.equal(results.length, 7);
   assert.equal(results.find((r) => r.line.includes("gateway")).level, "ok");
   assert.equal(results.find((r) => r.line.includes("OpenAI")).level, "ok");
+  // Seat auth says a route can be reached; this one says it finishes work.
+  assert.ok(results.some((r) => /dispatch history|gate stage\(s\)/.test(r.line)));
 });

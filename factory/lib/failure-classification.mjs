@@ -58,9 +58,17 @@ const INFRA = new RegExp([
 
 const FACTORY = /factory|orchestrator|workflow|state\.json|dispatch|protocol|invalid .*result|unsupported .*version|cannot advance|expected stage/i;
 
+// The agent ran to completion and still produced no gate artifact. Checked
+// before INFRA because "no result file" is the symptom of both a dropped
+// connection and a model that answers and stops — only the first is transient,
+// and only INFRA-class blockers are auto-retried, so conflating them spends a
+// task's revival budget re-running a route that cannot succeed.
+export const AGENT_STALL_RE = /completed its turn without writing a result/i;
+
 export function classifyFailure({ error = "", outcome = "fail", source = "execution", founderDecision = false } = {}) {
   const text = String(error || "");
   if (founderDecision || outcome === "decision-required") return "FOUNDER_DECISION_REQUIRED";
+  if (AGENT_STALL_RE.test(text)) return "AGENT_ERROR";
   if (INFRA.test(text)) return "INFRASTRUCTURE_ERROR";
   if (source === "factory" || FACTORY.test(text)) return "FACTORY_ERROR";
   if (source === "agent" || source === "harness") return "AGENT_ERROR";
