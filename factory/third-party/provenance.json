@@ -36,6 +36,9 @@
     "classification": "reference",
     "notes": "Documents the pinned Paperclip source and HQ-specific adaptations."
   },
+  { "localPath": "factory/lib/hq/agents.mjs", "sourceId": "paperclip", "sourcePath": "packages/db/src/schema/agents.ts", "classification": "adapted", "notes": "Adapts organization, capability, availability, adapter-reference, and budget metadata into the existing HQ registry." },
+  { "localPath": "factory/test/hq-agents.test.mjs", "sourceId": "paperclip", "sourcePath": "packages/db/src/schema/agents.ts", "classification": "inspired", "notes": "Tests Paperclip-derived organization metadata and HQ-specific non-authority constraints." },
+  { "localPath": "docs/software-factory/PAPERCLIP_AGENT_ORG_MODEL.md", "sourceId": "paperclip", "sourcePath": "packages/db/src/schema/agents.ts", "classification": "reference", "notes": "Documents source attribution and safe HQ mapping." },
   { "localPath": "factory/lib/packages/agent-company-linter.mjs", "sourceId": "paperclip", "sourcePath": "docs/companies/companies-spec.md", "classification": "adapted", "notes": "Implements the safe read-only subset of Paperclip Agent Companies discovery and validation." },
   { "localPath": "factory/test/agent-company-linter.test.mjs", "sourceId": "paperclip", "sourcePath": "docs/companies/companies-spec.md", "classification": "inspired", "notes": "Tests portable package and safety behavior derived from the specification." },
   { "localPath": "scripts/lint-agent-company.mjs", "sourceId": "paperclip", "sourcePath": "docs/companies/companies-spec.md", "classification": "inspired", "notes": "Provides a read-only JSON CLI for the adapted package linter." },
