@@ -57,3 +57,21 @@ function readFileUtf8(path) {
 function firstLine(text) {
   return text.split("\n").map((s) => s.trim()).filter(Boolean).find((s) => /Error|error/.test(s)) || "did not parse";
 }
+
+// A conflict marker in a .css or .html file breaks the asset silently: no test
+// parses it, the suite stays green, and the dashboard ships with a broken
+// stylesheet. This repository resolves union conflicts in these files on almost
+// every merge, so the cheap check is worth having.
+test("no unresolved conflict markers in anything the dashboard serves", () => {
+  const marker = /^(?:<{7}|={7}|>{7})(?:\s|$)/m;
+  const offenders = [];
+  for (const dir of [PUBLIC_DIR, join(PUBLIC_DIR, "lib")]) {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (!entry.isFile()) continue;
+      const path = join(dir, entry.name);
+      const text = execFileSync("cat", [path], { encoding: "utf8" });
+      if (marker.test(text)) offenders.push(path.replace(`${PUBLIC_DIR}/`, ""));
+    }
+  }
+  assert.deepEqual(offenders, [], `unresolved merge conflict markers in:\n  ${offenders.join("\n  ")}`);
+});
