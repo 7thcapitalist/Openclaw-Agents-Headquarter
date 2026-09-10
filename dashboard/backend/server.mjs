@@ -112,6 +112,7 @@ import { addOvernightItem, readOvernightQueue, removeOvernightItem, startOvernig
 import { buildOperationsSnapshot } from "../../factory/lib/hq/operations.mjs";
 import { buildPermissionsSnapshot } from "../../factory/lib/hq/permissions-snapshot.mjs";
 import { buildGoalsSnapshot } from "../../factory/lib/hq/goals.mjs";
+import { buildBudgetSnapshot } from "../../factory/lib/hq/budget-snapshot.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const execFileAsync = promisify(execFile);
@@ -852,6 +853,14 @@ app.get("/api/hq/permissions", (_req, res) => {
 app.get("/api/hq/goals", (_req, res) => {
   try { res.json(buildGoalsSnapshot({ hqRoot: ROOT })); }
   catch (e) { res.status(500).json({ version: 1, available: false, error: String(e.message || e) }); }
+});
+
+// Read-only and alert-only. Policies are tracked in factory/budgets.json and
+// change by pull request; nothing here can raise a limit, and crossing one
+// reports rather than stopping any work.
+app.get("/api/hq/budgets", (_req, res) => {
+  try { res.json(buildBudgetSnapshot({ hqRoot: ROOT })); }
+  catch (e) { res.status(500).json({ version: 1, available: false, enforcement: "alert-only", error: String(e.message || e) }); }
 });
 
 app.get("/api/command-center/home", async (_req, res) => {

@@ -292,6 +292,46 @@
       "notes": "Documents the supported Paperclip package subset and safeguards."
     },
     {
+      "localPath": "factory/lib/hq/budget-snapshot.mjs",
+      "sourceId": "paperclip",
+      "sourcePath": "server/src/services/budgets.ts",
+      "classification": "adapted",
+      "notes": "Evaluates Paperclip-derived budget policies against the HQ cost ledger, pricing unpriced events at read time from factory/pricing.json without rewriting the append-only ledger."
+    },
+    {
+      "localPath": "factory/lib/hq/budget-policies.mjs",
+      "sourceId": "paperclip",
+      "sourcePath": "server/src/services/budgets.ts",
+      "classification": "inspired",
+      "notes": "Tracks budget policy intent in Git; the evaluator owns the schema so there is one definition of a valid policy."
+    },
+    {
+      "localPath": "factory/budgets.json",
+      "sourceId": "paperclip",
+      "sourcePath": "packages/db/src/schema/budgets.ts",
+      "classification": "inspired",
+      "notes": "Records Paperclip budget scope/window/limit fields as reviewed founder intent rather than runtime-editable rows."
+    },
+    {
+      "localPath": "dashboard/backend/public/lib/budgetView.mjs",
+      "sourceId": "paperclip",
+      "sourcePath": "ui/src/pages/Costs.tsx",
+      "classification": "inspired",
+      "notes": "Adapts Paperclip budget presentation into a read-only alert-only founder panel that distinguishes derived from provider-reported prices."
+    },
+    {
+      "localPath": "factory/test/budget-snapshot.test.mjs",
+      "sourceId": "paperclip",
+      "sourcePath": "server/src/services/budgets.ts",
+      "classification": "inspired",
+      "notes": "Tests derived pricing, scope filtering, unavailable states, and degraded sources."
+    },
+    {
+      "localPath": "factory/test/budget-panel.test.mjs",
+      "sourceId": "paperclip",
+      "sourcePath": "ui/src/pages/Costs.tsx",
+      "classification": "inspired",
+      "notes": "Tests worst-state headers, escaping, bounded bars, and the alert-only disclosure.",
       "localPath": "factory/lib/objective/graph-observer.mjs",
       "sourceId": "paperclip",
       "sourcePath": "server/src/services/issue-dependency-wakeups.ts",

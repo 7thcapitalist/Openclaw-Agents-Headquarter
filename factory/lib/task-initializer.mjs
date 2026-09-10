@@ -1,5 +1,5 @@
 import { execFileSync } from "child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { basename, dirname, join, resolve } from "path";
 import { createState, taskStatePath, validateTaskContract, writeState } from "./task-workflow.mjs";
 import { writeHandoff } from "./handoff.mjs";
@@ -69,13 +69,37 @@ export function ensureEvidenceIgnored({ worktree, branch, git = runGit }) {
     if (/^\s*\/?evidence\/?\s*$/m.test(current)) return false;
     const prefix = current && !current.endsWith("\n") ? "\n" : "";
     appendFileSync(gitignore, `${prefix}\n# Factory gate evidence (per-task proof artifacts, never product files)\nevidence/\n`, "utf8");
-    const staged = git(worktree, ["add", ".gitignore"], { allowFailure: true });
+    const paths = [".gitignore", ...ensureEvidenceLintIgnored(worktree)];
+    const staged = git(worktree, ["add", ...paths], { allowFailure: true });
     if (!staged?.ok) return false;
     const committed = git(worktree, ["commit", "-m", `chore(factory): ignore evidence/ on ${branch}`, "--no-verify"], { allowFailure: true });
     return Boolean(committed?.ok);
   } catch {
     return false;
   }
+}
+
+// Prettier reads .gitignore, so ignoring evidence/ there is enough for it.
+// ESLint 9's flat config does not: it dropped .eslintignore and honours only
+// its own `ignores`, so a QA agent's scratch .ts under evidence/ still fails
+// `eslint . --max-warnings=0` on a file that is not product code. Add the entry
+// to the project's existing top-level ignores list when we can do it safely;
+// anything unrecognised is left untouched rather than rewritten.
+export function ensureEvidenceLintIgnored(worktree) {
+  for (const name of ["eslint.config.mjs", "eslint.config.js", "eslint.config.cjs"]) {
+    const configPath = join(worktree, name);
+    if (!existsSync(configPath)) continue;
+    const current = readFileSync(configPath, "utf8");
+    if (/["'`]evidence\/\*\*["'`]/.test(current)) return [];
+    const ignores = current.match(/(\n\s*)ignores:\s*\[/);
+    if (!ignores) return [];
+    const insertAt = current.indexOf(ignores[0]) + ignores[0].length;
+    const indent = `${ignores[1].replace(/\n/, "")}  `;
+    const entry = `\n${indent}// Factory gate evidence, not product code.\n${indent}"evidence/**",`;
+    writeFileSync(configPath, current.slice(0, insertAt) + entry + current.slice(insertAt), "utf8");
+    return [name];
+  }
+  return [];
 }
 
 // Denials are audited into the task's own log where one exists; before
