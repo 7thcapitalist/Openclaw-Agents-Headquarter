@@ -126,6 +126,7 @@ import { buildRunTimeline } from "../../factory/lib/hq/run-timeline.mjs";
 import { buildDecisionHistory } from "../../factory/lib/hq/decision-history.mjs";
 import { buildAgentScorecards } from "../../factory/lib/hq/agent-scorecards.mjs";
 import { buildPermissionsSnapshot } from "../../factory/lib/hq/permissions-snapshot.mjs";
+import { buildBlastRadiusReport } from "../../factory/lib/hq/blast-radius.mjs";
 import { buildGoalsSnapshot } from "../../factory/lib/hq/goals.mjs";
 import { buildBudgetSnapshot } from "../../factory/lib/hq/budget-snapshot.mjs";
 
@@ -1038,6 +1039,15 @@ app.get("/api/hq/operations", (_req, res) => {
 // become a second place where company intent is edited without review.
 // Read-only. Grants live in factory/permissions.json and change by pull
 // request; there is no route that can grant a capability to anything.
+// Read-only and alert-only. #141 bounds WHICH work an agent may touch; this
+// reports HOW MUCH one run actually touched. Nothing here refuses anything --
+// the threshold has to be observed against real objective runs before it can
+// stop any of them, and enforcement is a separate change with its own evidence.
+app.get("/api/hq/blast-radius", (_req, res) => {
+  try { res.json(buildBlastRadiusReport({ hqRoot: ROOT })); }
+  catch (e) { res.status(500).json({ version: 1, available: false, enforcement: "alert-only", error: String(e.message || e) }); }
+});
+
 app.get("/api/hq/permissions", (_req, res) => {
   try { res.json(buildPermissionsSnapshot({ hqRoot: ROOT })); }
   catch (e) { res.status(500).json({ version: 1, available: false, enforcement: "unknown", error: String(e.message || e) }); }
