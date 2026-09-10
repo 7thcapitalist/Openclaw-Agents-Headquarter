@@ -151,7 +151,7 @@ export function createState({ task, repo, branch, worktree, founderPublicKey = n
   return state;
 }
 
-export function completeStage(state, { stage, actor, outcome, summary, evidence = [], manifest = null, dispatchId = null, commitSha = null, deferredDecision = null, now = new Date().toISOString() }) {
+export function completeStage(state, { stage, actor, outcome, summary, evidence = [], manifest = null, agentEvidence = null, dispatchId = null, commitSha = null, deferredDecision = null, now = new Date().toISOString() }) {
   if (state.status !== "active") throw new Error(`Task is ${state.status}; it cannot advance.`);
   if (stage !== state.currentStage) throw new Error(`Expected stage ${state.currentStage}, received ${stage}.`);
   if (actor !== state.assignments[stage]) {
@@ -199,8 +199,12 @@ export function completeStage(state, { stage, actor, outcome, summary, evidence 
       actor,
       dispatchId: dispatchId || `${stage}-${Date.parse(now) || Date.now()}`,
       commitSha: commitSha || verifiedCommitFor(next, stage),
-      artifacts: evidence,
-      criteriaProofs: [],
+      // Prefer the agent's described artifacts and criterion claims when it
+      // supplied them; fall back to bare paths otherwise. Either way the digests
+      // are computed here, from the real files — never taken from the agent.
+      artifacts: agentEvidence?.artifacts?.length ? agentEvidence.artifacts : evidence,
+      criteriaProofs: agentEvidence?.criteriaProofs || [],
+      limitations: agentEvidence?.limitations || null,
       verdict: outcome,
       // Bind what is on disk; do not fail the transition over an artifact the
       // protocol layer already checks with verifyEvidence().
@@ -486,38 +490,23 @@ export function recordVerifiedCommit(state, { sha, actor = "system", now = new D
   next.updatedAt = now;
 
   if (previous && previous !== commit) {
-    // Re-opening the review stages is the correct end state — evidence produced
-    // against a tree that no longer exists should not count. But doing it while
-    // the pipeline still routes review FAILs back to the builder makes the
-    // builder re-run, which changes HEAD, which invalidates again: the loop
-    // exhausts the per-stage attempt budget and the task dies asking the founder
-    // to raise it. Wiring the two together is its own piece of work.
-    //
-    // Until then the divergence is RECORDED as stale rather than acted on, so
-    // the founder sees it in the ledger and the completion report instead of the
-    // factory quietly pretending the old verdicts still apply.
-    const enforce = process.env.FACTORY_REQUIRE_EVIDENCE_MANIFESTS === "1";
+    // Evidence produced against a tree that no longer exists does not count, so
+    // the review stages re-open. This is what makes "changing code after QA
+    // invalidates review/QA/security" true rather than aspirational.
     const invalidated = [];
     for (const stage of STAGES) {
       if (!stageMustProveCriteria(stage)) continue;
       const result = next.stages[stage];
       if (!result || result.status === "pending") continue;
       invalidated.push(stage);
-      if (enforce) next.stages[stage] = { status: "pending", invalidatedBy: { previous, commit, at: now } };
+      next.stages[stage] = { status: "pending", invalidatedBy: { previous, commit, at: now } };
     }
-    if (invalidated.length && enforce) {
+    if (invalidated.length) {
       // Re-open the pipeline at the first stage whose verdict no longer applies.
       const firstIndex = Math.min(...invalidated.map((stage) => STAGES.indexOf(stage)));
       next.currentStage = STAGES[firstIndex];
       next.status = "active";
       delete next.blocker;
-    }
-    if (invalidated.length && !enforce) {
-      // Mark them stale in place: the verdict stands, but it is labelled as
-      // belonging to a tree that has moved on.
-      for (const stage of invalidated) {
-        next.stages[stage] = { ...state.stages[stage], staleSince: { previous, commit, at: now } };
-      }
     }
     next.events.push({
       at: now,
@@ -596,21 +585,6 @@ export function assertReleaseReady(state) {
   // Legacy tasks keep the old gate. They are reported as `legacy` evidence and
   // are never described as verified.
   if (evidencePolicyOf(state) !== EVIDENCE_POLICY_STRONG) return;
-
-  // Enforcement switch.
-  //
-  // The verification logic below is implemented and tested — a fabricated file,
-  // a tampered artifact, evidence from another dispatch, and a post-QA source
-  // change are all rejected (see evidence-manifest.test.mjs). What is NOT yet
-  // true is that the running agents produce manifests: the agent-result schema
-  // has no field for them, so switching this on today would block every task on
-  // a contract no agent has been asked to satisfy.
-  //
-  // So the gate is off by default and the evidence is recorded, digested and
-  // surfaced regardless — weak evidence reads `asserted`, never `verified`.
-  // Flip FACTORY_REQUIRE_EVIDENCE_MANIFESTS=1 once agents emit manifests.
-  // See docs/software-factory/EVIDENCE_BACKED_COMPLETION.md.
-  if (process.env.FACTORY_REQUIRE_EVIDENCE_MANIFESTS !== "1") return;
 
   const verified = state.verifiedCommit?.sha || null;
   if (!verified) {
