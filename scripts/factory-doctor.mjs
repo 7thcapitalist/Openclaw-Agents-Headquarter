@@ -118,6 +118,83 @@ export function checkFactoryActivity(hqRoot) {
   return { level: "ok", line: `${stateFiles.length} factory task(s) recorded` };
 }
 
+
+// Does every gate agent's route actually finish work?
+//
+// `openclaw models` proves a seat authenticates; it cannot tell you whether the
+// model behind a role can complete an agentic task. On lifemaxing the qa agent's
+// primary was github-copilot/gpt-4.1 while every other gate agent was on
+// claude-sonnet-5. It authenticated fine, answered every dispatch with a plan,
+// and stopped without writing a result — failing the QA gate silently until a
+// human read a redacted executor trace.
+//
+// The recorded dispatch history already answers this: for each (stage, model)
+// route, did it ever produce a gate artifact, or only ever leave none?
+const NO_ARTIFACT_RE = /no result file|produced no result|did not write|could not run|without writing a result/i;
+
+export function checkAgentProductivity(hqRoot, configText = null) {
+  const dir = join(hqRoot, "dashboard", "backend", "data", "factory");
+  const files = [];
+  const walk = (d) => {
+    if (!existsSync(d)) return;
+    for (const e of readdirSync(d, { withFileTypes: true })) {
+      const p = join(d, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (e.name === "state.json") files.push(p);
+    }
+  };
+  walk(dir);
+  if (!files.length) return { level: "ok", line: "no dispatch history to judge agent routes on yet" };
+
+  // Per gate stage. Recovery dispatches carry the failed stage's name but are a
+  // different job on a different route, so counting them would let a working
+  // recovery agent mask a gate agent that never finishes anything.
+  const stages = new Map();
+  for (const file of files) {
+    let state;
+    try { state = JSON.parse(readFileSync(file, "utf8")); } catch { continue; }
+    for (const d of state.dispatches || []) {
+      if (!d.stage) continue;
+      if (d.kind && d.kind !== "stage") continue;
+      const seen = stages.get(d.stage) || { stage: d.stage, productive: 0, barren: 0, models: new Set() };
+      if (d.usage?.model) seen.models.add(`${d.usage.provider || "?"}/${d.usage.model}`);
+      const text = String(d.summary || d.error || "");
+      if (d.status === "failed" || NO_ARTIFACT_RE.test(text)) seen.barren += 1;
+      else if (d.outcome) seen.productive += 1;
+      stages.set(d.stage, seen);
+    }
+  }
+
+  // Suspect once a stage has failed to produce an artifact more than once and
+  // has never produced one: the route authenticates but does not finish work.
+  const suspect = [...stages.values()].filter((r) => r.barren >= 2 && r.productive === 0);
+  if (!suspect.length) {
+    const proven = [...stages.values()].filter((r) => r.productive > 0).length;
+    return { level: "ok", line: `${proven} gate stage(s) have produced artifacts on their current route` };
+  }
+
+  let entries = {};
+  try {
+    entries = JSON.parse(configText ?? (existsSync(OPENCLAW_CONFIG) ? readFileSync(OPENCLAW_CONFIG, "utf8") : "{}"))?.agents?.entries || {};
+  } catch { /* config is advisory here */ }
+
+  const worst = suspect
+    .map((r) => {
+      const route = [...r.models].join(", ") || entries[r.stage]?.model?.primary || "unknown route";
+      return `${r.stage} via ${route} (${r.barren} dispatches, 0 artifacts)`;
+    })
+    .join("; ");
+  const primaries = Object.entries(entries)
+    .filter(([id]) => ["architect", "reviewer", "qa", "security", "release"].includes(id))
+    .map(([id, e]) => `${id}=${e?.model?.primary || "inherited"}`)
+    .join(", ");
+  return {
+    level: "warn",
+    line: `gate stage(s) that never produced an artifact: ${worst}`,
+    detail: `That route authenticates but does not finish the task — re-point it at a model that does.${primaries ? ` Gate primaries — ${primaries}.` : ""}`,
+  };
+}
+
 export function checkGateway(daemonOut) {
   if (/Runtime:\s*running/i.test(daemonOut) && /probe:\s*ok/i.test(daemonOut)) return { level: "ok", line: "OpenClaw gateway running, probe ok" };
   if (/Runtime:\s*running/i.test(daemonOut)) return { level: "warn", line: "gateway running but probe not confirmed" };
@@ -135,6 +212,7 @@ export function runDoctor({ run = realRun, configText = null, hqRoot = HQ_ROOT }
     checkSessions(run(["sessions", "--all-agents", "--json", "--limit", "all"]).out),
     checkAcpxAgents(cfg),
     checkFactoryActivity(hqRoot),
+    checkAgentProductivity(hqRoot, cfg),
   ];
   return results;
 }

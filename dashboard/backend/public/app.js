@@ -7,6 +7,7 @@ import { renderFounderInboxCard, renderFounderInboxEmpty } from "/lib/founderInb
 import { goalsPanel } from "/lib/goalsView.mjs";
 import { interactionsSection } from "/lib/interactionsView.mjs";
 import { retentionPanel } from "/lib/retentionView.mjs";
+import { runTimelineSection } from "/lib/timelineView.mjs";
 import { decisionsPanel } from "/lib/decisionsView.mjs";
 import { scorecardsPanel } from "/lib/scorecardsView.mjs";
 import { budgetPanel } from "/lib/budgetView.mjs";
@@ -797,7 +798,7 @@ import { permissionsPanel } from "/lib/permissionsView.mjs";
     return `<span class="badge ${tone}">${esc(status || "pending")}</span>`;
   }
 
-  function renderExecutionView(x, thread) {
+  function renderExecutionView(x, thread, timeline) {
     const blocked = x.blocker || null;
     const events = (x.events || []).slice().reverse();
     const stageLabel = { product: "Shaping the outcome", architect: "Designing the approach", builder: "Building", reviewer: "Independent review", qa: "Quality check", security: "Security check", release: "Preparing delivery" };
@@ -806,7 +807,7 @@ import { permissionsPanel } from "/lib/permissionsView.mjs";
     return `<div class="operation-room"><header class="operation-header"><div><span class="eyebrow">${esc(x.project || "Factory")} · live operation</span><h2>${esc(title)}</h2><p>${esc(x.currentActivity || (blocked ? "The team is waiting for a decision." : "The team is coordinating the next move."))}</p></div><div class="operation-stat"><strong>${x.elapsedMs != null ? esc(fmtDuration(x.elapsedMs)) : "—"}</strong><span>in motion</span></div></header>
       <div class="operation-lane">${(x.stages || []).map((s, i) => `<div class="lane-step lane-${esc(s.status)}"><div class="lane-marker">${s.status === "completed" ? "✓" : s.status === "working" ? "●" : "○"}</div><div class="lane-copy"><span>${esc(humanStatus[s.status] || s.status)}</span><strong>${esc(s.agent || "Factory team")}</strong><p>${esc(s.activity || stageLabel[s.stage] || s.stage)}</p>${s.status === "working" ? `<em>Working now</em>` : ""}</div>${i < (x.stages || []).length - 1 ? `<div class="lane-connector"></div>` : ""}</div>`).join("")}</div>
       ${blocked ? `<section class="operation-callout ${blocked.autoRecovering ? "is-recovering" : ""}"><span class="eyebrow">${blocked.autoRecovering ? "Factory recovery" : blocked.needsFounder ? "Your attention" : "Needs attention"}</span><strong>${esc(blocked.headline || "The team needs your direction")}</strong><p>${esc(blocked.detail || (blocked.needsFounder ? "This is the point where the factory cannot safely decide for you." : "The team will continue when this is resolved."))}</p></section>` : ""}
-      <div class="operation-grid"><section><div class="operation-section-title"><span class="eyebrow">Handoffs &amp; activity</span><h3>Watch the team work</h3></div><div class="handoff-stream">${events.length ? events.map((e) => `<div class="handoff-item"><span class="handoff-line"></span><time>${esc(fmtTime(e.at))}</time><div><strong>${esc(e.source || "Factory")}${e.destination ? ` <span>→</span> ${esc(e.destination)}` : ""}</strong><p>${esc(e.message)}</p></div></div>`).join("") : `<p class="quiet-state">The first handoff is being prepared.</p>`}</div></section><aside><div class="operation-section-title"><span class="eyebrow">Evidence</span><h3>Confidence</h3></div><div class="confidence-list"><div><strong>${(x.stages || []).filter((s) => s.status === "completed").length}</strong><span>stages complete</span></div><div><strong>${(x.evidence || []).length}</strong><span>proof artifacts</span></div><div><strong>${blocked ? "Paused" : "Protected"}</strong><span>${blocked ? "awaiting direction" : "within factory gates"}</span></div></div>${x.github?.prUrl ? `<a class="btn secondary" href="${esc(x.github.prUrl)}" target="_blank" rel="noreferrer">Open delivery ↗</a>` : ""}</aside></div>${thread === undefined ? "" : interactionsSection(thread, { esc, fmtTime })}</div>`;
+      <div class="operation-grid"><section><div class="operation-section-title"><span class="eyebrow">Handoffs &amp; activity</span><h3>Watch the team work</h3></div><div class="handoff-stream">${events.length ? events.map((e) => `<div class="handoff-item"><span class="handoff-line"></span><time>${esc(fmtTime(e.at))}</time><div><strong>${esc(e.source || "Factory")}${e.destination ? ` <span>→</span> ${esc(e.destination)}` : ""}</strong><p>${esc(e.message)}</p></div></div>`).join("") : `<p class="quiet-state">The first handoff is being prepared.</p>`}</div></section><aside><div class="operation-section-title"><span class="eyebrow">Evidence</span><h3>Confidence</h3></div><div class="confidence-list"><div><strong>${(x.stages || []).filter((s) => s.status === "completed").length}</strong><span>stages complete</span></div><div><strong>${(x.evidence || []).length}</strong><span>proof artifacts</span></div><div><strong>${blocked ? "Paused" : "Protected"}</strong><span>${blocked ? "awaiting direction" : "within factory gates"}</span></div></div>${x.github?.prUrl ? `<a class="btn secondary" href="${esc(x.github.prUrl)}" target="_blank" rel="noreferrer">Open delivery ↗</a>` : ""}</aside></div>${thread === undefined ? "" : interactionsSection(thread, { esc, fmtTime })}${timeline === undefined ? "" : runTimelineSection(timeline, { esc, fmtTime })}</div>`;
   }
 
   async function openExecutionView(id) {
@@ -859,13 +860,15 @@ import { permissionsPanel } from "/lib/permissionsView.mjs";
     openModal("Task execution", `<p class="muted">Loading the durable execution record…</p>`);
     const refresh = async () => {
       try {
-        const [execution, thread] = await Promise.all([
+        const [execution, thread, timeline] = await Promise.all([
           apiJson(`/api/founder/tasks/${encodeURIComponent(id)}/execution`),
-          // A failing thread must not hide the execution view: the stage lane is
-          // the founder's primary read, comments are context.
+          // Neither a failing thread nor a missing timeline may hide the
+          // execution view: the stage lane is the founder's primary read,
+          // comments are context and the timeline is depth.
           apiJson(`/api/founder/tasks/${encodeURIComponent(id)}/interactions`).catch(() => null),
+          apiJson(`/api/founder/tasks/${encodeURIComponent(id)}/timeline`).catch(() => null),
         ]);
-        if (!modal.hidden) modalBody.innerHTML = renderExecutionView(execution, thread);
+        if (!modal.hidden) modalBody.innerHTML = renderExecutionView(execution, thread, timeline);
         wireInteractionForm(id);
         if (execution.status !== "active" && executionPoll) { clearInterval(executionPoll); executionPoll = null; }
       } catch (e) {

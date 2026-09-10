@@ -3,6 +3,53 @@ import { dirname, join } from "path";
 import { assembleAgentContext } from "./hq/company-context.mjs";
 import { buildKnowledgeBlock } from "./learning/handoff-inject.mjs";
 
+
+// A verified recovery re-enters the failed stage so the gate is earned rather
+// than granted. But `state.recovery.active` is cleared at that moment, so the
+// re-dispatched agent used to receive nothing at all about the cycle that just
+// ran — the diagnosis, the repair and the independent verification were all
+// recorded in state.json and then never shown to the one agent that needed
+// them. On lifemaxing the recovery agent ran the project's whole verify gate
+// and an independent verifier confirmed it, and the re-dispatched qa agent was
+// handed a blank prompt and started over.
+function settledRecoveryFor(state, stage) {
+  if (state.recovery?.active) return null;
+  const attempts = (state.recovery?.attempts || []).filter(
+    (attempt) => attempt.failedStage === stage && attempt.diagnosis,
+  );
+  return attempts.at(-1) || null;
+}
+
+function recoveryFindingsBlock(attempt) {
+  if (!attempt) return "";
+  const paths = (entries) => (entries || []).map((e) => e.path).filter(Boolean).join(", ");
+  const lines = [
+    `## What recovery already established`,
+    "",
+    `A recovery cycle ran on this stage before you were dispatched (attempt ${attempt.number}, ${attempt.status || "unknown"}).`,
+    "",
+    `- Original failure: ${attempt.error || "unrecorded"}`,
+    `- Classified as: ${attempt.classification || "unknown"} (repair target: ${attempt.repairTarget || "unknown"})`,
+  ];
+  if (attempt.diagnosis?.summary) lines.push(`- Diagnosis: ${attempt.diagnosis.summary}`);
+  if (attempt.repair) lines.push(`- Repair: ${attempt.repair.status || "unknown"}${attempt.repair.summary ? ` — ${attempt.repair.summary}` : ""}`);
+  if (attempt.verification) {
+    lines.push(`- Independent verification: ${attempt.verification.outcome || "unknown"}${attempt.verification.summary ? ` — ${attempt.verification.summary}` : ""}`);
+    const ev = paths(attempt.verification.evidence);
+    if (ev) lines.push(`- Verification evidence: ${ev}`);
+  }
+  const diagEvidence = paths(attempt.diagnosis?.evidence);
+  if (diagEvidence) lines.push(`- Diagnosis evidence: ${diagEvidence}`);
+  lines.push(
+    "",
+    "This is already done and recorded. Confirm it still holds rather than repeating it from scratch,",
+    "and say in your result which parts you re-verified and which you accepted. If you disagree with the",
+    "recovery finding, say so explicitly — do not silently redo the work.",
+    "",
+  );
+  return `${lines.join("\n")}\n`;
+}
+
 export function writeHandoff({ hqRoot, statePath, state, companyState = null, resultPath = null, dispatchId = null, stage: stageOverride = null }) {
   // `stageOverride` lets the concurrent review fan-out write a handoff for a
   // group member that is not yet `state.currentStage`. Defaults to the normal
@@ -64,6 +111,7 @@ export function writeHandoff({ hqRoot, statePath, state, companyState = null, re
     advisoryBlock +
     `## Outcome\n\n${state.task.outcome}\n\n## Acceptance criteria\n\n${state.task.acceptanceCriteria.map((x) => `- ${x}`).join("\n")}\n\n` +
     (recovery ? `## Recovery context\n\nOriginal failed stage: ${recovery.failedStage}\nRecovery phase: ${recovery.phase}\nAttempt: ${recovery.attempt}\nOriginal failures are preserved in state.json. Investigate before changing anything.\n\n` : "") +
+    recoveryFindingsBlock(settledRecoveryFor(state, stage)) +
     `## Constraints\n\n${(state.task.constraints || []).map((x) => `- ${x}`).join("\n") || "- none recorded"}\n\n` +
     `## Founder decisions\n\n${founderDecisions}\n\n` +
     `## Completed handoffs\n\n${completed}\n\n## Returned findings\n\n${returned}\n\n## Role instructions\n\n${prompt.trim()}\n\n` +
