@@ -57,7 +57,13 @@ test("every panel imported into app.js is actually rendered", () => {
   const imported = [...APP.matchAll(/import \{ (\w*[Pp]anel) \} from "\/lib\/\w+\.mjs";/g)].map((match) => match[1]);
   assert.ok(imported.length >= 4, "the Today view should import several panels");
   for (const panel of imported) {
-    assert.ok(new RegExp(`\\$\\{${panel}\\(`).test(APP), `${panel} is imported but never rendered`);
+    // Two ways a panel legitimately reaches the page: interpolated into the
+    // view's template, or written into a container by a handler (the search
+    // panel, which has nothing to show until the operator asks). Anything else
+    // is an import that renders nothing.
+    const interpolated = new RegExp(`\\$\\{${panel}\\(`).test(APP);
+    const injected = new RegExp(`innerHTML\\s*=\\s*${panel}\\(`).test(APP);
+    assert.ok(interpolated || injected, `${panel} is imported but never rendered`);
   }
 });
 

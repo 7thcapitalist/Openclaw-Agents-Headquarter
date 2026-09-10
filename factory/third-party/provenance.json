@@ -577,6 +577,27 @@
       "sourcePath": "server/src/services/execution-control-reconciliation.ts",
       "classification": "reference",
       "notes": "Documents the pinned sources and why delivery semantics are built before any connection exists."
+    },
+    {
+      "localPath": "factory/lib/hq/search.mjs",
+      "sourceId": "paperclip",
+      "sourcePath": "server/src/services/company-search.ts",
+      "classification": "adapted",
+      "notes": "Adapts Paperclip cross-entity search to HQ by searching only the existing sanitised projections rather than indexing the runtime tree, so no result can surface a prompt or file content."
+    },
+    {
+      "localPath": "dashboard/backend/public/lib/searchView.mjs",
+      "sourceId": "paperclip",
+      "sourcePath": "ui/src/pages/Search.tsx",
+      "classification": "inspired",
+      "notes": "Read-only results panel that states its own scope and preserves the untrusted-input labelling interactions carry in their own panel."
+    },
+    {
+      "localPath": "factory/test/hq-search.test.mjs",
+      "sourceId": "paperclip",
+      "sourcePath": "server/src/services/company-search.ts",
+      "classification": "inspired",
+      "notes": "Canary test proving a prompt is unreachable through search, plus query validation, bounds and degradation."
     }
   ]
 }

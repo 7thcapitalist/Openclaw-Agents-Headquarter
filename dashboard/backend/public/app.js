@@ -9,6 +9,7 @@ import { interactionsSection } from "/lib/interactionsView.mjs";
 import { retentionPanel } from "/lib/retentionView.mjs";
 import { runTimelineSection } from "/lib/timelineView.mjs";
 import { decisionsPanel } from "/lib/decisionsView.mjs";
+import { searchPanel } from "/lib/searchView.mjs";
 import { scorecardsPanel } from "/lib/scorecardsView.mjs";
 import { budgetPanel } from "/lib/budgetView.mjs";
 import { permissionsPanel } from "/lib/permissionsView.mjs";
@@ -456,6 +457,7 @@ import { permissionsPanel } from "/lib/permissionsView.mjs";
         <section class="founder-section"><div class="section-heading"><div><span class="eyebrow">Live floor</span><h2>Agents at work</h2></div></div>${[...liveJobs.map((j) => ({ title: j.objective, sub: "Starting the team", status: "starting" })), ...autoRecovering.map((r) => ({ title: r.objective || r.taskId, sub: "Recovering a safe infrastructure failure", status: "recovering" })), ...runningRows].map((r) => `<div class="agent-work-row"><span class="status-dot ${r.status === "working" ? "is-working" : "is-waiting"}"></span><div><strong>${esc(r.title || r.objective || "Factory work")}</strong><span>${esc(r.sub || `${r.agent || "Agent"} · ${r.stage || "next stage"}`)}</span></div><em>${esc(r.status || "waiting")}</em></div>`).join("") || `<div class="quiet-state">The floor is quiet.</div>`}</section>
       </main><aside>
         <section class="founder-section"><div class="section-heading"><div><span class="eyebrow">Recently</span><h2>Completed</h2></div></div>${groups.recentlyCompleted.slice(0, 3).map((o) => founderObjectiveCard(o, true)).join("") || `<div class="quiet-state">No recent completions.</div>`}</section>
+        ${renderSearchBox()}
         ${goalsPanel(goals, { esc })}
         ${retentionPanel(retention, { esc, fmtTime })}
         ${decisionsPanel(decisions, { esc, fmtTime })}
@@ -465,6 +467,17 @@ import { permissionsPanel } from "/lib/permissionsView.mjs";
         ${scorecardsPanel(scorecards, { esc })}
       </aside></div>
     </div>`;
+  }
+
+  // One place to ask "where was this discussed?". The results container starts
+  // empty and is filled by the handler below; nothing is fetched until the
+  // operator asks, because a search with no query has nothing to say.
+  function renderSearchBox() {
+    return `<section class="founder-section search-box" aria-labelledby="factory-search-box-title">
+      <div class="section-heading"><div><span class="eyebrow">Search</span><h2 id="factory-search-box-title">Find it in the record</h2></div></div>
+      <form id="hq-search" class="founder-command-row"><input id="hq-search-q" type="search" placeholder="Search goals, decisions, comments, run events, evidence" autocomplete="off"/><button class="btn secondary tiny" type="submit">Search</button></form>
+      <div id="hq-search-results"></div>
+    </section>`;
   }
 
   // The Founder Inbox. It sits above everything else and stays full width:
@@ -1117,6 +1130,18 @@ import { permissionsPanel } from "/lib/permissionsView.mjs";
     document.getElementById("ask-agent")?.addEventListener("click", () => {
       openModal("Ask the factory", `<label class="field-label">Question</label><textarea class="editor" id="question-text" placeholder="What is blocking this work?"></textarea><button class="btn" id="send-question">Ask</button><div id="question-answer"></div>`);
       document.getElementById("send-question").onclick = askFounderQuestion;
+    });
+    document.getElementById("hq-search")?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const box = document.getElementById("hq-search-results");
+      const q = document.getElementById("hq-search-q").value;
+      try {
+        box.innerHTML = searchPanel(await apiJson(`/api/hq/search?q=${encodeURIComponent(q)}`), { esc, fmtTime });
+      } catch (err) {
+        // A rejected query is the operator's to fix, so show the reason in the
+        // panel rather than a toast that disappears.
+        box.innerHTML = searchPanel({ version: 1, available: false, error: err.message });
+      }
     });
     bindObjectiveControls(app);
   }
