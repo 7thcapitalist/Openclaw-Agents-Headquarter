@@ -1,7 +1,7 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "fs";
 import { join } from "path";
 import { spawn } from "child_process";
 import { randomUUID } from "crypto";
+import { mutateTransactionalState, readTransactionalState } from "../../../factory/lib/store/transactional-json.mjs";
 
 const MAX_ITEMS = 8;
 const MAX_OBJECTIVE_LENGTH = 1000;
@@ -14,36 +14,41 @@ function blank() { return { version: 1, status: "idle", items: [], startedAt: nu
 
 export function readOvernightQueue(root) {
   try {
-    const value = JSON.parse(readFileSync(queuePath(root), "utf8"));
+    const value = readTransactionalState(queuePath(root));
     return { ...blank(), ...value, items: Array.isArray(value.items) ? value.items : [] };
   } catch { return blank(); }
 }
 
-function write(root, state) {
-  const path = queuePath(root);
-  mkdirSync(join(root, "dashboard", "backend", "data", "factory"), { recursive: true });
-  const tmp = `${path}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(state, null, 2)}\n`, "utf8");
-  renameSync(tmp, path);
-  return state;
+// The one write primitive: read-modify-write as one atomic transaction, so a
+// dashboard "add"/"remove" can never race the background runner's own
+// status updates and silently drop one side's change.
+function mutate(root, commandId, fn) {
+  return mutateTransactionalState(queuePath(root), {
+    commandId,
+    mutate: (state) => {
+      const next = { ...blank(), ...(state || {}), items: Array.isArray(state?.items) ? [...state.items] : [] };
+      fn(next);
+      return next;
+    },
+  });
 }
 
 export function addOvernightItem(root, { objective, projectId, repo }) {
   const text = String(objective || "").trim();
   if (!text || text.length > MAX_OBJECTIVE_LENGTH) throw new Error(`Each overnight objective must be 1–${MAX_OBJECTIVE_LENGTH} characters.`);
   if (!projectId || !repo) throw new Error("projectId and repo are required.");
-  const state = readOvernightQueue(root);
-  if (state.status === "running") throw new Error("Stop the overnight run before changing its plan.");
-  if (state.items.length >= MAX_ITEMS) throw new Error(`Overnight plans are limited to ${MAX_ITEMS} objectives.`);
-  state.items.push({ id: `night-${randomUUID()}`, objective: text, projectId: String(projectId), repo: String(repo), status: "queued", addedAt: new Date().toISOString() });
-  return write(root, state);
+  return mutate(root, `overnight-add:${randomUUID()}`, (state) => {
+    if (state.status === "running") throw new Error("Stop the overnight run before changing its plan.");
+    if (state.items.length >= MAX_ITEMS) throw new Error(`Overnight plans are limited to ${MAX_ITEMS} objectives.`);
+    state.items.push({ id: `night-${randomUUID()}`, objective: text, projectId: String(projectId), repo: String(repo), status: "queued", addedAt: new Date().toISOString() });
+  });
 }
 
 export function removeOvernightItem(root, id) {
-  const state = readOvernightQueue(root);
-  if (state.status === "running") throw new Error("Stop the overnight run before changing its plan.");
-  state.items = state.items.filter((item) => item.id !== id);
-  return write(root, state);
+  return mutate(root, `overnight-remove:${randomUUID()}`, (state) => {
+    if (state.status === "running") throw new Error("Stop the overnight run before changing its plan.");
+    state.items = state.items.filter((item) => item.id !== id);
+  });
 }
 
 let child = null;
@@ -54,8 +59,9 @@ export function startOvernight(root, { scriptPath, spawnChild = spawn }) {
   if (state.status === "running") return state;
   const pending = state.items.filter((item) => item.status === "queued");
   if (!pending.length) throw new Error("Add at least one objective to the overnight plan first.");
-  state.status = "running"; state.startedAt = new Date().toISOString(); state.stoppedAt = null; state.stopRequested = false;
-  write(root, state);
+  mutate(root, `overnight-start:${randomUUID()}`, (next) => {
+    next.status = "running"; next.startedAt = new Date().toISOString(); next.stoppedAt = null; next.stopRequested = false;
+  });
   runNext(root, scriptPath, spawnChild);
   return readOvernightQueue(root);
 }
@@ -63,21 +69,28 @@ export function startOvernight(root, { scriptPath, spawnChild = spawn }) {
 function runNext(root, scriptPath, spawnChild) {
   if (rootInFlight) return;
   rootInFlight = root;
-  let state = readOvernightQueue(root);
+  const state = readOvernightQueue(root);
   if (state.stopRequested || !state.items.some((item) => item.status === "queued")) {
-    state.status = state.stopRequested ? "stopped" : state.items.some((item) => item.status === "failed") ? "needs-attention" : "complete"; state.currentItemId = null; state.stoppedAt = new Date().toISOString();
-    write(root, state); rootInFlight = null; return;
+    mutate(root, `overnight-drain:${randomUUID()}`, (next) => {
+      next.status = state.stopRequested ? "stopped" : next.items.some((item) => item.status === "failed") ? "needs-attention" : "complete";
+      next.currentItemId = null; next.stoppedAt = new Date().toISOString();
+    });
+    rootInFlight = null; return;
   }
-  const item = state.items.find((entry) => entry.status === "queued");
-  item.status = "running"; item.startedAt = new Date().toISOString(); state.currentItemId = item.id; write(root, state);
+  const itemId = state.items.find((entry) => entry.status === "queued").id;
+  const item = mutate(root, `overnight-item-start:${itemId}`, (next) => {
+    const target = next.items.find((entry) => entry.id === itemId);
+    target.status = "running"; target.startedAt = new Date().toISOString(); next.currentItemId = target.id;
+  }).items.find((entry) => entry.id === itemId);
   let settled = false;
   const finish = (code, error = null) => {
     if (settled) return;
     settled = true;
-    const next = readOvernightQueue(root);
-    const finished = next.items.find((entry) => entry.id === item.id);
-    if (finished) { finished.status = code === 0 ? "complete" : "failed"; finished.endedAt = new Date().toISOString(); finished.exitCode = code; finished.error = error ? "The objective worker could not start." : code === 0 ? null : "The objective stopped before delivery. Review its execution record."; }
-    child = null; rootInFlight = null; write(root, next);
+    const next = mutate(root, `overnight-item-finish:${itemId}`, (state) => {
+      const finished = state.items.find((entry) => entry.id === item.id);
+      if (finished) { finished.status = code === 0 ? "complete" : "failed"; finished.endedAt = new Date().toISOString(); finished.exitCode = code; finished.error = error ? "The objective worker could not start." : code === 0 ? null : "The objective stopped before delivery. Review its execution record."; }
+    });
+    child = null; rootInFlight = null;
     if (next.status === "running") runNext(root, scriptPath, spawnChild);
   };
   try {
@@ -90,7 +103,7 @@ function runNext(root, scriptPath, spawnChild) {
 export function stopOvernight(root) {
   const state = readOvernightQueue(root);
   if (state.status !== "running") return state;
-  state.stopRequested = true; write(root, state);
+  mutate(root, `overnight-stop:${randomUUID()}`, (next) => { next.stopRequested = true; });
   return readOvernightQueue(root);
 }
 

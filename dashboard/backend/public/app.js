@@ -5,6 +5,7 @@ import { costLimitsPanel } from "/cost-limits.mjs";
 import { operationsPanel } from "/lib/operationsView.mjs";
 import { renderFounderInboxCard, renderFounderInboxEmpty } from "/lib/founderInbox.mjs";
 import { goalsPanel } from "/lib/goalsView.mjs";
+import { retentionPanel } from "/lib/retentionView.mjs";
 import { decisionsPanel } from "/lib/decisionsView.mjs";
 import { scorecardsPanel } from "/lib/scorecardsView.mjs";
 import { budgetPanel } from "/lib/budgetView.mjs";
@@ -227,7 +228,7 @@ import { permissionsPanel } from "/lib/permissionsView.mjs";
   // ── Today: the founder observability surface ───────────────────
 
   async function renderToday() {
-    const [state, fc, learning, objectivesResp, autonomy, costs, planLimits, overnight, operations, goals, decisions, scorecards, budgets, permissions] = await Promise.all([
+    const [state, fc, learning, objectivesResp, autonomy, costs, planLimits, overnight, operations, goals, decisions, scorecards, budgets, permissions, retention] = await Promise.all([
       loadCompany(),
       apiJson("/api/founder/overview").catch(() => ({ jobs: [] })),
       loadLearning().catch(() => null),
@@ -242,6 +243,7 @@ import { permissionsPanel } from "/lib/permissionsView.mjs";
       apiJson("/api/hq/scorecards").catch(() => null),
       apiJson("/api/hq/budgets").catch(() => null),
       apiJson("/api/hq/permissions").catch(() => null),
+      apiJson("/api/hq/retention").catch(() => null),
     ]);
     const objectives = objectivesResp.objectives || [];
     objectivesById = Object.fromEntries(objectives.map((o) => [o.objectiveId, o]));
@@ -412,6 +414,7 @@ import { permissionsPanel } from "/lib/permissionsView.mjs";
       </main><aside>
         <section class="founder-section"><div class="section-heading"><div><span class="eyebrow">Recently</span><h2>Completed</h2></div></div>${groups.recentlyCompleted.slice(0, 3).map((o) => founderObjectiveCard(o, true)).join("") || `<div class="quiet-state">No recent completions.</div>`}</section>
         ${goalsPanel(goals, { esc })}
+        ${retentionPanel(retention, { esc, fmtTime })}
         ${decisionsPanel(decisions, { esc, fmtTime })}
         ${operationsPanel(operations, { esc, fmtTime })}
         ${budgetPanel(budgets, { esc })}

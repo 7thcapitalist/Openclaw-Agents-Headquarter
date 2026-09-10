@@ -443,14 +443,20 @@ test("buildObjectivesView: infra recovery vs founder decision on mixed blockers"
   assert.equal(shaped.blockedOn, idB);
   assert.equal(view.summary.needsFounder, 1);
 
-  // Auto-retry updates the task state first. The founder view must not keep
-  // reporting the old objective-level infrastructure blocker while that task
-  // is actually running again.
-  const resumed = JSON.parse(readFileSync(join(root, "dashboard/backend/data/factory/app/tasks", idA, "state.json"), "utf8"));
+  // Auto-retry updates the task state first, through writeState (the same
+  // transactional path the real auto-retry sweep uses) rather than a raw fs
+  // write: this task already has a live row in the transactional store from
+  // the writeState() call above, so a direct writeFileSync here would be
+  // silently ignored on the next transactional read instead of actually
+  // simulating the resume. The founder view must not keep reporting the old
+  // objective-level infrastructure blocker while that task is actually
+  // running again.
+  const taskStatePath = join(root, "dashboard/backend/data/factory/app/tasks", idA, "state.json");
+  const resumed = JSON.parse(readFileSync(taskStatePath, "utf8"));
   resumed.status = "active";
   resumed.blocker = null;
   resumed.currentDispatch = { id: `${idA}-builder-4`, stage: "builder", status: "running" };
-  writeFileSync(join(root, "dashboard/backend/data/factory/app/tasks", idA, "state.json"), JSON.stringify(resumed));
+  writeState(taskStatePath, resumed);
   const resumedView = buildObjectivesView(root).objectives.find((o) => o.objectiveId === objectiveId);
   const resumedNode = resumedView.nodes.find((n) => n.id === idA);
   assert.equal(resumedNode.status, "running");

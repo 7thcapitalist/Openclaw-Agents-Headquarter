@@ -8,10 +8,12 @@
 // enforced exactly as for a single task.
 
 import { execFileSync } from "child_process";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { randomUUID } from "crypto";
 import { dirname, join } from "path";
 import { initializeTask } from "../task-initializer.mjs";
-import { readState, resumeState, validateTaskContract, writeState } from "../task-workflow.mjs";
+import { readState, resumeState, validateTaskContract } from "../task-workflow.mjs";
+import { mutateTransactionalState, readTransactionalState } from "../store/transactional-json.mjs";
 import { executeOpenClaw, runToTerminal } from "../openclaw-runner.mjs";
 import { publishAndRecord } from "../openclaw-runner.mjs";
 import { ensureBranchHasCommit } from "../hq/github-publish.mjs";
@@ -51,24 +53,31 @@ const asInfraBlocker = (blocker) => ({
 });
 const firstLine = (text) => String(text || "").split("\n").map((s) => s.trim()).filter(Boolean)[0] || "no detail";
 
-// ── objective-state.json IO (the file is the source of truth; every mutation is
-// a fresh read+write so concurrent node runs never clobber each other) ─────────
+// ── objective-state.json IO ─────────────────────────────────────────────────
+// The SQLite authority colocated next to the JSON file (see
+// store/transactional-json.mjs) is the source of truth: every mutation is one
+// atomic transaction, so concurrent node runs — including across separate
+// processes, not just concurrent code in this one — never clobber each
+// other. readObjState() keeps its old signature/behaviour (a plain read of
+// the always-current JSON export) so every existing caller is unaffected.
 
-export function readObjState(path) { return JSON.parse(readFileSync(path, "utf8")); }
+export function readObjState(path) { return readTransactionalState(path); }
 
-function writeObjState(path, state) {
-  mkdirSync(dirname(path), { recursive: true });
-  state.updatedAt = new Date().toISOString();
-  const tmp = `${path}.tmp-${process.pid}`;
-  writeFileSync(tmp, `${JSON.stringify(state, null, 2)}\n`, "utf8");
-  renameSync(tmp, path);
-}
-
+// The one write primitive every node/integration step in this file uses,
+// converted here so every call site is concurrency-safe without changing any
+// of their call signatures: `fn` still mutates its `state` argument in place,
+// it just now does so inside one atomic transaction instead of around a
+// separate read and write.
 function mutate(path, fn) {
-  const state = readObjState(path);
-  fn(state);
-  writeObjState(path, state);
-  return state;
+  return mutateTransactionalState(path, {
+    commandId: `mutate:${randomUUID()}`,
+    mutate: (state) => {
+      const next = structuredClone(state);
+      fn(next);
+      next.updatedAt = new Date().toISOString();
+      return next;
+    },
+  });
 }
 
 function patchNode(path, nodeId, patch, event) {
@@ -475,7 +484,7 @@ export function resumeObjectiveNodes({ objectivePath, nodeIds, now = () => new D
         continue;
       }
       revived.autoRetries = state.autoRetries || 0;
-      writeState(node.statePath, revived);
+      mutateTransactionalState(node.statePath, { commandId: `resume:${nodeId}:${randomUUID()}`, mutate: () => revived });
 
       mutate(objectivePath, (s) => {
         const target = s.nodes[nodeId] || (s.integration?.id === nodeId ? s.integration : null);

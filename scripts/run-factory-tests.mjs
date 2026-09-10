@@ -33,7 +33,14 @@ const PER_TEST_TIMEOUT_MS = 120_000;
 const SUITE_WALL_CLOCK_MS = 600_000;
 const TMP_PREFIX = "hq-factory-tests-";
 
-const files = globSync("factory/test/*.test.mjs").sort();
+// Both levels on purpose. `factory/test/*.test.mjs` alone is single-level, so a
+// test placed in a subdirectory is silently never run — factory/test/store/
+// arrived with 26 passing tests that the suite did not execute, and a suite
+// that quietly skips tests is worse than one that fails.
+const files = [...new Set([
+  ...globSync("factory/test/*.test.mjs"),
+  ...globSync("factory/test/**/*.test.mjs"),
+])].sort();
 if (files.length === 0) {
   console.error("No files matched factory/test/*.test.mjs. Run this from the repository root.");
   process.exit(1);
