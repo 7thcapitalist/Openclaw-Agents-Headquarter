@@ -218,9 +218,16 @@ test("a revived task that then makes progress can be revived again", async () =>
 
   // Once a stage passes, completeStage clears the counter and the same task is
   // eligible again — which is the whole point of the fix.
-  const state = JSON.parse(readFileSync(path, "utf8"));
+  //
+  // Go through readState/writeState, not the file. Since the transactional
+  // store landed, state.json is a mirror rather than the authority: the sweep
+  // above already imported this task into SQLite, and ensureImported() only
+  // reads the legacy file when no row exists yet. Editing the JSON directly
+  // here would be silently discarded, and the test would fail describing a
+  // behaviour that is actually fine.
+  const state = readState(path);
   delete state.autoRetries;
-  writeFileSync(path, JSON.stringify(state, null, 2));
+  writeState(path, state);
   const after = await retryStuckTasks({
     hqRoot: root,
     stateRoot,
