@@ -15,7 +15,47 @@ export const FAILURE_CLASSES = Object.freeze([
 // failure is infrastructure to one layer and the project's fault to another —
 // which is how "[openclaw] Could not start the CLI" was classified PROJECT_ERROR
 // and handed to recovery as if the code were broken.
-const INFRA = /timeout|timed out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|EPIPE|socket hang up|rate.?limit|\b429\b|\b5\d\d\b|quota|overloaded|capacity|temporarily unavailable|no result file|did not write|could not start|cannot start|failed to start|start the cli|could not run|unable to launch|all models failed|usage limit|cooldown|auth profile|provider .*unavailable|model .*unavailable|orphaned|host restart/i;
+//
+// Every alternative here must be a phrase the ENVIRONMENT produces and a code
+// review cannot. That constraint is not cosmetic: an INFRASTRUCTURE_ERROR is
+// repaired against the factory rather than the project, and is picked up
+// unattended by the resume sweep, so a real defect misfiled here is retried in
+// silence and never reaches the founder — precisely the "it fails and I never
+// get told" this overhaul set out to end.
+//
+// Bare English verbs were the trap. `could not run`, `cannot start`, `orphaned`,
+// `usage limit`, `quota` and a lone `5\d\d` all matched ordinary review prose:
+// "the retry helper could not run to completion", "523 assertions failed",
+// "orphaned promise leaks a handle", "usage limit banner renders twice". Each
+// alternative is therefore anchored to a subject that can only be the harness
+// (an agent, a CLI, a provider, a seat) or to an explicit exhaustion verb.
+// `failure-classification.test.mjs` pins both directions.
+const INFRA = new RegExp([
+  // Transport and OS-level faults — unambiguous on their own.
+  "timeout", "timed out", "ETIMEDOUT", "ECONNRESET", "ECONNREFUSED", "ENOTFOUND",
+  "EAI_AGAIN", "EPIPE", "socket hang up",
+  // Provider throttling and seat exhaustion.
+  "rate.?limit", "\\b429\\b", "cooldown", "all models failed",
+  "(?:quota|usage limit|credits?|capacity|headroom)\\s*(?:is|was|has been)?\\s*(?:exceeded|exhausted|reached|hit|depleted|unavailable)",
+  "(?:exceeded|exhausted|ran out of|out of)\\s+(?:quota|usage limit|credits?|capacity|headroom)",
+  "temporarily unavailable", "overloaded",
+  // HTTP 5xx, but only where an explicit status label makes it a transport
+  // status rather than a count or a number under discussion. A bare "500 error"
+  // stays PROJECT_ERROR: "500 error is returned instead of 400 for malformed
+  // input" is a review finding about the product.
+  "\\b(?:status|code|http|responded with|returned|response)\\s*:?\\s*5\\d\\d\\b",
+  // The agent never produced a verdict at all.
+  "no result file", "did not write", "wrote no result",
+  // The harness itself could not be launched or kept alive. Anchored to the
+  // thing that failed, so review prose about product code cannot match.
+  "(?:could not|couldn't|cannot|can't|failed to|unable to)\\s+(?:start|run|launch|spawn|reach|resume)\\s+(?:the\\s+)?(?:cli|agent|harness|runtime|session|provider|model|openclaw|acpx|claude|codex|cursor)",
+  "start the cli",
+  "(?:provider|model|seat|profile)\\s+\\S*\\s*(?:is\\s+)?unavailable",
+  "auth profile\\s+\\S*\\s*(?:missing|unavailable|not found|indeterminate|expired|invalid)",
+  "orphaned\\s+(?:session|run|dispatch|worktree|process|lease)",
+  "host restart",
+].join("|"), "i");
+
 const FACTORY = /factory|orchestrator|workflow|state\.json|dispatch|protocol|invalid .*result|unsupported .*version|cannot advance|expected stage/i;
 
 export function classifyFailure({ error = "", outcome = "fail", source = "execution", founderDecision = false } = {}) {
