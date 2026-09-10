@@ -145,3 +145,81 @@ test("auto-retry reconciles a stale owning objective node", async () => {
   assert.equal(objective.nodes["task-objective"].blocker, null);
   assert.equal(objective.events.at(-1).type, "node-reconciled");
 });
+
+// The auto-retry budget exists to stop a task looping on one stuck point, not
+// to cap how long a task may live. It used to be counted once per task for the
+// task's entire life and never reset, so a task that needed reviving three
+// times during a flaky builder phase had no supervision left for the five
+// stages after it — any later stall was permanent until a human noticed.
+test("a passing stage restores the auto-retry allowance", async () => {
+  const { completeStage } = await import("../lib/task-workflow.mjs");
+  const base = {
+    version: 1,
+    status: "active",
+    task: { id: "t", project: "p", risk: "low" },
+    currentStage: "reviewer",
+    assignments: { reviewer: "claude", qa: "claude" },
+    stages: { reviewer: { status: "pending" }, qa: { status: "pending" } },
+    dispatches: [],
+    events: [],
+    autoRetries: 3,
+  };
+
+  const passed = completeStage(base, {
+    stage: "reviewer",
+    actor: "claude",
+    outcome: "pass",
+    summary: "approved",
+    evidence: [{ path: "evidence/r.md" }],
+  });
+  assert.equal(passed.autoRetries, undefined);
+  assert.equal(passed.currentStage, "qa");
+
+  // A stage that did not pass is not forward progress, so the spent budget
+  // stands — otherwise a stage failing in a loop would mint supervision.
+  const failed = completeStage(base, {
+    stage: "reviewer",
+    actor: "claude",
+    outcome: "fail",
+    summary: "rejected",
+    evidence: [{ path: "evidence/r.md" }],
+  });
+  assert.equal(failed.autoRetries, 3);
+});
+
+test("a revived task that then makes progress can be revived again", async () => {
+  const root = hqRoot();
+  const stateRoot = join(root, "state");
+  // Exhausted budget: the sweep must leave it alone.
+  const path = writeTask(stateRoot, "task-spent", {
+    status: "active",
+    autoRetries: 3,
+    updatedAt: "2026-09-07T00:00:00Z",
+    currentStage: "qa",
+  });
+  const before = await retryStuckTasks({
+    hqRoot: root,
+    stateRoot,
+    runTask: async () => ({ status: "active" }),
+    now: () => "2026-09-07T05:00:00Z",
+  });
+  assert.equal(before.retried.length, 0);
+  assert.equal(
+    before.skipped.find((s) => s.taskId === "task-spent")?.reason,
+    "auto-retry budget exhausted",
+  );
+
+  // Once a stage passes, completeStage clears the counter and the same task is
+  // eligible again — which is the whole point of the fix.
+  const state = JSON.parse(readFileSync(path, "utf8"));
+  delete state.autoRetries;
+  writeFileSync(path, JSON.stringify(state, null, 2));
+  const after = await retryStuckTasks({
+    hqRoot: root,
+    stateRoot,
+    runTask: async () => ({ status: "active" }),
+    now: () => "2026-09-07T05:00:00Z",
+  });
+  assert.equal(after.retried.length, 1);
+  assert.equal(after.retried[0].taskId, "task-spent");
+});
