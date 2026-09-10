@@ -34,13 +34,46 @@ test("checkSessions warns when many stale transient sessions exist", () => {
   assert.equal(checkSessions("not json").level, "warn");
 });
 
-test("checkAcpxAgents warns when claude/codex are unmapped", () => {
-  const only = JSON.stringify({ plugins: { entries: { acpx: { config: { agents: { cursor: { command: "x" } } } } } } });
-  const r = checkAcpxAgents(only);
-  assert.equal(r.level, "warn");
-  assert.match(r.line, /claude, codex/);
-  const all = JSON.stringify({ plugins: { entries: { acpx: { config: { agents: { cursor: {}, claude: {}, codex: {} } } } } } });
-  assert.equal(checkAcpxAgents(all).level, "ok");
+// `claude` and `codex` are served by their own runtimes (claude-cli, OpenAI
+// Codex), not by acpx, so their absence from the acpx map is not a fault.
+// Probed 2026-09-09: reviewer -> claude-cli/claude-sonnet-5,
+// backend-builder -> openai/gpt-5.6-sol. The check now reports which seat each
+// role resolves to, because "are both seats carrying load" is the real question.
+test("checkAcpxAgents reports the seat spread, not a phantom acpx gap", () => {
+  const twoSeats = JSON.stringify({
+    plugins: { entries: { acpx: { config: { agents: { cursor: { command: "x" } } } } } },
+    agents: {
+      defaults: { model: "openai/gpt-5.6-sol" },
+      entries: {
+        reviewer: { model: { primary: "anthropic/claude-sonnet-5" } },
+        security: { model: { primary: "anthropic/claude-sonnet-5" } },
+        "backend-builder": { model: { primary: "openai/gpt-5.6-sol" } },
+      },
+    },
+  });
+  const r = checkAcpxAgents(twoSeats);
+  assert.equal(r.level, "ok");
+  assert.match(r.line, /anthropic:2/);
+  assert.match(r.line, /openai:1/);
+  assert.doesNotMatch(r.line, /claude, codex/);
+
+  // A single seat IS worth warning about — it is the pipeline's throughput
+  // ceiling (DC-2026-001).
+  const oneSeat = JSON.stringify({
+    plugins: { entries: { acpx: { config: { agents: { cursor: {} } } } } },
+    agents: { defaults: { model: "openai/gpt-5.6-sol" }, entries: { reviewer: { model: { primary: "openai/gpt-5.6-sol" } } } },
+  });
+  const single = checkAcpxAgents(oneSeat);
+  assert.equal(single.level, "warn");
+  assert.match(single.line, /one provider seat/);
+
+  // Losing the cursor bridge is still a real gap.
+  const noCursor = JSON.stringify({
+    plugins: { entries: { acpx: { config: { agents: {} } } } },
+    agents: { entries: { reviewer: { model: { primary: "anthropic/claude-sonnet-5" } }, b: { model: { primary: "openai/gpt-5.6-sol" } } } },
+  });
+  assert.equal(checkAcpxAgents(noCursor).level, "warn");
+  assert.match(checkAcpxAgents(noCursor).line, /cursor/);
 });
 
 test("checkFactoryActivity warns when no state.json exists, ok when some do", () => {

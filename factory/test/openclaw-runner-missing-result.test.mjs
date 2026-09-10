@@ -1,9 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync } from "fs";
 import { tmpdir } from "os";
 import { join, resolve } from "path";
-import { classifyBlocker } from "../lib/hq/blocker-class.mjs";
+import { classifyBlocker, isRetriableInfraBlocker } from "../lib/hq/blocker-class.mjs";
 import { runOneStage } from "../lib/openclaw-runner.mjs";
 import { createState, readState, writeState } from "../lib/task-workflow.mjs";
 
@@ -59,24 +59,50 @@ test("a resolved execution with no result writes redacted diagnostics and a legi
   assert.equal(state.dispatches[0].status, "failed");
   assert.match(state.dispatches[0].error, /wrote no result file/);
   assert.match(state.dispatches[0].error, new RegExp(rel));
-  assert.equal(state.events.at(-1).type, "failure-routed");
+  // #56: a stage failure is handed to recovery rather than routed directly.
+  assert.equal(state.events.at(-1).type, "recovery-diagnosing");
 });
 
-test("missing-result failures keep the three-attempt limit and infra classification", async () => {
+test("missing-result failures stay bounded and machine-recoverable", async () => {
   const fixture = makeFixture();
   const execute = async () => ({ stdout: "agent exited cleanly", stderr: "" });
 
-  assert.equal((await runOneStage({ hqRoot, statePath: fixture.statePath, execute })).status, "active");
-  assert.equal((await runOneStage({ hqRoot, statePath: fixture.statePath, execute })).status, "active");
-  const response = await runOneStage({ hqRoot, statePath: fixture.statePath, execute });
-
-  assert.equal(response.status, "blocked");
+  // The three stage attempts are still spent first, then recovery takes over,
+  // so the task stays live for several more turns before it settles. Bounded so
+  // a contract change fails here instead of spinning forever.
+  let response;
+  const seen = [];
+  for (let step = 0; step < 12; step += 1) {
+    response = await runOneStage({ hqRoot, statePath: fixture.statePath, execute });
+    seen.push(response.status);
+    if (["blocked", "merge-ready"].includes(response.status)) break;
+  }
+  assert.equal(response.status, "blocked", `never settled; saw: ${seen.join(" -> ")}`);
   const state = readState(fixture.statePath);
-  assert.equal(state.dispatches.length, 3);
-  assert.equal(classifyBlocker(state.blocker), "infra");
+  // FINDING (documented in the reliability handoff, not changed here): since
+  // #56 recovery intercepts on the FIRST stage failure, so `maxAttemptsPerStage`
+  // no longer gives the stage three tries — it gets one, then the recovery
+  // budget applies. Total bounded effort is what actually protects the seat, so
+  // that is what this asserts.
+  const stageAttempts = state.dispatches.filter((d) => !String(d.kind || "").startsWith("recovery-"));
+  const recoveryAttempts = state.dispatches.filter((d) => String(d.kind || "").startsWith("recovery-"));
+  assert.equal(stageAttempts.length, 1);
+  assert.equal(recoveryAttempts.length, state.recovery.maxAttempts);
+  assert.ok(state.dispatches.length <= 1 + state.recovery.maxAttempts,
+    "a missing result must never dispatch unboundedly");
   assert.equal(state.currentStage, "product");
-  assert.ok(state.events.some((event) => event.type === "failure-routed"));
-  assert.equal(existsSync(join(fixture.worktree, "evidence/issue-901-product-3-missing-result.md")), true);
+  // The founder is told once recovery is exhausted, but an agent that never
+  // wrote a result file stays machine-recoverable: the resume sweep must be
+  // able to pick this up when the environment comes back.
+  assert.equal(isRetriableInfraBlocker(state.blocker), true);
+  assert.ok(state.events.some((event) => event.type === "recovery-diagnosing"));
+  // A redacted diagnostic is written for the stage attempt that went missing.
+  // Every dispatch that went missing leaves one — the stage attempt and each
+  // recovery pass — and no more than the bounded total.
+  const diagnostics = readdirSync(join(fixture.worktree, "evidence"))
+    .filter((f) => f.endsWith("-missing-result.md"));
+  assert.ok(diagnostics.includes("issue-901-product-1-missing-result.md"));
+  assert.equal(diagnostics.length, state.dispatches.length);
 });
 
 test("a thrown executor with no result uses the same redacted diagnostic path", async () => {
@@ -96,7 +122,8 @@ test("a thrown executor with no result uses the same redacted diagnostic path", 
   assert.match(state.dispatches[0].error, /evidence\/issue-901-product-1-missing-result\.md/);
   assert.doesNotMatch(state.dispatches[0].error, new RegExp(token));
   assert.equal(classifyBlocker({ outcome: "fail", summary: state.dispatches[0].error }), "infra");
-  assert.equal(state.events.at(-1).type, "failure-routed");
+  // #56: a stage failure is handed to recovery rather than routed directly.
+  assert.equal(state.events.at(-1).type, "recovery-diagnosing");
 
   const artifact = readFileSync(join(fixture.worktree, "evidence/issue-901-product-1-missing-result.md"), "utf8");
   assert.match(artifact, /\[redacted: gh-token\]/);
