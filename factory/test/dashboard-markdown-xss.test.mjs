@@ -12,10 +12,17 @@ import assert from "node:assert/strict";
 import {
   decodeEntities,
   escapeHtml,
+  markdownRenderingAvailable,
   renderUntrustedMarkdown,
   safeUrl,
   sanitizeHtml,
 } from "../../dashboard/backend/lib/safeMarkdown.mjs";
+
+// The allowlist serializer is dependency-free and is the layer that must hold
+// even if the Markdown generator changes or is bypassed, so it is exercised
+// everywhere. Full-pipeline rendering additionally needs `marked`, a dashboard
+// dependency that CI does not install — those tests skip there.
+const pipelineTest = markdownRenderingAvailable() ? test : test.skip;
 
 // Tags that must never appear as LIVE markup in rendered output.
 const FORBIDDEN_TAGS = new Set([
@@ -91,14 +98,32 @@ const XSS_MARKDOWN = [
   ["a target blank injection", `<a href="//evil" target="_blank">x</a>`],
 ];
 
-test("every stored-XSS payload renders inert", () => {
+// Runs everywhere, including CI. Feeds each payload straight into the allowlist
+// serializer as if it were already-generated HTML — the strongest form of the
+// test, because it assumes the generation layer gave us the raw attack verbatim.
+test("the allowlist serializer neutralises every payload without any dependency", () => {
+  for (const [label, payload] of XSS_MARKDOWN) {
+    assertInert(sanitizeHtml(payload), `${label} (allowlist layer)`);
+    // Also inside plausible surrounding structure.
+    assertInert(sanitizeHtml(`<p>report says:</p>${payload}<p>end</p>`), `${label} (wrapped)`);
+  }
+});
+
+test("a document rendered without the Markdown library is still inert", () => {
+  // The no-marked fallback path must be safe, not merely absent.
+  for (const [label, payload] of XSS_MARKDOWN) {
+    assertInert(`<pre>${escapeHtml(payload)}</pre>`, `${label} (fallback)`);
+  }
+});
+
+pipelineTest("every stored-XSS payload renders inert", () => {
   for (const [label, payload] of XSS_MARKDOWN) {
     const html = renderUntrustedMarkdown(payload);
     assertInert(html, label);
   }
 });
 
-test("the same payloads are inert when wrapped in ordinary report prose", () => {
+pipelineTest("the same payloads are inert when wrapped in ordinary report prose", () => {
   for (const [label, payload] of XSS_MARKDOWN) {
     const doc = [
       "# Completion report",
@@ -121,7 +146,7 @@ test("the same payloads are inert when wrapped in ordinary report prose", () => 
   }
 });
 
-test("legitimate Markdown still renders as real HTML", () => {
+pipelineTest("legitimate Markdown still renders as real HTML", () => {
   const html = renderUntrustedMarkdown([
     "# Heading",
     "",
@@ -154,7 +179,7 @@ test("legitimate Markdown still renders as real HTML", () => {
   assertInert(html, "legitimate markdown");
 });
 
-test("a refused link keeps its text so no content is silently hidden", () => {
+pipelineTest("a refused link keeps its text so no content is silently hidden", () => {
   const html = renderUntrustedMarkdown(`[important note](javascript:alert(1))`);
   assert.match(html, /important note/);
   assert.ok(!/javascript/i.test(html));
@@ -230,7 +255,7 @@ test("escapeHtml covers the quote characters used in attribute contexts", () => 
   assert.equal(escapeHtml(`<>&"'`), "&lt;&gt;&amp;&quot;&#39;");
 });
 
-test("a very deeply nested document does not hang the renderer", () => {
+pipelineTest("a very deeply nested document does not hang the renderer", () => {
   const deep = `${"> ".repeat(200)}quote`;
   const html = renderUntrustedMarkdown(deep);
   assertInert(html, "deep nesting");

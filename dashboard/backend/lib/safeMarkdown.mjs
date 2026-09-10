@@ -20,7 +20,30 @@
 // new third-party artifact in factory/third-party/provenance.json, and the tag
 // surface we actually need is small enough to state exactly.
 
-import { marked } from "marked";
+import { createRequire } from "node:module";
+
+// `marked` is a dashboard dependency, not a repository-root one, and CI runs the
+// factory suite with no install step (see .github/workflows). Loading it lazily
+// through createRequire keeps this module importable — and its security-critical
+// allowlist layer fully testable — in an environment where marked is absent.
+const requireFromHere = createRequire(import.meta.url);
+let markedModule;
+function getMarked() {
+  if (markedModule === undefined) {
+    try {
+      markedModule = requireFromHere("marked");
+    } catch {
+      markedModule = null;
+    }
+  }
+  return markedModule;
+}
+
+// True when full Markdown rendering is available. When false, callers still get
+// safe output — just escaped text rather than formatted HTML.
+export function markdownRenderingAvailable() {
+  return Boolean(getMarked());
+}
 
 // Tags that may appear in the output. Everything marked generates for standard
 // Markdown, and nothing that can execute, load, or frame anything.
@@ -136,7 +159,7 @@ function safeClassAttr(value) {
 // A marked instance that cannot emit author-supplied HTML. Kept module-local so
 // callers cannot reconfigure it, and separate from any global marked.setOptions
 // the server does for other purposes.
-function buildRenderer() {
+function buildRenderer(marked) {
   const renderer = new marked.Renderer();
 
   // Raw HTML in the source becomes visible text, never live markup. This is the
@@ -288,7 +311,14 @@ let cachedRenderer = null;
 export function renderUntrustedMarkdown(markdown) {
   const source = typeof markdown === "string" ? markdown : "";
   if (!source.trim()) return "";
-  if (!cachedRenderer) cachedRenderer = buildRenderer();
+
+  const mod = getMarked();
+  // No Markdown renderer available: show the document as escaped text. Inert by
+  // construction, and never a silent blank panel.
+  if (!mod) return `<pre>${escapeHtml(source)}</pre>`;
+  const marked = mod.marked || mod;
+
+  if (!cachedRenderer) cachedRenderer = buildRenderer(marked);
   let generated;
   try {
     generated = marked.parse(source, {
