@@ -16,7 +16,7 @@
 // the exact bytes to sign) → browser signs with the non-extractable key →
 // submit (server verifies with the existing gate, records, resumes the work).
 
-import { createPublicKey, verify as verifySignature } from "node:crypto";
+import { createPublicKey, randomUUID, verify as verifySignature } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
@@ -27,6 +27,7 @@ import {
   publicKeyFingerprint,
   readState,
   recordFounderApproval,
+  unsignedFounderAssertion,
   writeState,
 } from "../../../factory/lib/task-workflow.mjs";
 import { writeHandoff } from "../../../factory/lib/handoff.mjs";
@@ -205,16 +206,14 @@ export function prepareFounderApproval(root, taskId, { note = "", statePath: hin
   mkdirSync(dirname(evidenceAbs), { recursive: true });
   writeFileSync(evidenceAbs, renderEvidence(state, { note, at }), "utf8");
 
-  // Field order here MUST match founderApprovalPayload(); the browser signs
+  // Field order MUST match founderApprovalPayload(); the browser signs
   // JSON.stringify(unsigned) verbatim and the server re-derives the same bytes.
-  const unsigned = {
-    version: 1,
-    taskId: state.task.id,
-    challenge: state.founderApprovalRequest.challenge,
-    decision: "approve-high-risk-build",
+  // Built by the workflow module itself so the browser path and the CLI signer
+  // cannot drift into producing different bytes.
+  const unsigned = unsignedFounderAssertion(state, {
     approvedAt: at,
     evidenceSha256: evidenceSha256(evidenceAbs),
-  };
+  });
   return {
     unsigned,
     payloadToSign: founderApprovalPayload(state, unsigned),
@@ -344,6 +343,18 @@ export function rekeyPendingApproval(root, taskId, { statePath: hintPath, at = n
     publicKey: enrolled.pem,
     fingerprint: enrolled.fingerprint,
   };
+  // A v2 request binds the authority fingerprint into the signed bytes, so the
+  // request has to move with the key. It also gets a FRESH challenge: any
+  // signature produced for the old key is now permanently unusable on this task
+  // rather than merely mismatched.
+  if (Number(state.founderApprovalRequest?.version || 1) >= 2) {
+    state.founderApprovalRequest = {
+      ...state.founderApprovalRequest,
+      challenge: randomUUID(),
+      authorityFingerprint: enrolled.fingerprint,
+      requestedAt: at,
+    };
+  }
   state.updatedAt = at;
   state.events.push({ at, type: "founder-approval-authority-rekeyed", stage: "builder", actor: "founder", from, to: enrolled.fingerprint });
   writeState(statePath, state);

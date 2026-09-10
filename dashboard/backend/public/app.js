@@ -54,16 +54,57 @@ import { permissionsPanel } from "/lib/permissionsView.mjs";
   modal.querySelector(".modal-backdrop").onclick = closeModal;
 
   document.getElementById("btn-logout").onclick = async () => {
-    await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
+    try {
+      await api("/api/auth/logout", { method: "POST" });
+    } catch {
+      /* logging out locally regardless */
+    }
     location.href = "/login.html";
   };
+
+  // CSRF token for this session. Fetched once on boot from /api/auth/me and
+  // refreshed if the server ever tells us it is stale.
+  let csrfToken = null;
+
+  async function refreshCsrfToken() {
+    try {
+      const res = await fetch("/api/auth/me", { credentials: "include" });
+      if (!res.ok) return null;
+      const data = await res.json();
+      csrfToken = data.csrfToken || null;
+    } catch {
+      csrfToken = null;
+    }
+    return csrfToken;
+  }
 
   async function api(path, opts = {}) {
     const headers = { ...(opts.headers || {}) };
     if (opts.body && typeof opts.body === "string" && !headers["Content-Type"]) {
       headers["Content-Type"] = "application/json";
     }
-    const res = await fetch(path, { credentials: "include", ...opts, headers });
+    const method = String(opts.method || "GET").toUpperCase();
+    const mutating = method !== "GET" && method !== "HEAD" && method !== "OPTIONS";
+    if (mutating) {
+      if (!csrfToken) await refreshCsrfToken();
+      if (csrfToken) headers["X-CSRF-Token"] = csrfToken;
+    }
+
+    let res = await fetch(path, { credentials: "include", ...opts, headers });
+
+    // A rotated session (or a server restart) invalidates the token we hold.
+    // Re-fetch once and retry, so a founder never sees a spurious CSRF error.
+    if (mutating && res.status === 403) {
+      const refreshed = await refreshCsrfToken();
+      if (refreshed) {
+        res = await fetch(path, {
+          credentials: "include",
+          ...opts,
+          headers: { ...headers, "X-CSRF-Token": refreshed },
+        });
+      }
+    }
+
     if (res.status === 401) {
       location.href = "/login.html";
       throw new Error("Unauthorized");
