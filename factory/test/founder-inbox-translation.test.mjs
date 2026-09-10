@@ -280,9 +280,47 @@ test("a blocked card offers retry and the report, and shows ids only as fine pri
   assert.match(html, /data-task-execution="task-81fca3b3"/, "the full execution view is one click inside details");
 });
 
-test("an item from an older payload still renders", () => {
+// A deploy that is not followed by a restart serves the new assets against the
+// old server's payload. That must never cost the founder the ability to act.
+test("an untranslated payload keeps every action the founder had before", () => {
+  const approval = renderFounderInboxCard({ ...APPROVAL, founder: undefined, technical: undefined }, { esc });
+  assert.match(approval, /Needs your approval/);
+  assert.match(approval, /data-approve="obj-039f0f5a-deployment-capability-core"/);
+  assert.match(approval, /data-reject="obj-039f0f5a-deployment-capability-core"/);
+  assert.match(approval, /data-approval-statepath="[^"]+state\.json"/);
+  assert.match(approval, /data-approve-status/, "the signing status line is still there");
+
+  const decision = renderFounderInboxCard({ ...POST_TASK, founder: undefined, technical: undefined }, { esc });
+  assert.match(decision, /data-resolve-choice="[^"]+" data-choice="A\. Close as already-delivered[^"]*"/);
+  assert.match(decision, /data-resolve-other=/);
+
+  const blocked = renderFounderInboxCard({ ...BLOCKED, founder: undefined, technical: undefined }, { esc });
+  assert.match(blocked, /data-retry-task="task-81fca3b3"/);
+  assert.match(blocked, /data-report-task="task-81fca3b3"/);
+});
+
+test("an untranslated payload never offers a resolve that would contradict itself", () => {
+  // "Keep paused" and "Approve and resume" are placeholders: resolving with
+  // either records that direction AND resumes the task.
+  const html = renderFounderInboxCard({ ...RECOVERY, founder: undefined, technical: undefined }, { esc });
+  assert.doesNotMatch(html, /data-choice="Keep paused"/);
+  assert.doesNotMatch(html, /data-choice="Approve and resume"/);
+  assert.doesNotMatch(html, /data-choice="Provide direction"/);
+  assert.match(html, /data-resolve-other=/, "the founder can still answer in their own words");
+});
+
+test("an untranslated payload still caps the heading and keeps the detail reachable", () => {
+  const html = renderFounderInboxCard({ ...RECOVERY, founder: undefined, technical: undefined }, { esc });
+  const heading = html.match(/<h3 class="fi-title">([^<]*)<\/h3>/)[1];
+  assert.ok(heading.length <= 141, `heading capped, got ${heading.length}`);
+  assert.match(html, /DeterministicMissionGenerator/, "the full diagnosis is still in the details fold");
+  assert.match(html, /data-task-execution="obj-c58897c0-game-backend"/, "drill-downs are rebuilt from the raw item");
+});
+
+test("an item of an unknown shape still renders", () => {
   const html = renderFounderInboxCard({ title: "Something needs you", detail: "Older shape" }, { esc });
   assert.match(html, /Something needs you/);
+  assert.match(html, /Older shape/);
 });
 
 test("an empty inbox says so plainly", () => {
