@@ -4,10 +4,11 @@ import { createHash } from "crypto";
 import { existsSync, mkdirSync, readdirSync, writeFileSync } from "fs";
 import { resolve } from "path";
 import { scrubText } from "../common/redact.mjs";
+import { lintAgentCompanyPackage } from "./agent-company-linter.mjs";
 
 const PRIVATE_KEYS = new Set(["token", "secret", "password", "privateKey", "memory", "logs", "outputs", "runtimeState"]);
 
-export function exportAgentCompany({ outputDir, company, projects = [], agents = [], skills = [], lint = null }) {
+export function exportAgentCompany({ outputDir, company, projects = [], agents = [], skills = [], lint = lintAgentCompanyPackage }) {
   if (!outputDir) throw new Error("outputDir is required"); const root = resolve(outputDir);
   if (existsSync(root) && readdirSync(root).length) throw new Error("outputDir must be empty");
   mkdirSync(root, { recursive: true, mode: 0o700 });
@@ -19,8 +20,8 @@ export function exportAgentCompany({ outputDir, company, projects = [], agents =
   for (const skill of skills) { const clean = sanitizeRecord(skill, `skill:${skill.slug || skill.name}`, manifest); const id = slug(clean.slug || clean.name); emit(root, `skills/${id}/SKILL.md`, doc({ kind: "skill", slug: id, name: clean.name || id, license: clean.license || "UNLICENSED" }, clean.body || clean.description || ""), manifest); }
   manifest.generatedFiles.sort((a, b) => a.path.localeCompare(b.path));
   emit(root, "company-export-manifest.json", `${JSON.stringify(manifest, null, 2)}\n`, manifest, false);
-  if (lint) { const result = lint(root); if (!result?.valid) throw new Error(`Exported package failed lint: ${JSON.stringify(result?.findings || [])}`); }
-  return { root, manifest, linted: Boolean(lint) };
+  const lintResult = lint(root); if (!lintResult?.valid) throw new Error(`Exported package failed lint: ${JSON.stringify(lintResult?.findings || [])}`);
+  return { root, manifest, linted: true, lintResult };
 }
 
 function sanitizeRecord(value, label, manifest) {
