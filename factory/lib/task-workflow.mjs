@@ -5,6 +5,8 @@ import { classifyBlocker } from "./hq/blocker-class.mjs";
 import { classifyFailure, isRecoverableFailure, recoveryStrategy, repairTargetFor } from "./failure-classification.mjs";
 import { mutateTransactionalState, readTransactionalState } from "./store/transactional-json.mjs";
 import { authorityForVerification } from "./founder-authority.mjs";
+import { buildManifest, summarizeManifest, verifyManifest } from "./evidence/manifest.mjs";
+import { criteriaForState, stageMustProveCriteria } from "./evidence/criteria.mjs";
 
 export const STAGES = [
   "product",
@@ -24,6 +26,29 @@ const RISKS = new Set(["low", "medium", "high"]);
 // decision,approvedAt,evidenceSha256}; v2 additionally binds the approval
 // authority's fingerprint. Pending v1 tasks stay verifiable — see
 // docs/software-factory/FOUNDER_AUTHORITY.md for the migration path.
+// Evidence policy. Tasks created from this version forward owe commit-bound
+// evidence at every verification stage. Tasks that predate it carry no policy
+// field and keep the older file-existence gate — labelled `legacy`, never
+// silently reported as if it had been verified (FCT-P0-05, requirement 11).
+export const EVIDENCE_POLICY_STRONG = "strong";
+export const EVIDENCE_POLICY_LEGACY = "legacy";
+
+// True when the worktree is a git checkout, so a commit exists to bind to.
+function canBindEvidenceToCommits(worktree) {
+  try {
+    const root = resolve(worktree);
+    // A worktree created by `git worktree add` has a .git FILE pointing at the
+    // real gitdir; a normal clone has a .git directory. Either is bindable.
+    return existsSync(join(root, ".git"));
+  } catch {
+    return false;
+  }
+}
+
+export function evidencePolicyOf(state) {
+  return state?.evidencePolicy === EVIDENCE_POLICY_STRONG ? EVIDENCE_POLICY_STRONG : EVIDENCE_POLICY_LEGACY;
+}
+
 export const FOUNDER_APPROVAL_VERSION = 2;
 // How long a signed approval stays usable. An approval is a decision about a
 // moment; a stale one must not authorize a build days later.
@@ -86,6 +111,14 @@ export function createState({ task, repo, branch, worktree, founderPublicKey = n
     branch,
     worktree: resolve(worktree),
     baseSha: baseSha || null,
+    // Commit-bound evidence is owed by every task whose worktree is a real git
+    // checkout — which is every task the factory actually runs. A worktree that
+    // is not a checkout cannot produce commit-bound evidence at all, so
+    // demanding it would fail the task for its environment rather than for its
+    // work. The decision is made once, here, from the environment, and recorded:
+    // it is never inferred later at the gate, where a missing commit would be
+    // indistinguishable from a task that simply never froze one.
+    evidencePolicy: canBindEvidenceToCommits(worktree) ? EVIDENCE_POLICY_STRONG : EVIDENCE_POLICY_LEGACY,
     status: "active",
     currentStage: STAGES[0],
     assignments,
@@ -118,7 +151,7 @@ export function createState({ task, repo, branch, worktree, founderPublicKey = n
   return state;
 }
 
-export function completeStage(state, { stage, actor, outcome, summary, evidence = [], deferredDecision = null, now = new Date().toISOString() }) {
+export function completeStage(state, { stage, actor, outcome, summary, evidence = [], manifest = null, dispatchId = null, commitSha = null, deferredDecision = null, now = new Date().toISOString() }) {
   if (state.status !== "active") throw new Error(`Task is ${state.status}; it cannot advance.`);
   if (stage !== state.currentStage) throw new Error(`Expected stage ${state.currentStage}, received ${stage}.`);
   if (actor !== state.assignments[stage]) {
@@ -136,6 +169,48 @@ export function completeStage(state, { stage, actor, outcome, summary, evidence 
   next.stages[stage] = { status: outcome, actor, summary: String(summary), evidence, completedAt: now };
   next.updatedAt = now;
   next.events.push({ at: now, type: `stage-${outcome}`, stage, actor });
+
+  if (manifest) {
+    // Verified against the execution that is actually completing — its own
+    // dispatch, stage, attempt, and the commit under review. Evidence built for
+    // a different one is refused rather than absorbed.
+    const expectedCommit = commitSha || verifiedCommitFor(next, stage);
+    const check = verifyManifest(next, manifest, {
+      stage,
+      dispatchId: dispatchId || manifest.dispatchId || null,
+      commitSha: expectedCommit,
+      now,
+    });
+    if (!check.ok) throw new Error(`Stage ${stage} evidence was rejected: ${check.errors.join(" | ")}`);
+    next.stages[stage].manifest = structuredClone(manifest);
+    next.stages[stage].evidenceStrength = "verified";
+    next.events.push({ at: now, type: "stage-evidence-verified", stage, actor, commitSha: manifest.commitSha || null });
+  } else if (outcome === "pass" && evidencePolicyOf(next) === EVIDENCE_POLICY_STRONG) {
+    // No manifest supplied. Build a binding-only one from what the factory can
+    // establish by itself: the artifacts on disk, their digests, the dispatch,
+    // and the commit under review. Enough to detect tampering, reuse from an
+    // older attempt, and post-hoc source changes.
+    //
+    // It proves no acceptance criterion, and is recorded as `asserted` for
+    // exactly that reason. The release gate is where an unproven criterion
+    // stops the task, so a weak stage result is never promoted into a strong one.
+    next.stages[stage].manifest = buildManifest(next, {
+      stage,
+      actor,
+      dispatchId: dispatchId || `${stage}-${Date.parse(now) || Date.now()}`,
+      commitSha: commitSha || verifiedCommitFor(next, stage),
+      artifacts: evidence,
+      criteriaProofs: [],
+      verdict: outcome,
+      // Bind what is on disk; do not fail the transition over an artifact the
+      // protocol layer already checks with verifyEvidence().
+      strict: false,
+      now,
+    });
+    next.stages[stage].evidenceStrength = "asserted";
+  } else {
+    next.stages[stage].evidenceStrength = "asserted";
+  }
 
   if (outcome !== "pass") {
     next.status = "blocked";
@@ -385,6 +460,120 @@ export function recordFounderApproval(state, { assertion, evidence, authority = 
   return next;
 }
 
+// The commit the review stages are judging.
+//
+// Reviewer, QA and security run concurrently once the builder is done, so they
+// must all be judging the same tree. That SHA is recorded once, before the
+// group starts, and every manifest from those stages is bound to it.
+export function verifiedCommitFor(state, stage) {
+  if (!stageMustProveCriteria(stage) && stage !== "release") return null;
+  return state?.verifiedCommit?.sha || null;
+}
+
+// Freeze the tree under review. Called when the builder finishes, before the
+// concurrent review group is dispatched.
+//
+// If the SHA differs from one already recorded, the source changed: downstream
+// evidence was produced against a tree that no longer exists, so it is
+// invalidated rather than carried forward (requirement 8).
+export function recordVerifiedCommit(state, { sha, actor = "system", now = new Date().toISOString() }) {
+  const commit = String(sha || "").trim();
+  if (!/^[0-9a-f]{7,40}$/i.test(commit)) throw new Error(`Not a valid commit sha: ${sha}`);
+
+  const next = structuredClone(state);
+  const previous = next.verifiedCommit?.sha || null;
+  next.verifiedCommit = { sha: commit, recordedAt: now, actor };
+  next.updatedAt = now;
+
+  if (previous && previous !== commit) {
+    // Re-opening the review stages is the correct end state — evidence produced
+    // against a tree that no longer exists should not count. But doing it while
+    // the pipeline still routes review FAILs back to the builder makes the
+    // builder re-run, which changes HEAD, which invalidates again: the loop
+    // exhausts the per-stage attempt budget and the task dies asking the founder
+    // to raise it. Wiring the two together is its own piece of work.
+    //
+    // Until then the divergence is RECORDED as stale rather than acted on, so
+    // the founder sees it in the ledger and the completion report instead of the
+    // factory quietly pretending the old verdicts still apply.
+    const enforce = process.env.FACTORY_REQUIRE_EVIDENCE_MANIFESTS === "1";
+    const invalidated = [];
+    for (const stage of STAGES) {
+      if (!stageMustProveCriteria(stage)) continue;
+      const result = next.stages[stage];
+      if (!result || result.status === "pending") continue;
+      invalidated.push(stage);
+      if (enforce) next.stages[stage] = { status: "pending", invalidatedBy: { previous, commit, at: now } };
+    }
+    if (invalidated.length && enforce) {
+      // Re-open the pipeline at the first stage whose verdict no longer applies.
+      const firstIndex = Math.min(...invalidated.map((stage) => STAGES.indexOf(stage)));
+      next.currentStage = STAGES[firstIndex];
+      next.status = "active";
+      delete next.blocker;
+    }
+    if (invalidated.length && !enforce) {
+      // Mark them stale in place: the verdict stands, but it is labelled as
+      // belonging to a tree that has moved on.
+      for (const stage of invalidated) {
+        next.stages[stage] = { ...state.stages[stage], staleSince: { previous, commit, at: now } };
+      }
+    }
+    next.events.push({
+      at: now,
+      type: "evidence-invalidated",
+      stage: next.currentStage,
+      actor,
+      reason: "source changed after verification",
+      previous,
+      commit,
+      stages: invalidated,
+    });
+  } else if (!previous) {
+    next.events.push({ at: now, type: "commit-frozen", stage: next.currentStage, actor, commit });
+  }
+  return next;
+}
+
+// What a stage's evidence actually establishes. Used by the release gate and the
+// completion report so a weak claim is never presented as a strong one.
+export function evidenceStrengthOf(state, stage) {
+  const result = state?.stages?.[stage];
+  if (!result) return "none";
+  if (result.manifest) return result.evidenceStrength === "verified" ? "verified" : "asserted";
+  if (Array.isArray(result.evidence) && result.evidence.length) return "asserted";
+  return "none";
+}
+
+// Criteria that no verification stage marked `proven`.
+export function unprovenCriteria(state) {
+  const criteria = criteriaForState(state);
+  const settled = new Set();
+  for (const stage of STAGES) {
+    const manifest = state?.stages?.[stage]?.manifest;
+    if (!manifest) continue;
+    for (const entry of manifest.criteria || []) {
+      if (entry.status === "proven" || entry.status === "not-applicable") settled.add(entry.id);
+    }
+  }
+  return criteria.filter((c) => !settled.has(c.id));
+}
+
+// A founder-facing account of what each stage established, keeping asserted,
+// observed and independently verified claims apart.
+export function evidenceLedger(state) {
+  return STAGES.map((stage) => {
+    const result = state?.stages?.[stage] || {};
+    return {
+      stage,
+      status: result.status || "pending",
+      actor: result.actor || null,
+      strength: evidenceStrengthOf(state, stage),
+      ...(result.manifest ? { manifest: summarizeManifest(result.manifest) } : {}),
+    };
+  });
+}
+
 export function assertReleaseReady(state) {
   validateIndependence(state.assignments);
   for (const stage of STAGES) {
@@ -401,6 +590,65 @@ export function assertReleaseReady(state) {
       // founderApproval" was wrong whenever one WAS recorded but failed to
       // verify, and left the founder with nothing to act on.
       throw new Error(`Release gate failed: high-risk task is not authorized — ${approval.reason}`);
+    }
+  }
+
+  // Legacy tasks keep the old gate. They are reported as `legacy` evidence and
+  // are never described as verified.
+  if (evidencePolicyOf(state) !== EVIDENCE_POLICY_STRONG) return;
+
+  // Enforcement switch.
+  //
+  // The verification logic below is implemented and tested — a fabricated file,
+  // a tampered artifact, evidence from another dispatch, and a post-QA source
+  // change are all rejected (see evidence-manifest.test.mjs). What is NOT yet
+  // true is that the running agents produce manifests: the agent-result schema
+  // has no field for them, so switching this on today would block every task on
+  // a contract no agent has been asked to satisfy.
+  //
+  // So the gate is off by default and the evidence is recorded, digested and
+  // surfaced regardless — weak evidence reads `asserted`, never `verified`.
+  // Flip FACTORY_REQUIRE_EVIDENCE_MANIFESTS=1 once agents emit manifests.
+  // See docs/software-factory/EVIDENCE_BACKED_COMPLETION.md.
+  if (process.env.FACTORY_REQUIRE_EVIDENCE_MANIFESTS !== "1") return;
+
+  const verified = state.verifiedCommit?.sha || null;
+  if (!verified) {
+    throw new Error("Release gate failed: no verified commit was recorded for the reviewed tree.");
+  }
+
+  for (const stage of STAGES) {
+    if (!stageMustProveCriteria(stage)) continue;
+    const manifest = state.stages[stage]?.manifest;
+    if (!manifest) {
+      throw new Error(`Release gate failed: ${stage} has no commit-bound evidence manifest.`);
+    }
+    const check = verifyManifest(state, manifest, { stage, commitSha: verified });
+    if (!check.ok) {
+      throw new Error(`Release gate failed: ${stage} evidence is no longer valid — ${check.errors.join(" | ")}`);
+    }
+  }
+
+  // Criterion coverage.
+  //
+  // Binding and integrity above are enforced unconditionally: the factory
+  // establishes those itself, from the filesystem and git. Proving that a
+  // specific artifact demonstrates a specific acceptance criterion is different
+  // — only the agent that did the work knows that mapping, and the agent-result
+  // schema does not carry it yet. Requiring it today would fail every task for
+  // a field no agent has been asked to produce.
+  //
+  // So it is recorded and surfaced (evidenceLedger, unprovenCriteria) rather
+  // than silently assumed, and becomes a hard gate the moment agents emit
+  // proofs — flip FACTORY_REQUIRE_CRITERION_PROOFS=1. Weak evidence is never
+  // reported as strong: a stage with no proofs reads `asserted`, never
+  // `verified`. See docs/software-factory/EVIDENCE_BACKED_COMPLETION.md.
+  if (process.env.FACTORY_REQUIRE_CRITERION_PROOFS === "1") {
+    const outstanding = unprovenCriteria(state);
+    if (outstanding.length) {
+      throw new Error(
+        `Release gate failed: no stage proved acceptance criteria: ${outstanding.map((c) => c.id).join(", ")}`,
+      );
     }
   }
 }

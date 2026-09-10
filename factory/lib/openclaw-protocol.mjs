@@ -229,6 +229,22 @@ export function ingestResult({ statePath, result, agentMeta = null, maxAttemptsP
         deferredDecision,
         now,
       });
+      // NOT YET WIRED: freezing the reviewed commit here (FCT-P0-05 req 7).
+      //
+      // recordVerifiedCommit() is implemented and unit-tested, but calling it
+      // from this point regresses 27 tests in the recovery and concurrent-review
+      // flows — the builder ends up exhausting its per-stage attempt budget and
+      // the task blocks asking the founder to raise it. I could not account for
+      // that from the failures alone (the call site does not even appear to
+      // execute in the failing runs), and wiring a gate I do not understand is
+      // worse than leaving it visibly unwired.
+      //
+      // Enabling it needs the interaction between commit invalidation,
+      // routeStageFailure's review-FAIL-to-builder routing, and the attempt
+      // budget worked out deliberately. Until then the manifests built below
+      // still carry digests, dispatch and stage binding — everything except the
+      // commit anchor.
+
       const finished = { ...dispatch, status: "completed", outcome: result.outcome, summary: result.summary, completedAt: now };
       if (agentMeta) finished.usage = sanitizeUsage(agentMeta);
       completed.dispatches = [...(state.dispatches || []), finished];
