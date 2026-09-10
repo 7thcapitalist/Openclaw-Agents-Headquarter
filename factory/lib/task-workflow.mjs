@@ -246,7 +246,7 @@ export function startRecovery(state, { failedStage, actor, error, evidence = [],
   return next;
 }
 
-export function recordRecoveryResult(state, { outcome, actor, summary, evidence = [], diagnosis = null, now = new Date().toISOString() }) {
+export function recordRecoveryResult(state, { outcome, actor, summary, evidence = [], diagnosis = null, maxAttemptsPerStage = 3, now = new Date().toISOString() }) {
   const active = state.recovery?.active;
   if (!active) throw new Error("No recovery attempt is active.");
   const next = structuredClone(state);
@@ -270,23 +270,34 @@ export function recordRecoveryResult(state, { outcome, actor, summary, evidence 
     attempt.status = "verified";
     attempt.completedAt = now;
     next.recovery.active = null;
+    next.updatedAt = now;
+    next.events.push({ at: now, type: "recovery-verified", stage: active.failedStage, actor, attempt: active.attempt });
     // A verified repair to the PROJECT rewrote the code every earlier gate
     // passed against, so those verdicts are stale — resume at the builder and
-    // invalidate everything downstream, exactly as routeStageFailure does for
-    // the review FAIL it handles directly. Without this, a reviewer's rejection
-    // is answered by a recovery patch and a re-review while the builder stage
-    // still reads `pass` against code it never produced.
-    // A factory repair (the agent could not run) changed no code, so the failed
-    // stage simply retries in place and earlier gates stand.
+    // invalidate everything downstream. A factory repair (the agent could not
+    // run) changed no code, so the failed stage retries in place and earlier
+    // gates stand.
     const resumeAt = REVIEW_STAGES.has(active.failedStage) && attempt.repairTarget === "project"
       ? "builder"
       : active.failedStage;
+    // That re-entry is a stage attempt like any other and must respect the
+    // per-stage budget: without this check each recovery cycle silently minted
+    // a fresh attempt, so a stage could be dispatched indefinitely while
+    // `routeStageFailure`'s limit never applied. Counted against the stage we
+    // are actually about to re-enter.
+    const attempts = (next.dispatches || []).filter((item) => item.stage === resumeAt && (item.kind === "stage" || !item.kind)).length;
+    if (attempts >= maxAttemptsPerStage) {
+      return escalateRecovery(next, {
+        failedStage: resumeAt,
+        kind: "FOUNDER_DECISION_REQUIRED",
+        error: `Recovery attempt ${active.attempt} was independently verified, but ${resumeAt} has already used ${attempts} of ${maxAttemptsPerStage} stage attempts. Re-running it would exceed the per-stage budget. Founder direction is required: accept the verified work and advance, raise the budget, or change scope.`,
+        now,
+      });
+    }
     for (const stage of STAGES.slice(STAGES.indexOf(resumeAt))) next.stages[stage] = { status: "pending" };
     next.status = "active";
     next.currentStage = resumeAt;
-    next.updatedAt = now;
-    next.events.push({ at: now, type: "recovery-verified", stage: active.failedStage, actor, attempt: active.attempt });
-    next.events.push({ at: now, type: "task-resumed", stage: resumeAt, actor: "system", reason: "recovery-verified", ...(resumeAt !== active.failedStage ? { fromStage: active.failedStage, invalidatedDownstream: true } : {}) });
+    next.events.push({ at: now, type: "task-resumed", stage: resumeAt, actor: "system", reason: "recovery-verified", attempt: attempts + 1, ...(resumeAt !== active.failedStage ? { fromStage: active.failedStage, invalidatedDownstream: true } : {}) });
     return next;
   }
   return finishRecoveryFailure(next, { summary, actor, evidence, outcome, now });
