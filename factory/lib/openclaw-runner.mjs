@@ -3,13 +3,14 @@ import { promisify } from "util";
 import { setTimeout as delay } from "timers/promises";
 import { existsSync, mkdirSync, unlinkSync, writeFileSync, readFileSync } from "fs";
 import { basename, dirname, join } from "path";
-import { PROTOCOL_VERSION, computeDispatchPaths, failDispatch, ingestResult, markDispatchRunning, prepareDispatch, readResultFile } from "./openclaw-protocol.mjs";
+import { PROTOCOL_VERSION, computeDispatchPaths, failDispatch, ingestResult, markDispatchRunning, prepareDispatch, readResultFile, recordDispatchAgentId } from "./openclaw-protocol.mjs";
 import { parseAgentMeta } from "./hq/agent-meta.mjs";
 import { readState, writeState } from "./task-workflow.mjs";
 import { writeHandoff } from "./handoff.mjs";
 import { publishMergeReadyTask } from "./hq/github-publish.mjs";
 import { buildCompletionReport } from "./hq/completion-report.mjs";
 import { sanitizeExcerpt } from "./common/redact.mjs";
+import { observeDispatchState } from "./telemetry/dispatch.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -65,6 +66,7 @@ export async function runOneStage({ hqRoot, statePath, agentIds = {}, maxAttempt
   if (initial.yieldedGroup) return { version: PROTOCOL_VERSION, status: "dispatch", taskId: initial.task.id, waiting: true };
   const prepared = prepareDispatch({ hqRoot, statePath });
   if (prepared.status !== "dispatch") return prepared;
+  observeDispatchState({ hqRoot, statePath, phase: "ready", dispatchId: prepared.dispatchId });
   const owned = readState(statePath).currentDispatch;
   // A dispatcher can be restarted after it has claimed a dispatch but before
   // it writes the result. The state file is durable, so prepareDispatch returns
@@ -90,15 +92,20 @@ export async function runOneStage({ hqRoot, statePath, agentIds = {}, maxAttempt
   }
   const routes = configuredAgentIds(hqRoot, agentIds);
   markDispatchRunning({ statePath, dispatchId: prepared.dispatchId });
+  observeDispatchState({ hqRoot, statePath, phase: "running", dispatchId: prepared.dispatchId });
   let agentId;
   try {
     agentId = selectAgentId(prepared, routes, { strict: Object.keys(routes).some((key) => key === `${prepared.stage}:${prepared.actor}` || key.startsWith(`${prepared.stage}:`)) });
   } catch (error) {
     const diagnostic = `Factory routing error: ${error.message || error}`;
     const response = failDispatch({ statePath, dispatchId: prepared.dispatchId, error: diagnostic, maxAttemptsPerStage });
+    observeDispatchState({ hqRoot, statePath, phase: "failed", dispatchId: prepared.dispatchId, error: diagnostic });
     if (["merge-ready", "blocked"].includes(response.status)) writeCompletionReport({ statePath });
     return response;
   }
+  // The agent will self-report either the logical actor or this runtime id.
+  // Persist the routing decision so ingest recognises both.
+  recordDispatchAgentId({ statePath, dispatchId: prepared.dispatchId, agentId });
   const sessionKey = `agent:${agentId}:factory-${prepared.dispatchId}`;
   let response;
   const startedAt = Date.now();
@@ -115,6 +122,7 @@ export async function runOneStage({ hqRoot, statePath, agentIds = {}, maxAttempt
       current.currentDispatch.yieldedAt = new Date().toISOString();
       current.events.push({ at: current.currentDispatch.yieldedAt, type: "dispatch-yielded", dispatchId: prepared.dispatchId, stage: prepared.stage });
       writeState(statePath, current);
+      observeDispatchState({ hqRoot, statePath, phase: "yielded", dispatchId: prepared.dispatchId });
       const ready = await waitForResult({ resultPath: prepared.resultPath, heartbeat: () => {
         const live = readState(statePath);
         if (live.currentDispatch?.id !== prepared.dispatchId) throw new Error("Yielded dispatch ownership changed");
@@ -138,8 +146,10 @@ export async function runOneStage({ hqRoot, statePath, agentIds = {}, maxAttempt
         stderr: executed?.stderr,
       });
       response = failDispatch({ statePath, dispatchId: prepared.dispatchId, error: diagnostic.summary, maxAttemptsPerStage });
+      observeDispatchState({ hqRoot, statePath, phase: "failed", dispatchId: prepared.dispatchId, agentMeta, error: diagnostic.summary });
     } else {
       response = ingestResult({ statePath, result: readResultFile(prepared.resultPath), agentMeta, maxAttemptsPerStage });
+      observeDispatchState({ hqRoot, statePath, phase: "completed", dispatchId: prepared.dispatchId, agentMeta });
       if (response.status === "merge-ready") {
         response.githubPublish = publishAndRecord({ hqRoot, statePath, publish });
       }
@@ -169,11 +179,14 @@ export async function runOneStage({ hqRoot, statePath, agentIds = {}, maxAttempt
     if (existsSync(prepared.resultPath)) {
       try {
         response = ingestResult({ statePath, result: readResultFile(prepared.resultPath), agentMeta, maxAttemptsPerStage });
+        observeDispatchState({ hqRoot, statePath, phase: "completed", dispatchId: prepared.dispatchId, agentMeta });
       } catch (ingestError) {
         response = failDispatch({ statePath, dispatchId: prepared.dispatchId, error: summarizeError(ingestError), maxAttemptsPerStage });
+        observeDispatchState({ hqRoot, statePath, phase: "failed", dispatchId: prepared.dispatchId, agentMeta, error: summarizeError(ingestError) });
       }
     } else {
       response = failDispatch({ statePath, dispatchId: prepared.dispatchId, error: failure, maxAttemptsPerStage });
+      observeDispatchState({ hqRoot, statePath, phase: "failed", dispatchId: prepared.dispatchId, agentMeta, error: failure });
     }
   }
   // A founder-readable completion report for every terminal or paused outcome —

@@ -1,0 +1,11 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, writeFileSync } from "fs";
+import { join } from "path";
+import { tmpdir } from "os";
+import { lintAgentCompanyPackage, parseFrontmatter } from "../lib/packages/agent-company-linter.mjs";
+const root = () => mkdtempSync(join(tmpdir(), "agent-company-"));
+test("parses the portable frontmatter subset", () => { assert.deepEqual(parseFrontmatter("---\nname: Demo\nkind: company\nincludes:\n  - teams/TEAM.md\n---\n# Demo\n"), { name: "Demo", kind: "company", includes: ["teams/TEAM.md"] }); });
+test("valid package is inspected read-only with a pinned source", () => { const dir = root(); const before = Date.now(); writeFileSync(join(dir, "COMPANY.md"), `---\nname: Demo\nkind: company\nslug: demo\nlicense: MIT\nsources:\n  - https://github.com/example/repo/blob/${"a".repeat(40)}/TEAM.md\n---\n`); const result = lintAgentCompanyPackage(dir); assert.equal(result.valid, true); assert.deepEqual(result.files, ["COMPANY.md"]); assert.ok(Date.now() >= before); });
+test("rejects traversal, mutable refs, secrets, and private filenames", () => { const dir = root(); writeFileSync(join(dir, "COMPANY.md"), "---\nname: Demo\nincludes:\n  - ../outside/TEAM.md\n  - https://github.com/example/repo/blob/main/TEAM.md\n---\nghp_abcdefghijklmnopqrstuvwxyz123456\n"); writeFileSync(join(dir, ".env"), "TOKEN=x\n"); const result = lintAgentCompanyPackage(dir); assert.equal(result.valid, false); for (const code of ["unsafe-reference", "mutable-reference", "secret-content", "private-file"]) assert.ok(result.findings.some((x) => x.code === code), code); });
+test("reports malformed package roots without throwing", () => { const result = lintAgentCompanyPackage(join(root(), "missing")); assert.equal(result.valid, false); assert.equal(result.findings[0].code, "package-missing"); });

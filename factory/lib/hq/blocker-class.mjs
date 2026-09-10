@@ -104,6 +104,29 @@ export function classifyObjectiveNodeBlocker(blocker) {
   return classifyBlocker(blocker);
 }
 
+// Is this blocker safe for the SYSTEM to retry on its own?
+//
+// Distinct from classifyBlocker(), which answers "who owns this now". Recovery
+// escalation wraps an exhausted infrastructure failure as `decision-required`
+// with `founderAction: true` so it appears in the Founder Inbox and cannot
+// disappear silently — correct, but it also made every resume path treat a
+// rate-limited seat as a decision only a human could clear. The two questions
+// are different: the founder may well need to KNOW, while the work is still
+// perfectly safe for the sweep to pick up once the window resets.
+//
+// The machine classification recorded at escalation time is authoritative.
+export function isRetriableInfraBlocker(blocker) {
+  if (!blocker) return false;
+  if (classifyBlocker(blocker) === "infra") return true;
+  if (blocker.classification === "INFRASTRUCTURE_ERROR") return true;
+  // Recovery escalation keeps the ORIGINAL error in `why` and prefixes
+  // `summary` with "Recovery could not continue after N bounded attempt(s)".
+  // Judge the underlying cause, not the wrapper — otherwise an agent that
+  // could not start the CLI reads as a project failure once recovery has
+  // wrapped it, and the sweep will not pick it up when the seat returns.
+  return INFRA_FAIL_RE.test(String(blocker.why || ""));
+}
+
 export function isInfraFailure(blocker) {
   return classifyBlocker(blocker) === "infra";
 }
