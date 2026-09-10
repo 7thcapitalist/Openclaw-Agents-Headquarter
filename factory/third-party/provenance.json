@@ -422,7 +422,6 @@
       "sourceId": "paperclip",
       "sourcePath": "server/src/services/agent-task-run-telemetry.ts",
       "classification": "reference",
-      "notes": "Documents the pinned source and why HQ measures accepted outcomes rather than activity.",
       "notes": "Documents the pinned source and why HQ keeps the signed assertion as the sole authority."
     },
     {
@@ -466,6 +465,34 @@
       "sourcePath": "server/src/services/decision-retention.ts",
       "classification": "reference",
       "notes": "Documents the pinned sources, the retention classes, and the confirmed-count deletion protocol."
+    },
+    {
+      "localPath": "factory/lib/packages/agent-company-import.mjs",
+      "sourceId": "paperclip",
+      "sourcePath": "server/src/services/company-portability.ts",
+      "classification": "adapted",
+      "notes": "Adapts Paperclip company import into a strictly read-only HQ preview that produces a proposed diff and exposes no apply path."
+    },
+    {
+      "localPath": "scripts/preview-agent-company-import.mjs",
+      "sourceId": "paperclip",
+      "sourcePath": "server/src/services/company-import-transfers.ts",
+      "classification": "inspired",
+      "notes": "Read-only CLI for the import preview; deliberately has no --apply."
+    },
+    {
+      "localPath": "factory/test/agent-company-import.test.mjs",
+      "sourceId": "paperclip",
+      "sourcePath": "server/src/services/company-portability.ts",
+      "classification": "inspired",
+      "notes": "Tests non-mutation, lint gating, field-level diffing, dangling reporting lines, symlink escape, and sanitisation."
+    },
+    {
+      "localPath": "docs/software-factory/PAPERCLIP_COMPANY_IMPORT_PREVIEW.md",
+      "sourceId": "paperclip",
+      "sourcePath": "docs/companies/companies-spec.md",
+      "classification": "reference",
+      "notes": "Documents the pinned source and why application stays a reviewed pull request."
     }
   ]
 }
