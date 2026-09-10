@@ -65,11 +65,41 @@ export function checkAcpxAgents(configText) {
   let config;
   try { config = JSON.parse(configText); } catch { return { level: "warn", line: "could not read openclaw.json" }; }
   const mapped = Object.keys(config?.plugins?.entries?.acpx?.config?.agents || {});
-  const missing = ["claude", "codex"].filter((a) => !mapped.includes(a));
-  if (missing.length) {
-    return { level: "warn", line: `acpx has no command mapping for: ${missing.join(", ")}`, detail: "runtime.acp.agent:\"claude\" has nothing to spawn and silently falls back to OpenAI. `claude` has no ACP mode, so this cannot be wired the way `cursor` is — see REVIEW_MODEL_ROUTING.md." };
+
+  // `claude` and `codex` are NOT served by acpx and must not be reported as
+  // missing from it. Verified by probe on 2026-09-09:
+  //   openclaw agent --agent reviewer        -> provider claude-cli, claude-sonnet-5
+  //   openclaw agent --agent backend-builder -> provider openai,     gpt-5.6-sol
+  // Both seats serve real dispatches through their own runtimes. The previous
+  // check asserted the opposite ("silently falls back to OpenAI"), which read as
+  // a broken Claude seat for months and is the premise behind the ACP section of
+  // REVIEW_MODEL_ROUTING.md and part of DC-2026-001. acpx is only the bridge for
+  // genuinely ACP-only harnesses, of which `cursor` is the one in use.
+  const ACPX_ONLY = ["cursor"];
+  const missing = ACPX_ONLY.filter((a) => !mapped.includes(a));
+
+  // Report which seat each role actually resolves to, so "are both seats
+  // working together" is answerable without a probe.
+  const norm = (m) => (!m ? null : typeof m === "string" ? m : String(m.primary || ""));
+  const entries = config?.agents?.entries || {};
+  const seatOf = (model) => (model || "").split("/")[0] || "inherited";
+  const bySeat = {};
+  for (const [id, entry] of Object.entries(entries)) {
+    const seat = seatOf(norm(entry.model) || norm(config?.agents?.defaults?.model));
+    (bySeat[seat] ||= []).push(id);
   }
-  return { level: "ok", line: `acpx agents mapped: ${mapped.join(", ")}` };
+  const spread = Object.entries(bySeat)
+    .sort((a, b) => b[1].length - a[1].length)
+    .map(([seat, ids]) => `${seat}:${ids.length}`)
+    .join(", ");
+
+  if (missing.length) {
+    return { level: "warn", line: `acpx has no command mapping for: ${missing.join(", ")}`, detail: `acpx bridges ACP-only harnesses. Roles per seat — ${spread}.` };
+  }
+  if (Object.keys(bySeat).length < 2) {
+    return { level: "warn", line: "every role resolves to one provider seat", detail: `A single seat is the throughput ceiling for the whole pipeline (DC-2026-001). Roles per seat — ${spread}.` };
+  }
+  return { level: "ok", line: `roles split across seats — ${spread}`, detail: `acpx agents mapped: ${mapped.join(", ") || "(none needed)"}` };
 }
 
 export function checkFactoryActivity(hqRoot) {
