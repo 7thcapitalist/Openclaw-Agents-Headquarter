@@ -453,11 +453,6 @@
       "notes": "Tests source labelling, incompleteness disclosure, truncation, and escaping."
     },
     {
-      "localPath": "docs/software-factory/PAPERCLIP_RUN_TIMELINE.md",
-      "sourceId": "paperclip",
-      "sourcePath": "server/src/services/work-timeline.ts",
-      "classification": "reference",
-      "notes": "Documents the pinned sources and the layers-and-honesty contract.",
       "localPath": "factory/lib/hq/retention.mjs",
       "sourceId": "paperclip",
       "sourcePath": "server/src/services/decision-retention.ts",
@@ -528,11 +523,6 @@
       "notes": "Tests escaping of attacker-controlled text, absence of links, disclosure of truncation and redaction, and server re-read after posting."
     },
     {
-      "localPath": "docs/software-factory/PAPERCLIP_TASK_INTERACTIONS.md",
-      "sourceId": "paperclip",
-      "sourcePath": "server/src/services/issue-assignment-wakeup.ts",
-      "classification": "reference",
-      "notes": "Documents the pinned sources and the untrusted-data boundary.",
       "localPath": "factory/lib/packages/agent-company-import.mjs",
       "sourceId": "paperclip",
       "sourcePath": "server/src/services/company-portability.ts",
@@ -559,6 +549,27 @@
       "sourcePath": "docs/companies/companies-spec.md",
       "classification": "reference",
       "notes": "Documents the pinned source and why application stays a reviewed pull request."
+    },
+    {
+      "localPath": "factory/lib/integrations/connector-outbox.mjs",
+      "sourceId": "paperclip",
+      "sourcePath": "server/src/services/paperclip-cloud-connector.ts",
+      "classification": "adapted",
+      "notes": "Adapts Paperclip connector delivery, replay protection, circuit state and drift reconciliation into a local, transport-free HQ state machine with no network capability."
+    },
+    {
+      "localPath": "factory/test/connector-outbox.test.mjs",
+      "sourceId": "paperclip",
+      "sourcePath": "server/src/services/paperclip-cloud-connector.test.ts",
+      "classification": "inspired",
+      "notes": "Tests the absence of any network primitive, deterministic identity, bounded backoff and retries, circuit half-open, nonce replay, restart rebuild, and read-only drift."
+    },
+    {
+      "localPath": "docs/software-factory/PAPERCLIP_CONNECTOR_OUTBOX.md",
+      "sourceId": "paperclip",
+      "sourcePath": "server/src/services/execution-control-reconciliation.ts",
+      "classification": "reference",
+      "notes": "Documents the pinned sources and why delivery semantics are built before any connection exists."
     }
   ]
 }
