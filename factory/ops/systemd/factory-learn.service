@@ -1,0 +1,18 @@
+[Unit]
+Description=OpenClaw Factory Learning Cycle (retrospective + mastery pass)
+Documentation=https://github.com/7thcapitalist/Openclaw-Agents-Headquarter/blob/main/docs/software-factory/DECISIONS.md
+After=network-online.target openclaw-gateway.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Adjust WorkingDirectory to wherever this repo lives on the host.
+WorkingDirectory=%h/Openclaw-Agents-Headquarter
+ExecStart=/usr/bin/env npm run --silent factory:learn -- cycle
+# The cycle is read-only over project repos; its only writes are the learning
+# runtime state and (when learning.autonomy.enabled) one learning/* PR branch.
+Nice=10
+TimeoutStartSec=3600
+
+[Install]
+WantedBy=default.target

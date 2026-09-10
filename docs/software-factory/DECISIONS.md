@@ -199,3 +199,40 @@ entries. When a decision changes, add a new entry and mark the old one
   credentials (`VERCEL_TOKEN`, project/org ids, DB URLs) are read from
   `process.env` / the secret store only and are redacted from all persisted
   deployment state.
+## SFD-2026-011 — Learning Agent scheduled cycle; autonomous merge remains PROPOSED
+
+- Date: 2026-09-07
+- Status: **Proposed** — awaiting founder decision on
+  `decision-cards/DC-2026-002-learning-agent-autonomy.md`. The retrospective and
+  mastery capability is merged and inert: `learning.autonomy.enabled` ships
+  `false` and no systemd timer is installed. The auto-merge clause below is NOT
+  in force — it contradicts accepted SFD-2026-008 (every change lands via a PR)
+  and SFD-2026-003 (V1 human-merge mode), which continue to govern. Accepting
+  this decision means consciously superseding both for the whitelisted class.
+- Decision: The Learning / R&D Agent runs `npm run factory:learn -- cycle` every
+  3 days (`factory/ops/systemd/factory-learn.{service,timer}`). Each cycle has a
+  **retrospective pass** (failure/success analysis + performance metrics —
+  cycle time, per-stage wall time, retry burn, first-pass rate, blocked rate,
+  run-over-run trend; `factory/lib/learning/metrics.mjs`) and an **always-on
+  mastery pass** (`factory/lib/learning/mastery.mjs`): one rotating deep-dive
+  role per cycle, studied against its recent work plus allowlisted, budgeted web
+  research, producing `agent-improvement` findings and a dated entry in
+  `factory/knowledge/agents/<role>.md`. Proposals in a founder-set whitelist
+  (`factory.config.json → learning.autonomy.whitelist`, currently
+  `knowledge-append`) are opened as one auto-merge-candidate PR per cycle, capped
+  at `maxAutoMergesPerRun` (default 2); that PR still runs the full factory
+  pipeline (independent review + QA + security) and merges only all-green.
+- Rationale: `SFD-2026-006`'s proposal-only rule made every improvement depend on
+  founder attention, which kept the agent idle. The goal is agents that get
+  measurably better at their craft month over month; that needs a cadence and a
+  low-friction path for the safe, high-volume class of change.
+- Consequences: `SFD-2026-006` is **superseded only for the whitelisted class** —
+  everything else (role prompts, `factory.config.json` routing/gates/risk,
+  `OPERATING_RULES.md`, `AGENTS.md`, `run.sh`, `DECISIONS.md`, any project repo)
+  stays a founder-promoted proposal or a Decision Card. Guardrails: master kill
+  switch `learning.autonomy.enabled: false` (instant revert to proposal-only);
+  per-run cap; full audit trail in `dashboard/backend/data/factory/_learning/autonomy-log.jsonl`
+  and `digest.md`; each autonomous merge is one squashed commit (`git revert`).
+  Web research stays read-only, source-cited, redacted, allowlist + per-run
+  budget. Reverting the whole change: set `learning.autonomy.enabled: false`,
+  disable the systemd timer, and (optionally) `git revert` the feature commit.
