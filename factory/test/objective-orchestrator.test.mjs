@@ -469,7 +469,8 @@ test("runObjective: rerun retries only a publish-blocked node, then integrates",
 });
 
 test("resuming an infrastructure-blocked node reuses its task and passed stages", async () => {
-  const { resumeState, readState, writeState } = await import("../lib/task-workflow.mjs");
+  const { resumeState, readState } = await import("../lib/task-workflow.mjs");
+  const { mutateTransactionalState } = await import("../lib/store/transactional-json.mjs");
   const root = mkdtempSync(join(tmpdir(), "objective-resume-"));
   const { repo } = makeRepo(root);
   const { objectivePath } = writeObjective(root, repo, NODES.slice(0, 1));
@@ -482,7 +483,12 @@ test("resuming an infrastructure-blocked node reuses its task and passed stages"
   const node = Object.values(readObjState(objectivePath).nodes)[0];
   const before = readState(node.statePath);
   assert.equal(before.stages.product.status, "pass");
-  writeState(node.statePath, resumeState(before));
+  // Simulates a founder resuming the task: the real resume path
+  // (dashboard/backend/lib/founderControlPlane.mjs) writes through this same
+  // transactional API, never through task-workflow.mjs's plain writeState —
+  // that plain JSON file is a read-only export once the transactional
+  // authority owns a task, so writing it directly would not be observed.
+  mutateTransactionalState(node.statePath, { commandId: `test-resume:${node.id}`, mutate: (state) => resumeState(state) });
   const windows = [];
   const result = await runObjective({ ...opts, execute: makeExecute({ windows }) });
   assert.equal(result.status, "complete");
