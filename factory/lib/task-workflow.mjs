@@ -246,7 +246,7 @@ export function startRecovery(state, { failedStage, actor, error, evidence = [],
   return next;
 }
 
-export function recordRecoveryResult(state, { outcome, actor, summary, evidence = [], diagnosis = null, now = new Date().toISOString() }) {
+export function recordRecoveryResult(state, { outcome, actor, summary, evidence = [], diagnosis = null, maxAttemptsPerStage = 3, now = new Date().toISOString() }) {
   const active = state.recovery?.active;
   if (!active) throw new Error("No recovery attempt is active.");
   const next = structuredClone(state);
@@ -270,12 +270,26 @@ export function recordRecoveryResult(state, { outcome, actor, summary, evidence 
     attempt.status = "verified";
     attempt.completedAt = now;
     next.recovery.active = null;
+    next.updatedAt = now;
+    next.events.push({ at: now, type: "recovery-verified", stage: active.failedStage, actor, attempt: active.attempt });
+    // A verified recovery re-enters the failed stage so the stage gate is still
+    // earned rather than granted by recovery. That re-entry is a stage attempt
+    // like any other and must respect the per-stage budget: without this check
+    // each recovery cycle silently minted a fresh attempt, so a stage could be
+    // dispatched indefinitely while `routeStageFailure`'s limit never applied.
+    const attempts = (next.dispatches || []).filter((item) => item.stage === active.failedStage && (item.kind === "stage" || !item.kind)).length;
+    if (attempts >= maxAttemptsPerStage) {
+      return escalateRecovery(next, {
+        failedStage: active.failedStage,
+        kind: "FOUNDER_DECISION_REQUIRED",
+        error: `Recovery attempt ${active.attempt} was independently verified, but ${active.failedStage} has already used ${attempts} of ${maxAttemptsPerStage} stage attempts. Re-running it would exceed the per-stage budget. Founder direction is required: accept the verified work and advance, raise the budget, or change scope.`,
+        now,
+      });
+    }
     next.stages[active.failedStage] = { status: "pending" };
     next.status = "active";
     next.currentStage = active.failedStage;
-    next.updatedAt = now;
-    next.events.push({ at: now, type: "recovery-verified", stage: active.failedStage, actor, attempt: active.attempt });
-    next.events.push({ at: now, type: "task-resumed", stage: active.failedStage, actor: "system", reason: "recovery-verified" });
+    next.events.push({ at: now, type: "task-resumed", stage: active.failedStage, actor: "system", reason: "recovery-verified", attempt: attempts + 1 });
     return next;
   }
   return finishRecoveryFailure(next, { summary, actor, evidence, outcome, now });
