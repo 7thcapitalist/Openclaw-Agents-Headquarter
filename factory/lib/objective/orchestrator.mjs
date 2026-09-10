@@ -16,6 +16,7 @@ import { executeOpenClaw, runToTerminal } from "../openclaw-runner.mjs";
 import { publishAndRecord } from "../openclaw-runner.mjs";
 import { ensureBranchHasCommit } from "../hq/github-publish.mjs";
 import { assertAcyclic, buildNodesComplete, descendants, isDeadlocked, readyNodes, GATE_SATISFIED } from "./graph.mjs";
+import { observeObjectiveGraph } from "./graph-observer.mjs";
 import { classifyBlocker, classifyObjectiveNodeBlocker, founderApprovalSetupBlocker, isFounderApprovalSetupFailure, isRetriableInfraBlocker } from "../hq/blocker-class.mjs";
 import { classifyFailure } from "../failure-classification.mjs";
 
@@ -535,6 +536,9 @@ export async function runObjective({ hqRoot, objectivePath, maxConcurrent = 3, e
   let obj = readObjState(objectivePath);
   assertAcyclic(obj.nodes);
   const nodeStateRoot = stateRoot || join(dirname(objectivePath), "..", "..");
+  // Snapshot the graph before scheduling so the exit can tell which nodes
+  // became runnable during this run and therefore need a durable wakeup.
+  const graphAtStart = structuredClone(obj);
   mkdirSync(dirname(objectivePath), { recursive: true });
 
   // A publication failure happens after all seven stages reached merge-ready.
@@ -627,9 +631,21 @@ export async function runObjective({ hqRoot, objectivePath, maxConcurrent = 3, e
     : isDeadlocked(obj) ? "blocked" : "incomplete";
   mutate(objectivePath, (s) => { s.status = finalStatus; s.events.push({ at: new Date().toISOString(), type: "objective-finished", detail: finalStatus }); });
 
+  // Record graph health and enqueue a durable wakeup for anything that became
+  // runnable but was not started, so a parked objective can be resumed by the
+  // wakeup worker instead of waiting for someone to notice it. Best-effort by
+  // construction: an observation failure must never change the outcome above.
+  const observation = observeObjectiveGraph({
+    objectivePath,
+    nodeStateRoot,
+    before: graphAtStart,
+    after: readObjState(objectivePath),
+    agentForNode: (nodeId, node) => agentIds[node?.role] || node?.role || "openclaw-factory",
+  });
+
   const metrics = collectMetrics(objectivePath);
   writeFileSync(join(dirname(objectivePath), "metrics.json"), `${JSON.stringify(metrics, null, 2)}\n`, "utf8");
   writeFileSync(join(dirname(objectivePath), "report.md"), buildObjectiveReport(readObjState(objectivePath), metrics), "utf8");
 
-  return { status: finalStatus, objective: readObjState(objectivePath), metrics, integrationResp };
+  return { status: finalStatus, objective: readObjState(objectivePath), metrics, integrationResp, observation };
 }
