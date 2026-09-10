@@ -19,6 +19,16 @@ const REQUIRED_TASK_FIELDS = ["id", "outcome", "acceptanceCriteria", "project", 
 const WORK_TYPES = new Set(["ui", "backend", "architecture", "bugfix", "research", "ops"]);
 const RISKS = new Set(["low", "medium", "high"]);
 
+// Founder approval assertion format. v1 signed {version,taskId,challenge,
+// decision,approvedAt,evidenceSha256}; v2 additionally binds the approval
+// authority's fingerprint. Pending v1 tasks stay verifiable — see
+// docs/software-factory/FOUNDER_AUTHORITY.md for the migration path.
+export const FOUNDER_APPROVAL_VERSION = 2;
+// How long a signed approval stays usable. An approval is a decision about a
+// moment; a stale one must not authorize a build days later.
+export const FOUNDER_APPROVAL_TTL_SECONDS = Number(process.env.FACTORY_APPROVAL_TTL_SECONDS || 24 * 60 * 60);
+const FOUNDER_APPROVAL_SKEW_MS = 2 * 60 * 1000;
+
 export function validateTaskContract(task) {
   if (!task || typeof task !== "object" || Array.isArray(task)) {
     throw new Error("Task contract must be a JSON object.");
@@ -92,10 +102,16 @@ export function createState({ task, repo, branch, worktree, founderPublicKey = n
       fingerprint: publicKeyFingerprint(founderPublicKey),
     };
     state.founderApprovalRequest = {
-      version: 1,
+      // v2 binds the approval to the authority fingerprint as well, so a
+      // signature made for a task under one key cannot be replayed onto the
+      // same task after it has been re-keyed to a different one.
+      version: FOUNDER_APPROVAL_VERSION,
       taskId: safeTask.id,
       challenge: randomUUID(),
       decision: "approve-high-risk-build",
+      authorityFingerprint: state.founderApprovalAuthority.fingerprint,
+      requestedAt: now,
+      expiresAfterSeconds: FOUNDER_APPROVAL_TTL_SECONDS,
     };
   }
   return state;
@@ -373,15 +389,21 @@ export function assertReleaseReady(state) {
   }
 }
 
-export function founderApprovalPayload(state, { approvedAt, evidenceSha256 }) {
-  return JSON.stringify({
-    version: 1,
+// The exact bytes the founder signs. The shape is version-tagged so an older
+// pending approval (v1, no authority binding) stays verifiable while every new
+// task gets the stronger v2 binding. See docs/software-factory/FOUNDER_AUTHORITY.md.
+export function founderApprovalPayload(state, { approvedAt, evidenceSha256, version }) {
+  const v = Number(version || state.founderApprovalRequest?.version || 1);
+  const base = {
+    version: v,
     taskId: state.task.id,
     challenge: state.founderApprovalRequest?.challenge,
     decision: "approve-high-risk-build",
     approvedAt,
     evidenceSha256,
-  });
+  };
+  if (v >= 2) base.authorityFingerprint = state.founderApprovalRequest?.authorityFingerprint;
+  return JSON.stringify(base);
 }
 
 export function evidenceSha256(path) {
@@ -403,13 +425,30 @@ export function createFounderApprovalAssertion(state, { evidencePath, privateKey
   }
   if (!evidencePath) throw new Error("Founder approval requires an evidence file path.");
   if (!privateKey) throw new Error("Founder approval requires the founder private key.");
-  const unsigned = {
-    ...state.founderApprovalRequest,
+  const unsigned = unsignedFounderAssertion(state, {
     approvedAt,
     evidenceSha256: evidenceSha256(evidencePath),
-  };
+  });
   const signature = signPayload(null, Buffer.from(founderApprovalPayload(state, unsigned)), privateKey).toString("base64");
   return { ...unsigned, signature };
+}
+
+// The assertion fields that are actually signed, in the order the payload uses.
+// Both the CLI signer and the browser one-click flow build the assertion here so
+// the two can never drift apart and produce bytes the verifier will not accept.
+export function unsignedFounderAssertion(state, { approvedAt, evidenceSha256: digest }) {
+  const request = state.founderApprovalRequest || {};
+  const version = Number(request.version || 1);
+  const unsigned = {
+    version,
+    taskId: state.task.id,
+    challenge: request.challenge,
+    decision: request.decision || "approve-high-risk-build",
+    approvedAt,
+    evidenceSha256: digest,
+  };
+  if (version >= 2) unsigned.authorityFingerprint = request.authorityFingerprint;
+  return unsigned;
 }
 
 function sanitizeTaskContract(task) {
@@ -418,22 +457,124 @@ function sanitizeTaskContract(task) {
   return safe;
 }
 
-function validateFounderAssertion(state, assertion, evidence) {
+function validateFounderAssertion(state, assertion, evidence, now = new Date().toISOString()) {
   if (!assertion || typeof assertion !== "object") throw new Error("Founder approval assertion is required.");
   const expected = state.founderApprovalRequest;
-  if (!expected || assertion.taskId !== expected.taskId || assertion.challenge !== expected.challenge || assertion.decision !== expected.decision) {
+  if (!expected) throw new Error("This task has no founder approval request to satisfy.");
+
+  // Task scope + exact requested action. A signature for another task, another
+  // challenge, or another action is not an approval for this one.
+  if (assertion.taskId !== expected.taskId
+    || assertion.challenge !== expected.challenge
+    || assertion.decision !== expected.decision) {
     throw new Error("Founder approval assertion does not match this task challenge.");
   }
-  if (!assertion.approvedAt || !assertion.evidenceSha256 || !assertion.signature) throw new Error("Founder approval assertion is incomplete.");
+  if (!assertion.approvedAt || !assertion.evidenceSha256 || !assertion.signature) {
+    throw new Error("Founder approval assertion is incomplete.");
+  }
+
+  const authority = state.founderApprovalAuthority;
+  if (!authority?.publicKey) throw new Error("This task has no recorded approval authority.");
+
+  // v2 binds the authority fingerprint into the signed bytes. Reject a v1
+  // assertion presented against a task that asked for v2 — that is a downgrade.
+  const requestVersion = Number(expected.version || 1);
+  const assertionVersion = Number(assertion.version || 1);
+  if (assertionVersion !== requestVersion) {
+    throw new Error(`Founder approval version mismatch: task expects v${requestVersion}, assertion is v${assertionVersion}.`);
+  }
+  if (requestVersion >= 2) {
+    const bound = expected.authorityFingerprint;
+    const actual = authority.fingerprint || publicKeyFingerprint(authority.publicKey);
+    if (!bound || bound !== actual) {
+      throw new Error("Founder approval was issued for a different approval key than the one now on this task.");
+    }
+    if (assertion.authorityFingerprint && assertion.authorityFingerprint !== bound) {
+      throw new Error("Founder approval authority fingerprint does not match this task.");
+    }
+  }
+
+  // Revocation: a key the founder has retired can no longer authorize anything,
+  // even if the signature itself is mathematically valid.
+  const fingerprint = authority.fingerprint || publicKeyFingerprint(authority.publicKey);
+  if (isRevokedFingerprint(state, fingerprint)) {
+    throw new Error("The approval key for this task has been revoked.");
+  }
+
+  // Expiry: an approval is a decision about a moment, not a standing grant.
+  assertApprovalFreshness(expected, assertion, now);
+
   const evidencePath = resolve(state.worktree, evidence.path);
-  if (assertion.evidenceSha256 !== evidenceSha256(evidencePath)) throw new Error("Founder approval evidence digest does not match.");
+  if (assertion.evidenceSha256 !== evidenceSha256(evidencePath)) {
+    throw new Error("Founder approval evidence digest does not match.");
+  }
   const payload = founderApprovalPayload(state, assertion);
-  const valid = verifySignature(null, Buffer.from(payload), state.founderApprovalAuthority.publicKey, Buffer.from(assertion.signature, "base64"));
+  const valid = safeVerifyEd25519(payload, authority.publicKey, assertion.signature);
   if (!valid) throw new Error("Founder approval signature is invalid.");
+}
+
+// A malformed signature must fail closed, not throw a crypto error that a
+// caller might mistake for an infrastructure fault.
+function safeVerifyEd25519(payload, publicKey, signatureB64) {
+  let signature;
+  try {
+    signature = Buffer.from(String(signatureB64 || ""), "base64");
+  } catch {
+    return false;
+  }
+  if (signature.length !== 64) return false;
+  try {
+    return verifySignature(null, Buffer.from(payload), publicKey, signature);
+  } catch {
+    return false;
+  }
+}
+
+function isRevokedFingerprint(state, fingerprint) {
+  const revoked = Array.isArray(state?.founderApprovalRevocations) ? state.founderApprovalRevocations : [];
+  return revoked.some((entry) => String(entry?.fingerprint || entry || "") === fingerprint);
+}
+
+function assertApprovalFreshness(request, assertion, now) {
+  const approvedAt = Date.parse(assertion.approvedAt);
+  if (!Number.isFinite(approvedAt)) throw new Error("Founder approval timestamp is not a valid date.");
+  const nowMs = Date.parse(now);
+  if (!Number.isFinite(nowMs)) return;
+
+  // Reject a future-dated approval beyond a small clock-skew allowance; that is
+  // an attempt to mint an approval that outlives its window.
+  if (approvedAt - nowMs > FOUNDER_APPROVAL_SKEW_MS) {
+    throw new Error("Founder approval is dated in the future.");
+  }
+  const ttlSeconds = Number(request.expiresAfterSeconds || 0);
+  if (ttlSeconds > 0 && nowMs - approvedAt > ttlSeconds * 1000) {
+    throw new Error(`Founder approval expired (signed ${assertion.approvedAt}, valid for ${ttlSeconds}s).`);
+  }
+}
+
+// Record that an approval key is no longer trusted. Existing approvals signed by
+// it stop verifying immediately.
+export function revokeFounderApprovalKey(state, { fingerprint, reason = "", actor = "founder", now = new Date().toISOString() }) {
+  const fp = String(fingerprint || "").trim();
+  if (!fp) throw new Error("A key fingerprint is required to revoke it.");
+  const next = structuredClone(state);
+  next.founderApprovalRevocations = [
+    ...(next.founderApprovalRevocations || []).filter((e) => String(e?.fingerprint || "") !== fp),
+    { fingerprint: fp, revokedAt: now, reason: String(reason || "").slice(0, 500) || null, actor },
+  ];
+  next.updatedAt = now;
+  next.events.push({ at: now, type: "founder-approval-key-revoked", stage: next.currentStage, actor, fingerprint: fp });
+  return next;
 }
 
 // True when a task is parked at the high-risk gate before `builder` and still
 // has no valid recorded approval — i.e. it is waiting for the founder to sign.
+//
+// A strategic `founderDecisions` entry deliberately does NOT count here. Those
+// records answer "which direction should we take?"; they are plain text written
+// through an authenticated dashboard session and carry no cryptographic proof of
+// who wrote them. Treating one as an authorization let any writer of task state
+// walk a high-risk task past this gate (SFD-2026-010 / FCT-P0-04).
 export function isAwaitingFounderApproval(state) {
   return Boolean(
     state
@@ -441,28 +582,36 @@ export function isAwaitingFounderApproval(state) {
     && state.status === "blocked"
     && state.blocker?.stage === "builder"
     && state.blocker?.outcome === "decision-required"
-    && !hasFounderDecision(state)
     && !hasValidFounderApproval(state),
   );
 }
 
-// A founder's explicit decision on an earlier strategic blocker authorizes the
-// same task's risky action. This prevents one task from asking the founder to
-// choose a direction and then approve that identical direction a second time.
-// The signed approval path remains available when no earlier decision exists.
-function hasFounderDecision(state) {
-  return Array.isArray(state?.founderDecisions)
-    && state.founderDecisions.some((decision) => String(decision?.direction || "").trim());
-}
-
-function hasValidFounderApproval(state) {
-  if (hasFounderDecision(state)) return true;
-  if (!state.founderApproval?.assertion || !state.founderApproval?.evidence) return false;
+// The ONLY thing that satisfies the high-risk gate: a task-scoped Ed25519
+// assertion that still verifies against the authority recorded on the task.
+// There is no second, weaker path — by design. If this returns false the task
+// stays blocked until a real signature arrives.
+export function hasValidFounderApproval(state) {
+  if (!state?.founderApproval?.assertion || !state.founderApproval?.evidence) return false;
   try {
     validateFounderAssertion(state, state.founderApproval.assertion, state.founderApproval.evidence);
     return true;
   } catch {
     return false;
+  }
+}
+
+// Why a high-risk task is still blocked, in words a founder can act on. Used by
+// the Inbox so "waiting for approval" is never confused with "approved".
+export function founderApprovalStatus(state, now = new Date().toISOString()) {
+  if (state?.task?.risk !== "high") return { required: false, satisfied: true, reason: null };
+  if (!state.founderApproval?.assertion) {
+    return { required: true, satisfied: false, reason: "No signed founder approval has been recorded." };
+  }
+  try {
+    validateFounderAssertion(state, state.founderApproval.assertion, state.founderApproval.evidence, now);
+    return { required: true, satisfied: true, reason: null };
+  } catch (error) {
+    return { required: true, satisfied: false, reason: String(error.message || error) };
   }
 }
 
