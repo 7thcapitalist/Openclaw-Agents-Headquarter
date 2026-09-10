@@ -290,6 +290,20 @@
       "sourcePath": "docs/companies/companies-spec.md",
       "classification": "reference",
       "notes": "Documents the supported Paperclip package subset and safeguards."
+    },
+    {
+      "localPath": "factory/lib/objective/graph-observer.mjs",
+      "sourceId": "paperclip",
+      "sourcePath": "server/src/services/issue-dependency-wakeups.ts",
+      "classification": "adapted",
+      "notes": "Connects Paperclip-derived dependency wakeups and graph liveness to real HQ objective runs as a best-effort projection that cannot change a canonical outcome."
+    },
+    {
+      "localPath": "factory/test/graph-observer.test.mjs",
+      "sourceId": "paperclip",
+      "sourcePath": "server/src/services/issue-dependency-wakeups.test.ts",
+      "classification": "inspired",
+      "notes": "Tests idempotent enqueue, retry identity, invalid graphs, and degraded storage."
     }
   ]
 }

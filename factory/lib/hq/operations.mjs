@@ -18,13 +18,16 @@ export function buildOperationsSnapshot({ hqRoot, stateRoot = null, now = new Da
   let costs = summarizeCostLedger([]);
   try { costs = summarizeCostLedger(readCostEvents(costPath)); }
   catch (error) { warnings.push(`cost ledger unavailable: ${error.message}`); costs = { ...costs, available: false }; }
+  const objectives = objectiveHealth(root, warnings);
   const audit = tasks.flatMap((task) => task.audit).sort((a, b) => b.occurredAt.localeCompare(a.occurredAt)).slice(0, bounded(eventLimit, 1, 100));
   return { version: 1, asOf: now, available: warnings.length === 0, warnings, summary: {
     tasks: tasks.length, activeRuns: tasks.filter((task) => ["needs-followup", "advanced"].includes(task.liveness?.state)).length,
     blockedRuns: tasks.filter((task) => ["blocked", "failed"].includes(task.liveness?.state)).length,
     leasedTasks: tasks.filter((task) => task.lease).length, queuedWakeups: queue.counts.queued, deadLetters: queue.counts["dead-letter"],
     inputTokens: costs.totals.inputTokens, outputTokens: costs.totals.outputTokens, costMicros: costs.totals.costMicros, unpricedEvents: costs.totals.unpricedEvents,
-  }, tasks: tasks.map(({ audit: _audit, ...task }) => task), queue, audit, costs };
+    unhealthyObjectives: objectives.filter((objective) => objective.healthy === false).length,
+    strandedNodes: objectives.reduce((sum, objective) => sum + objective.strandedNodeIds.length, 0),
+  }, tasks: tasks.map(({ audit: _audit, ...task }) => task), objectives, queue, audit, costs };
 }
 
 function taskOperations(statePath, warnings) {
@@ -44,3 +47,46 @@ function sanitizeLiveness(value) { if (!value || typeof value !== "object") retu
 function sanitizeWakeup(item) { return { wakeupId: item.wakeupId, source: item.source, taskRef: item.taskRef, actorId: item.actorId, status: item.status, attempt: item.attempt, maxAttempts: item.maxAttempts, createdAt: item.createdAt, updatedAt: item.updatedAt, error: item.error || null }; }
 function emptyQueue() { return { version: 1, available: true, counts: { queued: 0, claimed: 0, succeeded: 0, failed: 0, "dead-letter": 0 }, oldestQueuedAt: null, ready: 0, recent: [] }; }
 function bounded(value, min, max) { const parsed = Number(value); return Number.isFinite(parsed) ? Math.min(max, Math.max(min, Math.trunc(parsed))) : min; }
+
+// Graph health recorded by the objective orchestrator (objective/graph-observer.mjs).
+// A missing file is normal — the objective has not run since the observer
+// existed — and is reported as unknown rather than as healthy.
+function objectiveHealth(root, warnings) {
+  const out = [];
+  for (const path of healthFiles(root)) {
+    const objectiveId = basename(dirname(path));
+    try {
+      const health = JSON.parse(readFileSync(path, "utf8"));
+      const findings = Array.isArray(health.findings) ? health.findings : [];
+      out.push({
+        objectiveId: String(health.objectiveId || objectiveId),
+        healthy: health.healthy === true,
+        recordedAt: health.recordedAt || null,
+        ready: Array.isArray(health.ready) ? health.ready.slice(0, 20) : [],
+        counts: health.counts || { critical: 0, high: 0, medium: 0 },
+        // Codes and identifiers only: a finding message can quote a graph error
+        // but never carries prompts, paths, or agent output.
+        findings: findings.slice(0, 10).map((finding) => ({
+          severity: String(finding.severity || "medium"),
+          code: String(finding.code || "unknown"),
+          message: String(finding.message || "").slice(0, 300),
+          nodeIds: (finding.nodeIds || []).slice(0, 20).map(String),
+        })),
+        strandedNodeIds: [...new Set(findings.flatMap((finding) => finding.strandedNodeIds || []))].slice(0, 40).map(String),
+      });
+    } catch (error) {
+      warnings.push(`objective ${objectiveId} graph health unavailable: ${error.message}`);
+    }
+  }
+  return out.sort((a, b) => Number(a.healthy) - Number(b.healthy) || a.objectiveId.localeCompare(b.objectiveId));
+}
+
+function healthFiles(root, out = []) {
+  if (!existsSync(root)) return out;
+  for (const entry of safeReadDir(root)) {
+    const path = join(root, entry.name);
+    if (entry.isDirectory()) healthFiles(path, out);
+    else if (entry.isFile() && entry.name === "graph-health.json") out.push(path);
+  }
+  return out;
+}
