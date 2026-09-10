@@ -3,6 +3,7 @@ import * as founderApproval from "/lib/founderApproval.mjs";
 import * as objectiveView from "/lib/objectiveView.mjs";
 import { costLimitsPanel } from "/cost-limits.mjs";
 import { operationsPanel } from "/lib/operationsView.mjs";
+import { budgetPanel } from "/lib/budgetView.mjs";
 
 (function () {
   const app = document.getElementById("app");
@@ -221,7 +222,7 @@ import { operationsPanel } from "/lib/operationsView.mjs";
   // ── Today: the founder observability surface ───────────────────
 
   async function renderToday() {
-    const [state, fc, learning, objectivesResp, autonomy, costs, planLimits, overnight, operations] = await Promise.all([
+    const [state, fc, learning, objectivesResp, autonomy, costs, planLimits, overnight, operations, budgets] = await Promise.all([
       loadCompany(),
       apiJson("/api/founder/overview").catch(() => ({ jobs: [] })),
       loadLearning().catch(() => null),
@@ -231,6 +232,7 @@ import { operationsPanel } from "/lib/operationsView.mjs";
       apiJson("/api/hq/plan-limits").catch(() => null),
       apiJson("/api/founder/overnight").catch(() => ({ status: "unavailable", items: [] })),
       apiJson("/api/hq/operations").catch(() => null),
+      apiJson("/api/hq/budgets").catch(() => null),
     ]);
     const objectives = objectivesResp.objectives || [];
     objectivesById = Object.fromEntries(objectives.map((o) => [o.objectiveId, o]));
@@ -249,7 +251,7 @@ import { operationsPanel } from "/lib/operationsView.mjs";
     // "your request was received, agents are on it" confirmation.
     const liveJobs = jobs.filter((j) => j.status === "starting" || j.status === "running" || j.status === "decomposing");
 
-    app.innerHTML = renderFounderHome({ state, projects, agents, inbox, objectives, allTasks, runningRows, liveJobs, autoRecovering, finishedTasks, inboxActionable, overnight, operations });
+    app.innerHTML = renderFounderHome({ state, projects, agents, inbox, objectives, allTasks, runningRows, liveJobs, autoRecovering, finishedTasks, inboxActionable, overnight, operations, budgets });
     bindFounderControls();
     return;
 
@@ -382,7 +384,7 @@ import { operationsPanel } from "/lib/operationsView.mjs";
     </section>`;
   }
 
-  function renderFounderHome({ state, projects, agents, inbox, objectives, allTasks, runningRows, liveJobs, autoRecovering, finishedTasks, inboxActionable, overnight, operations }) {
+  function renderFounderHome({ state, projects, agents, inbox, objectives, allTasks, runningRows, liveJobs, autoRecovering, finishedTasks, inboxActionable, overnight, operations, budgets }) {
     const groups = objectiveView.groupObjectives(objectives);
     const active = [...groups.running, ...groups.waiting, ...groups.blocked];
     const workingAgents = runningRows.filter((row) => row.status === "working");
@@ -400,6 +402,7 @@ import { operationsPanel } from "/lib/operationsView.mjs";
         <section class="founder-section attention-section"><div class="section-heading"><div><span class="eyebrow">Your turn</span><h2>Needs you</h2></div><span class="section-count">${inboxActionable}</span></div>${inbox.slice(0, 4).map((x) => inboxItem(x)).join("") || `<div class="quiet-state">No decisions waiting.</div>`}</section>
         <section class="founder-section"><div class="section-heading"><div><span class="eyebrow">Recently</span><h2>Completed</h2></div></div>${groups.recentlyCompleted.slice(0, 3).map((o) => founderObjectiveCard(o, true)).join("") || `<div class="quiet-state">No recent completions.</div>`}</section>
         ${operationsPanel(operations, { esc, fmtTime })}
+        ${budgetPanel(budgets, { esc })}
       </aside></div>
     </div>`;
   }
