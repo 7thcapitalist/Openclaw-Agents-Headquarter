@@ -3,6 +3,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } fr
 import { basename, dirname, join, resolve } from "path";
 import { createState, taskStatePath, validateTaskContract, writeState } from "./task-workflow.mjs";
 import { writeHandoff } from "./handoff.mjs";
+import { enforce, readPermissionRegistry } from "./hq/permissions.mjs";
 
 // The public half of the founder approval authority embedded into every
 // high-risk task at creation. Prefer the key the founder enrolled from
@@ -15,9 +16,14 @@ export function resolveFounderPublicKey(hqRoot) {
   return envPath && existsSync(resolve(envPath)) ? readFileSync(resolve(envPath), "utf8") : null;
 }
 
-export function initializeTask({ hqRoot, contractPath, repo: repoInput, branch: requestedBranch, worktree: requestedWorktree, stateRoot: requestedStateRoot, git = runGit }) {
+export function initializeTask({ hqRoot, contractPath, repo: repoInput, branch: requestedBranch, worktree: requestedWorktree, stateRoot: requestedStateRoot, git = runGit, actor = null }) {
   if (!contractPath || !repoInput) throw new Error("Initialization requires contractPath and repo.");
   const task = validateTaskContract(JSON.parse(readFileSync(resolve(contractPath), "utf8")));
+
+  // Creating a branch and a worktree is the first irreversible thing a task
+  // does, so it is where the capability check belongs. With no
+  // factory/permissions.json this is a no-op — see hq/permissions.mjs.
+  checkInitializePermission({ hqRoot, task, actor });
   const repo = git(resolve(repoInput), ["rev-parse", "--show-toplevel"]).trim();
   const branch = requestedBranch || `factory/${task.id}`;
   if (!/^factory\/[a-z0-9][a-z0-9-]*$/.test(branch)) throw new Error("Branch must use factory/<task-id> format.");
@@ -94,6 +100,32 @@ export function ensureEvidenceLintIgnored(worktree) {
     return [name];
   }
   return [];
+}
+
+// Denials are audited into the task's own log where one exists; before
+// initialization there is no task directory yet, so the decision is recorded
+// against the objective/company log at the state root instead. A registry that
+// cannot be read is a denial, not a bypass: a broken permissions file must not
+// silently disable the control it configures.
+function checkInitializePermission({ hqRoot, task, actor }) {
+  if (!hqRoot) return;
+  let registry;
+  try {
+    registry = readPermissionRegistry(hqRoot);
+  } catch (error) {
+    throw new Error(`permission registry is unreadable, refusing to initialize: ${error.message}`);
+  }
+  if (registry.enforcement === "off") return;
+  enforce({
+    registry,
+    auditPath: join(resolve(hqRoot), ".openclaw-factory", "telemetry", "permissions.ndjson"),
+    actorType: actor?.type || "agent",
+    actorId: actor?.id || "openclaw-factory",
+    capability: "task.initialize",
+    scope: { type: "task", id: task.id, projectId: task.project || null },
+    founderApproval: task.founderApproval || null,
+    correlation: { taskId: task.id, ...(task.project ? { projectId: task.project } : {}) },
+  });
 }
 
 export function runGit(repo, args, options = {}) {
