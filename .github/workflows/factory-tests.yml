@@ -35,15 +35,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
+          cache: npm
+          cache-dependency-path: dashboard/backend/package-lock.json
 
-      # The repository ROOT still declares no dependencies and needs no install.
-      # The dashboard does, and its tests are not optional: the browser-hardening
-      # suite (Markdown sanitization, CSP, CSRF, throttling, session rotation)
-      # skips itself when `marked`/`express` are absent, so without this step CI
-      # was silently running none of it — green, and blind to exactly the
-      # regressions those tests exist to catch.
+      # The repository root declares no dependencies and has no lockfile, so
+      # there is nothing to install there. `dashboard/backend` does, and its
+      # absence is not harmless: the CSRF, CSP, session and stored-XSS tests
+      # SKIP themselves when those deps are missing rather than fail, so
+      # without this step CI reported green while 14 security tests never ran.
       - name: Install dashboard dependencies
-        run: npm ci --prefix dashboard/backend
+        run: npm ci --prefix dashboard/backend --no-audit --no-fund
 
       - name: Verify third-party provenance
         run: npm run check:provenance

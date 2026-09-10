@@ -142,6 +142,15 @@ export function completeStage(state, { stage, actor, outcome, summary, evidence 
     return next;
   }
 
+  // The auto-retry sweep is the only thing that revives a task whose runner
+  // died, and its budget was counted once per task for the task's whole life.
+  // A task that needed reviving three times during a flaky builder phase then
+  // had no supervision left for the five stages after it, so any later stall
+  // was permanent until a human noticed. The budget is meant to stop a task
+  // looping on one stuck point, not to cap how long a task may live: a stage
+  // that actually passed is forward progress, so the allowance starts over.
+  delete next.autoRetries;
+
   if (deferredDecision) {
     const decision = normalizeDeferredDecision(deferredDecision, stage, now);
     next.stages[stage].deferredDecision = decision;

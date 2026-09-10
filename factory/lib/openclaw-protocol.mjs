@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, readFileSync } from "fs";
-import { dirname, join } from "path";
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync } from "fs";
+import { basename, dirname, join } from "path";
 import { randomUUID } from "crypto";
 import { completeStage, recordRecoveryResult, routeStageFailure, startRecovery, verifyEvidence } from "./task-workflow.mjs";
 import { mutateTransactionalState } from "./store/transactional-json.mjs";
@@ -32,6 +32,38 @@ export function computeDispatchPaths({ state, stage, statePath }) {
   const dispatchId = recovery ? `${state.task.id}-recovery-${attempt}-${recovery.phase}` : `${state.task.id}-${stage}-${attempt}`;
   const resultPath = join(dirname(statePath), "results", `${dispatchId}.json`);
   return { dispatchId, resultPath, attempt };
+}
+
+
+// A recovery dispatch id is `<task>-recovery-<attempt>-<phase>`, and `attempt`
+// comes from the length of `recovery.attempts`. That number goes DOWN whenever
+// the recovery budget is reset — after an operator repair, or any future
+// automatic reset — while the result files from the previous cycle stay on
+// disk. The next cycle then computes an id that already has a file, and
+// `runOneStage` treats an existing result file as "this dispatch already
+// answered".
+//
+// Observed on lifemaxing obj-c58897c0: three stale files were picked up this
+// way. Two were rejected by the stage/actor check. The third happened to carry
+// the same stage and actor, so it was ingested as a genuine `pass` and the
+// orchestrator recorded a recovery cycle it never ran as independently
+// verified — then resumed the stage on that basis.
+//
+// A newly prepared dispatch cannot legitimately have a result yet. Stage
+// dispatches are the exception (the concurrent review fan-out pre-writes them
+// by design), so this is limited to recovery dispatches, which nothing
+// pre-writes. The file is parked under results/stale/ rather than deleted.
+export function quarantineStaleResult(resultPath) {
+  if (!existsSync(resultPath)) return null;
+  const parked = join(dirname(resultPath), "stale", `${basename(resultPath, ".json")}-${Date.now()}.json`);
+  try {
+    mkdirSync(dirname(parked), { recursive: true });
+    renameSync(resultPath, parked);
+    return parked;
+  } catch {
+    try { unlinkSync(resultPath); } catch { /* best effort: never block a dispatch */ }
+    return null;
+  }
 }
 
 export function prepareDispatch({ hqRoot, statePath, now = new Date().toISOString() }) {
@@ -79,6 +111,7 @@ export function prepareDispatch({ hqRoot, statePath, now = new Date().toISOStrin
     // decided this dispatch is the one that gets to exist has committed —
     // never inside the transaction itself.
     mkdirSync(dirname(freshDispatch.resultPath), { recursive: true });
+    if (freshDispatch.kind?.startsWith("recovery-")) quarantineStaleResult(freshDispatch.resultPath);
     writeHandoff({ hqRoot, statePath, state: nextState, resultPath: freshDispatch.resultPath, dispatchId: freshDispatch.id });
   }
   return dispatchResponse(nextState.currentDispatch, nextState);
