@@ -38,6 +38,9 @@
   },
   { "localPath": "factory/lib/hq/agents.mjs", "sourceId": "paperclip", "sourcePath": "packages/db/src/schema/agents.ts", "classification": "adapted", "notes": "Adapts organization, capability, availability, adapter-reference, and budget metadata into the existing HQ registry." },
   { "localPath": "factory/test/hq-agents.test.mjs", "sourceId": "paperclip", "sourcePath": "packages/db/src/schema/agents.ts", "classification": "inspired", "notes": "Tests Paperclip-derived organization metadata and HQ-specific non-authority constraints." },
-  { "localPath": "docs/software-factory/PAPERCLIP_AGENT_ORG_MODEL.md", "sourceId": "paperclip", "sourcePath": "packages/db/src/schema/agents.ts", "classification": "reference", "notes": "Documents source attribution and safe HQ mapping." }
+  { "localPath": "docs/software-factory/PAPERCLIP_AGENT_ORG_MODEL.md", "sourceId": "paperclip", "sourcePath": "packages/db/src/schema/agents.ts", "classification": "reference", "notes": "Documents source attribution and safe HQ mapping." },
+  { "localPath": "factory/lib/objective/dependency-diagnostics.mjs", "sourceId": "paperclip", "sourcePath": "server/src/services/issue-dependency-wakeups.ts", "classification": "adapted", "notes": "Adapts dependency wakeup and graph liveness concepts to HQ objective DAGs." },
+  { "localPath": "factory/test/dependency-diagnostics.test.mjs", "sourceId": "paperclip", "sourcePath": "server/src/services/recovery/issue-graph-liveness.ts", "classification": "inspired", "notes": "Tests transition wakeups and operator diagnostics." },
+  { "localPath": "docs/software-factory/PAPERCLIP_DEPENDENCY_DIAGNOSTICS.md", "sourceId": "paperclip", "sourcePath": "server/src/services/issue-dependency-wakeups.ts", "classification": "reference", "notes": "Documents HQ dependency behavior and authority." }
   ]
 }
