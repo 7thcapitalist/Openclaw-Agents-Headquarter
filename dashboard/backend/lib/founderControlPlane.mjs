@@ -11,6 +11,7 @@ import { buildOutcome } from "../../../factory/lib/failure-outcome.mjs";
 import { resumeObjectiveNodes, setObjectiveRecoveryInFlight, readObjState } from "../../../factory/lib/objective/orchestrator.mjs";
 import { defaultStateRoot } from "../../../factory/lib/natural-language-intake.mjs";
 import { briefBlocker, presentObjective, isSeedProject } from "../../../factory/lib/hq/presenter.mjs";
+import { presentFounderInbox } from "../../../factory/lib/hq/founder-inbox.mjs";
 
 const CONTROL_FILE = "control-plane.json";
 
@@ -971,6 +972,7 @@ export function buildFounderOverview(root, hqProjects = []) {
     id: `${task.id}:${task.blocker.stage}`,
     taskId: task.id,
     project: task.project,
+    stage: task.blocker.stage || null,
     statePath: task.statePath,
     question: task.decisionCard?.question || task.blocker.summary,
     why: task.decisionCard?.why || `The ${task.blocker.stage} stage cannot continue without founder direction.`,
@@ -987,6 +989,7 @@ export function buildFounderOverview(root, hqProjects = []) {
         id: `${task.id}:${decision.id}`,
         taskId: task.id,
         project: task.project,
+        stage: decision.stage || null,
         statePath: task.statePath,
         question: decision.question,
         why: decision.why,
@@ -1025,7 +1028,10 @@ export function buildFounderOverview(root, hqProjects = []) {
     taskIds: new Set(baseInboxItems.map((item) => item.taskId).filter(Boolean)),
     objectiveIds: new Set(baseInboxItems.map((item) => item.objectiveId).filter(Boolean)),
   };
-  const allInboxItems = [...baseInboxItems, ...buildJobInbox(control.jobs, covered)]
+  // Founder translation: every item keeps its raw fields and gains `founder`
+  // (the chief-of-staff card) plus `technical` (the operator detail), ordered by
+  // what is actually holding the founder up. See factory/lib/hq/founder-inbox.mjs.
+  const allInboxItems = presentFounderInbox([...baseInboxItems, ...buildJobInbox(control.jobs, covered)])
     .map((item) => (dismissedMap[item.id]
       ? { ...item, dismissed: true, dismissedAt: dismissedMap[item.id].dismissedAt || null }
       : item));
@@ -1162,6 +1168,7 @@ function buildFounderInbox({ tasks, decisions, questions, objectives = [], maxAu
       taskId: d.taskId,
       objective: task?.objective || null,
       project: d.project || null,
+      stage: d.stage || null,
       statePath: d.statePath || null,
       title: isApproval ? "Approve a high-risk build" : d.question,
       detail: isApproval
@@ -1203,6 +1210,7 @@ function buildFounderInbox({ tasks, decisions, questions, objectives = [], maxAu
       taskId: task.id,
       objective: task.objective || null,
       project: task.project || null,
+      stage: task.blocker.stage || null,
       statePath: task.statePath || null,
       title: recoveryExhausted
         ? "Automatic recovery exhausted — needs a look"
@@ -1235,6 +1243,7 @@ function buildFounderInbox({ tasks, decisions, questions, objectives = [], maxAu
         objectiveId: obj.objectiveId,
         objective: obj.objective || null,
         project: obj.project || null,
+        stage: node.blocker.stage || node.stage || null,
         statePath: null,
         title: isApproval
           ? "A high-risk objective needs your approval to start"

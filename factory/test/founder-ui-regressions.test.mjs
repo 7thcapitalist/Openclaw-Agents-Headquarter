@@ -49,3 +49,27 @@ test("execution view leads with the task title, not the raw prompt", () => {
   assert.doesNotMatch(app, /operation-original-request/,
     "the operation room must not reintroduce the full prompt inline");
 });
+
+// The Founder Inbox is a human interface, not an operator surface. It renders
+// through the founder translation (factory/lib/hq/founder-inbox.mjs) and shows
+// every item, full width, above the two-column body — a decision the founder
+// has to make is not a sidebar widget.
+test("the Founder Inbox renders founder-translated cards, not raw factory items", () => {
+  assert.match(app, /import \{ renderFounderInboxCard, renderFounderInboxEmpty \} from "\/lib\/founderInbox\.mjs";/);
+  assert.match(app, /renderFounderInboxCard\(x, \{ esc \}\)/);
+  assert.match(app, /function renderNeedsYou\(inbox, dismissedInbox = \[\], inboxActionable = 0\)/);
+  assert.match(app, /\$\{renderNeedsYou\(inbox, dismissedInbox, inboxActionable\)\}/);
+  // The old operator cards (raw question text + option list + state paths as the
+  // primary content) must not come back.
+  assert.doesNotMatch(app, /function decisionCard\(/);
+  assert.doesNotMatch(app, /function approvalCard\(/);
+  // Nothing truncates the list any more: every item the founder is told to
+  // watch is on the page.
+  assert.doesNotMatch(app, /inbox\.slice\(0, 4\)/);
+});
+
+test("the control plane hands the dashboard a translated, prioritised inbox", () => {
+  const controlPlane = readFileSync(join(root, "dashboard/backend/lib/founderControlPlane.mjs"), "utf8");
+  assert.match(controlPlane, /import \{ presentFounderInbox \} from "\.\.\/\.\.\/\.\.\/factory\/lib\/hq\/founder-inbox\.mjs";/);
+  assert.match(controlPlane, /presentFounderInbox\(\[\.\.\.baseInboxItems, \.\.\.buildJobInbox\(control\.jobs, covered\)\]\)/);
+});

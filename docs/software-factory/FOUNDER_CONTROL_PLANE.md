@@ -100,6 +100,45 @@ For high-risk builder approval, create the signed assertion as documented in
 `SETUP.md`, then submit the assertion path and worktree-relative evidence path
 through the dashboard. The private key is never read by the dashboard.
 
+### The inbox is a human interface — non-negotiable
+
+The Founder Inbox is for the founder, not for an operator. It must never read
+like an incident dashboard, a task log, or a factory state dump. Every item
+answers exactly four questions, in this order, and a founder must be able to
+answer them in under ten seconds:
+
+1. **What do you need from me?** — the type (Approval / Decision / Blocker /
+   Question / Recovery) and a short human title.
+2. **Why?** — one or two sentences of context, in the founder's vocabulary.
+3. **What happens if I do it?** — one sentence about what the factory does next.
+4. **What should I click?** — the actions that actually exist.
+
+`factory/lib/hq/founder-inbox.mjs` is the translation layer that produces this.
+It is pure: it reads the inbox items `buildFounderInbox` already assembles,
+derives a founder-readable card (`item.founder`), and collects the operator view
+under `item.technical`. Raw fields (`kind`, `title`, `detail`, `action`,
+`options`, `statePath`) are preserved untouched for existing readers.
+
+What must stay **out of** the primary card, and live only behind
+"View details": raw objective prompts, UUIDs and task ids, model or harness
+names, stack traces, full agent reports, git commands, filesystem paths, task
+contracts, raw JSON, evidence blobs, retry histories, and stage vocabulary
+(`decision-required`, `builder blocked`, `release gate`). Ids may appear as
+tiny secondary metadata for debugging, never as the heading.
+
+Ordering is by what is actually holding the founder up — approval gates first,
+then live work that is stopped, then failures the factory could not recover
+from, then high-impact choices with nothing stalled behind them, then anything
+informational. It is never ordered primarily by `updatedAt`, task creation time,
+severity string, internal stage, or historical failure timestamp. When nothing
+genuinely requires the founder, the inbox says "You're all caught up." — no
+fake alerts, no stale failures, no historical noise.
+
+`dashboard/backend/public/lib/founderInbox.mjs` renders the card and maps its
+actions onto the dashboard's existing handlers, so presentation changes never
+introduce new endpoints or new workflow. The contract is covered by
+`factory/test/founder-inbox-translation.test.mjs`.
+
 ## HTTP endpoints
 
 All endpoints require the normal authenticated dashboard session.

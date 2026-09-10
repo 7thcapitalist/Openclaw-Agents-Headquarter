@@ -110,6 +110,7 @@ import { defaultStateRoot } from "../../factory/lib/natural-language-intake.mjs"
 import { readDeploymentStatus } from "../../factory/lib/deploy/status.mjs";
 import { addOvernightItem, readOvernightQueue, removeOvernightItem, startOvernight, stopOvernight, overnightLimit } from "./lib/overnightQueue.mjs";
 import { buildOperationsSnapshot } from "../../factory/lib/hq/operations.mjs";
+import { buildGoalsSnapshot } from "../../factory/lib/hq/goals.mjs";
 import { buildBudgetSnapshot } from "../../factory/lib/hq/budget-snapshot.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -835,6 +836,14 @@ app.get("/api/hq/autonomy", async (_req, res) => {
 
 app.get("/api/hq/operations", (_req, res) => {
   try { res.json(buildOperationsSnapshot({ hqRoot: ROOT })); }
+  catch (e) { res.status(500).json({ version: 1, available: false, error: String(e.message || e) }); }
+});
+
+// Read-only. Goal definitions are tracked in factory/goals.json and change by
+// pull request; there is deliberately no write route, so the dashboard cannot
+// become a second place where company intent is edited without review.
+app.get("/api/hq/goals", (_req, res) => {
+  try { res.json(buildGoalsSnapshot({ hqRoot: ROOT })); }
   catch (e) { res.status(500).json({ version: 1, available: false, error: String(e.message || e) }); }
 });
 

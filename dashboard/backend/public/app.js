@@ -3,6 +3,8 @@ import * as founderApproval from "/lib/founderApproval.mjs";
 import * as objectiveView from "/lib/objectiveView.mjs";
 import { costLimitsPanel } from "/cost-limits.mjs";
 import { operationsPanel } from "/lib/operationsView.mjs";
+import { renderFounderInboxCard, renderFounderInboxEmpty } from "/lib/founderInbox.mjs";
+import { goalsPanel } from "/lib/goalsView.mjs";
 import { budgetPanel } from "/lib/budgetView.mjs";
 
 (function () {
@@ -222,7 +224,7 @@ import { budgetPanel } from "/lib/budgetView.mjs";
   // ── Today: the founder observability surface ───────────────────
 
   async function renderToday() {
-    const [state, fc, learning, objectivesResp, autonomy, costs, planLimits, overnight, operations, budgets] = await Promise.all([
+    const [state, fc, learning, objectivesResp, autonomy, costs, planLimits, overnight, operations, goals, budgets] = await Promise.all([
       loadCompany(),
       apiJson("/api/founder/overview").catch(() => ({ jobs: [] })),
       loadLearning().catch(() => null),
@@ -232,6 +234,7 @@ import { budgetPanel } from "/lib/budgetView.mjs";
       apiJson("/api/hq/plan-limits").catch(() => null),
       apiJson("/api/founder/overnight").catch(() => ({ status: "unavailable", items: [] })),
       apiJson("/api/hq/operations").catch(() => null),
+      apiJson("/api/hq/goals").catch(() => null),
       apiJson("/api/hq/budgets").catch(() => null),
     ]);
     const objectives = objectivesResp.objectives || [];
@@ -241,7 +244,9 @@ import { budgetPanel } from "/lib/budgetView.mjs";
     const decisions = state.decisions || [];
     const inbox = fc.inbox || [];
     const dismissedInbox = fc.dismissedInbox || [];
-    const inboxActionable = inbox.filter((i) => i.action && i.action !== "none").length;
+    // "Needs you" counts what the founder can actually act on. The translated
+    // item knows: priority 5 is informational (a recorded question), never a page.
+    const inboxActionable = inbox.filter((i) => (i.founder ? i.founder.priority < 5 : i.action && i.action !== "none")).length;
     const jobs = fc.jobs || [];
     const allTasks = fc.tasks || [];
     const autoRecovering = fc.autoRecovering || [];
@@ -251,7 +256,7 @@ import { budgetPanel } from "/lib/budgetView.mjs";
     // "your request was received, agents are on it" confirmation.
     const liveJobs = jobs.filter((j) => j.status === "starting" || j.status === "running" || j.status === "decomposing");
 
-    app.innerHTML = renderFounderHome({ state, projects, agents, inbox, objectives, allTasks, runningRows, liveJobs, autoRecovering, finishedTasks, inboxActionable, overnight, operations, budgets });
+    app.innerHTML = renderFounderHome({ state, projects, agents, inbox, dismissedInbox, objectives, allTasks, runningRows, liveJobs, autoRecovering, finishedTasks, inboxActionable, overnight, operations, goals, budgets });
     bindFounderControls();
     return;
 
@@ -384,7 +389,7 @@ import { budgetPanel } from "/lib/budgetView.mjs";
     </section>`;
   }
 
-  function renderFounderHome({ state, projects, agents, inbox, objectives, allTasks, runningRows, liveJobs, autoRecovering, finishedTasks, inboxActionable, overnight, operations, budgets }) {
+  function renderFounderHome({ state, projects, agents, inbox, dismissedInbox, objectives, allTasks, runningRows, liveJobs, autoRecovering, finishedTasks, inboxActionable, overnight, operations, goals, budgets }) {
     const groups = objectiveView.groupObjectives(objectives);
     const active = [...groups.running, ...groups.waiting, ...groups.blocked];
     const workingAgents = runningRows.filter((row) => row.status === "working");
@@ -395,16 +400,32 @@ import { budgetPanel } from "/lib/budgetView.mjs";
       <form id="founder-command" class="founder-launcher"><textarea id="founder-objective" rows="1" placeholder="Start a new outcome…" required></textarea><select id="founder-project" required><option value="">Choose project</option>${targets.map((p) => `<option value="${esc(p.key)}" data-repo="${esc(p.repo || "")}">${esc(p.name)}${p.isHeadquarters ? " (factory)" : ""}</option>`).join("")}</select><input id="founder-repo" type="hidden"/><input id="founder-decompose" type="checkbox" checked hidden/><button class="btn founder-launch" type="submit">Start an outcome</button></form>
       ${renderOvernightPlan(overnight, targets)}
       <div class="founder-pulse"><div><span class="eyebrow">Factory pulse</span><strong>${active.length ? `${active.length} active objective${active.length === 1 ? "" : "s"}` : "All clear"}</strong></div><div><span>Working</span><b>${workingAgents.length}</b></div><div><span>Waiting for you</span><b class="${inboxActionable ? "pulse-attention" : ""}">${inboxActionable}</b></div><div><span>Recently complete</span><b>${groups.recentlyCompleted.length}</b></div></div>
+      ${renderNeedsYou(inbox, dismissedInbox, inboxActionable)}
       <div class="founder-columns"><main>
         <section class="founder-section"><div class="section-heading"><div><span class="eyebrow">In motion</span><h2>Active objectives</h2></div><span class="section-count">${active.length}</span></div>${active.map((o) => founderObjectiveCard(o)).join("") || `<div class="quiet-state">Nothing is running. Start an outcome above.</div>`}</section>
         <section class="founder-section"><div class="section-heading"><div><span class="eyebrow">Live floor</span><h2>Agents at work</h2></div></div>${[...liveJobs.map((j) => ({ title: j.objective, sub: "Starting the team", status: "starting" })), ...autoRecovering.map((r) => ({ title: r.objective || r.taskId, sub: "Recovering a safe infrastructure failure", status: "recovering" })), ...runningRows].map((r) => `<div class="agent-work-row"><span class="status-dot ${r.status === "working" ? "is-working" : "is-waiting"}"></span><div><strong>${esc(r.title || r.objective || "Factory work")}</strong><span>${esc(r.sub || `${r.agent || "Agent"} · ${r.stage || "next stage"}`)}</span></div><em>${esc(r.status || "waiting")}</em></div>`).join("") || `<div class="quiet-state">The floor is quiet.</div>`}</section>
       </main><aside>
-        <section class="founder-section attention-section"><div class="section-heading"><div><span class="eyebrow">Your turn</span><h2>Needs you</h2></div><span class="section-count">${inboxActionable}</span></div>${inbox.slice(0, 4).map((x) => inboxItem(x)).join("") || `<div class="quiet-state">No decisions waiting.</div>`}</section>
         <section class="founder-section"><div class="section-heading"><div><span class="eyebrow">Recently</span><h2>Completed</h2></div></div>${groups.recentlyCompleted.slice(0, 3).map((o) => founderObjectiveCard(o, true)).join("") || `<div class="quiet-state">No recent completions.</div>`}</section>
+        ${goalsPanel(goals, { esc })}
         ${operationsPanel(operations, { esc, fmtTime })}
         ${budgetPanel(budgets, { esc })}
       </aside></div>
     </div>`;
+  }
+
+  // The Founder Inbox. It sits above everything else and stays full width:
+  // it is the one surface that is about the founder rather than the factory.
+  // Sorted and worded by the backend translation (factory/lib/hq/founder-inbox.mjs);
+  // this only decides where it lives on the page.
+  function renderNeedsYou(inbox, dismissedInbox = [], inboxActionable = 0) {
+    return `<section class="founder-section attention-section needs-you">
+      <div class="section-heading"><div><span class="eyebrow">Your turn</span><h2>Needs you</h2></div>${inboxActionable ? `<span class="section-count">${inboxActionable}</span>` : ""}</div>
+      ${inbox.map((x) => inboxItem(x)).join("") || renderFounderInboxEmpty()}
+      ${dismissedInbox.length ? `<details class="inbox-fold">
+        <summary>Dismissed by you <span class="muted small">${dismissedInbox.length}</span></summary>
+        <div class="inbox-fold-list">${dismissedInbox.map((x) => dismissedInboxRow(x)).join("")}</div>
+      </details>` : ""}
+    </section>`;
   }
 
   function founderObjectiveCard(o, compact = false) {
@@ -616,53 +637,6 @@ import { budgetPanel } from "/lib/budgetView.mjs";
     </div>`;
   }
 
-  function decisionCard(x) {
-    const actionable = Boolean(x.statePath);
-    const postTask = x.kind === "post-task-decision" || x.deferred === true;
-    // Free-text-ish placeholder options ("Provide direction", "Keep paused") are
-    // not real one-click answers — only offer buttons for substantive choices.
-    const choices = (x.options || []).filter((o) => !/^(provide direction|keep paused|approve and resume|submit signed approval|other\b)/i.test(String(o).trim()));
-    return `<article class="decision-card">
-      <div class="decision-top"><span class="decision-icon">!</span><div><strong>${esc(x.question)}</strong><span>${esc(x.project || "company")}${x.taskId ? ` · <code>${esc(x.taskId)}</code>` : ""}</span></div></div>
-      ${x.objective ? `<p class="muted small">Task: ${esc(x.objective)}</p>` : ""}
-      <p>${esc(x.why || "")}</p>
-      ${x.recommendation ? `<div class="decision-rec"><small>Recommendation</small>${esc(x.recommendation)}</div>` : ""}
-      ${actionable
-        ? `<div class="decision-choices">
-            ${choices.map((c) => `<button class="btn" data-resolve-choice="${esc(x.statePath)}" data-choice="${esc(c)}" data-post-task="${postTask ? "1" : "0"}">${esc(c)}</button>`).join("")}
-            <button class="btn secondary" data-resolve-other="${esc(x.statePath)}" data-post-task="${postTask ? "1" : "0"}">Other…</button>
-          </div>`
-        : `<p class="muted small">Strategic decision tracked in ${esc(x.project || "the project")}'s ownership.json — not resolvable from here yet; update the file directly.</p>`}
-    </article>`;
-  }
-
-  // High-risk approval — one click. The signature is produced by a
-  // non-extractable Ed25519 key held only in this browser (see
-  // /lib/founderApproval.mjs); the server verifies + records through the
-  // unchanged gate and resumes the work.
-  function approvalCard(x) {
-    const a = x.approval || {};
-    return `<article class="decision-card approval-card" data-approval-task="${esc(x.taskId || "")}" data-approval-statepath="${esc(x.statePath || "")}">
-      <div class="decision-top"><span class="decision-icon">◆</span>
-        <div><strong>${esc(x.title || "Approve a high-risk build")}</strong>
-        <span>${pill("Approval", "badge-warn")} ${esc(x.project || "company")}${x.taskId ? ` · <code>${esc(x.taskId)}</code>` : ""}</span></div>
-      </div>
-      ${x.objective ? `<p class="muted small">What the factory will do: <strong>${esc(x.objective)}</strong></p>` : ""}
-      <p>${esc(x.detail || "")}</p>
-      ${a.whatHappensNext ? `<div class="decision-rec"><small>After you approve</small>${esc(a.whatHappensNext)}</div>` : ""}
-      <p class="muted small">${esc(a.keyNote || "Signed by a key held only in your browser.")}</p>
-      <div class="approve-actions">
-        <button class="btn" data-approve="${esc(x.taskId || "")}">Approve</button>
-        <button class="btn secondary" data-reject="${esc(x.taskId || "")}">Reject</button>
-      </div>
-      <div class="approve-status" data-approve-status hidden></div>
-      <details class="approve-advanced">
-        <summary>Approve from a trusted terminal instead</summary>
-        <p class="muted small">Run <code>npm run approve${x.taskId ? ` -- --task ${esc(x.taskId)}` : ""}</code> at the repo root. Use this if this browser can't reach your signing key.</p>
-      </details>
-    </article>`;
-  }
-
   // Ensure this browser has an enrolled, non-extractable signing key. Returns a
   // CryptoKeyPair or throws with a founder-readable message.
   async function ensureApprovalKey() {
@@ -713,15 +687,15 @@ import { budgetPanel } from "/lib/budgetView.mjs";
   }
 
   const INBOX_KIND_LABEL = { approval: "Approval", decision: "Decision", "post-task-decision": "After task", blocked: "Blocked", question: "Question" };
-  const INBOX_KIND_CLASS = { approval: "badge-warn", decision: "badge-warn", "post-task-decision": "badge-type", blocked: "health-failed", question: "badge-type" };
 
-  // One Founder Inbox entry, wrapped with a "×" that dismisses it to the
+  // One Founder Inbox entry: the chief-of-staff card (rendered from the
+  // backend's founder translation) wrapped with a "×" that dismisses it to the
   // "Dismissed" fold below. Dismissing is presentation-only and reversible —
   // it never resolves the decision, approves the build, or unblocks the task.
   function inboxItem(x) {
     return `<div class="inbox-entry" data-inbox-id="${esc(x.id)}">
       <button class="inbox-dismiss" data-dismiss-inbox="${esc(x.id)}" title="Dismiss from your inbox" aria-label="Dismiss from your inbox">×</button>
-      ${inboxCardBody(x)}
+      ${renderFounderInboxCard(x, { esc })}
     </div>`;
   }
 
@@ -729,33 +703,10 @@ import { budgetPanel } from "/lib/budgetView.mjs";
   // collapsed "Dismissed" fold with a one-click Restore.
   function dismissedInboxRow(x) {
     return `<div class="inbox-dismissed-row">
-      <div><strong>${esc(x.title || INBOX_KIND_LABEL[x.kind] || x.kind)}</strong>
-      <span class="muted small">${esc(INBOX_KIND_LABEL[x.kind] || x.kind)}${x.project ? ` · ${esc(x.project)}` : ""}${x.taskId ? ` · ${esc(x.taskId)}` : ""}${x.dismissedAt ? ` · dismissed ${esc(fmtTime(x.dismissedAt))}` : ""}</span></div>
+      <div><strong>${esc(x.founder?.title || x.title || INBOX_KIND_LABEL[x.kind] || x.kind)}</strong>
+      <span class="muted small">${esc(x.founder?.typeLabel || INBOX_KIND_LABEL[x.kind] || x.kind)}${x.project ? ` · ${esc(x.project)}` : ""}${x.dismissedAt ? ` · dismissed ${esc(fmtTime(x.dismissedAt))}` : ""}</span></div>
       <button class="btn secondary tiny" data-restore-inbox="${esc(x.id)}">Restore</button>
     </div>`;
-  }
-
-  // Decisions and approvals reuse the decision-card action buttons; blocked
-  // tasks link to their completion report; questions are read-only (this
-  // system answers them synchronously).
-  function inboxCardBody(x) {
-    if (x.kind === "approval") return approvalCard(x);
-    if (x.kind === "decision" || x.kind === "post-task-decision") {
-      return decisionCard({
-        question: x.title, why: x.detail, project: x.project, taskId: x.taskId, objective: x.objective,
-        recommendation: x.recommendation, options: x.options, risk: x.risk, statePath: x.statePath, kind: x.kind, deferred: x.deferred,
-      });
-    }
-    return `<article class="decision-card">
-      <div class="decision-top">
-        <span class="decision-icon">${x.kind === "blocked" ? "×" : "?"}</span>
-        <div><strong>${esc(x.title)}</strong><span>${pill(INBOX_KIND_LABEL[x.kind] || x.kind, INBOX_KIND_CLASS[x.kind] || "badge-type")} ${esc(x.project || "company")}${x.taskId ? ` · <code>${esc(x.taskId)}</code>` : ""}</span></div>
-      </div>
-      ${x.objective ? `<p class="muted small">Task: ${esc(x.objective)}</p>` : ""}
-      <p>${esc(x.detail || "")}</p>
-      ${x.kind === "blocked" && x.taskId ? `<div class="decision-choices"><button class="btn" data-retry-task="${esc(x.taskId)}">Retry this task</button><button class="btn secondary" data-report-task="${esc(x.taskId)}">View report</button></div>` : ""}
-      ${x.kind === "question" ? `<p class="muted small">Answered synchronously — see the Ask an agent history.</p>` : ""}
-    </article>`;
   }
 
   const NODE_TONE = { good: "health-healthy", info: "badge-type", warn: "badge-warn", bad: "health-failed", neutral: "badge-type" };
