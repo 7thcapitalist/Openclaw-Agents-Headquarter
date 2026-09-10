@@ -362,7 +362,7 @@ function escalateRecovery(state, { failedStage, kind, error, now }) {
 export function recordFounderApproval(state, { assertion, evidence, now = new Date().toISOString() }) {
   if (state.task.risk !== "high") throw new Error("Founder approval is only required for high-risk tasks.");
   if (!evidence?.path) throw new Error("Founder approval requires an evidence artifact.");
-  validateFounderAssertion(state, assertion, evidence);
+  validateFounderAssertion(state, assertion, evidence, now, { enforceFreshness: true });
   const next = structuredClone(state);
   next.founderApproval = { assertion: structuredClone(assertion), evidence, verifiedAt: now };
   next.updatedAt = now;
@@ -384,8 +384,14 @@ export function assertReleaseReady(state) {
       throw new Error(`Release gate failed: ${stage} has no evidence.`);
     }
   }
-  if (state.task.risk === "high" && !hasValidFounderApproval(state)) {
-    throw new Error("Release gate failed: high-risk task has no recorded founderApproval.");
+  if (state.task.risk === "high") {
+    const approval = founderApprovalStatus(state);
+    if (!approval.satisfied) {
+      // Say which of the several possible problems it actually is. "No recorded
+      // founderApproval" was wrong whenever one WAS recorded but failed to
+      // verify, and left the founder with nothing to act on.
+      throw new Error(`Release gate failed: high-risk task is not authorized — ${approval.reason}`);
+    }
   }
 }
 
@@ -457,17 +463,30 @@ function sanitizeTaskContract(task) {
   return safe;
 }
 
-function validateFounderAssertion(state, assertion, evidence, now = new Date().toISOString()) {
+// `enforceFreshness` is true only when an approval is being RECORDED. Once the
+// factory has verified and recorded it, the approval is a historical fact and
+// re-checking its age on every later gate would kill a task the founder really
+// did approve — a pipeline that outruns the TTL would fail at release with no
+// way back, because isAwaitingFounderApproval() is false and the Inbox would
+// not offer it for re-approval. Revocation, not expiry, is how a recorded
+// approval is withdrawn.
+function validateFounderAssertion(state, assertion, evidence, now = new Date().toISOString(), { enforceFreshness = false } = {}) {
   if (!assertion || typeof assertion !== "object") throw new Error("Founder approval assertion is required.");
   const expected = state.founderApprovalRequest;
   if (!expected) throw new Error("This task has no founder approval request to satisfy.");
 
   // Task scope + exact requested action. A signature for another task, another
   // challenge, or another action is not an approval for this one.
-  if (assertion.taskId !== expected.taskId
-    || assertion.challenge !== expected.challenge
-    || assertion.decision !== expected.decision) {
-    throw new Error("Founder approval assertion does not match this task challenge.");
+  // Each of these must be a real value on BOTH sides. Comparing two `undefined`
+  // fields succeeds, so deleting `challenge` from the request would otherwise
+  // satisfy the check rather than fail it.
+  for (const field of ["taskId", "challenge", "decision"]) {
+    const want = expected[field];
+    const got = assertion[field];
+    if (typeof want !== "string" || !want.trim()) {
+      throw new Error(`Founder approval request is missing ${field}; it cannot authorize anything.`);
+    }
+    if (want !== got) throw new Error("Founder approval assertion does not match this task challenge.");
   }
   if (!assertion.approvedAt || !assertion.evidenceSha256 || !assertion.signature) {
     throw new Error("Founder approval assertion is incomplete.");
@@ -501,8 +520,8 @@ function validateFounderAssertion(state, assertion, evidence, now = new Date().t
     throw new Error("The approval key for this task has been revoked.");
   }
 
-  // Expiry: an approval is a decision about a moment, not a standing grant.
-  assertApprovalFreshness(expected, assertion, now);
+  // Expiry: bounds how long a SIGNATURE may sit unused before it is recorded.
+  if (enforceFreshness) assertApprovalFreshness(expected, assertion, now);
 
   const evidencePath = resolve(state.worktree, evidence.path);
   if (assertion.evidenceSha256 !== evidenceSha256(evidencePath)) {
@@ -546,7 +565,10 @@ function assertApprovalFreshness(request, assertion, now) {
   if (approvedAt - nowMs > FOUNDER_APPROVAL_SKEW_MS) {
     throw new Error("Founder approval is dated in the future.");
   }
-  const ttlSeconds = Number(request.expiresAfterSeconds || 0);
+  // A request with no TTL field falls back to the configured default. Absence
+  // must not read as "this approval never expires".
+  const declared = Number(request.expiresAfterSeconds);
+  const ttlSeconds = Number.isFinite(declared) && declared > 0 ? declared : FOUNDER_APPROVAL_TTL_SECONDS;
   if (ttlSeconds > 0 && nowMs - approvedAt > ttlSeconds * 1000) {
     throw new Error(`Founder approval expired (signed ${assertion.approvedAt}, valid for ${ttlSeconds}s).`);
   }
@@ -587,9 +609,16 @@ export function isAwaitingFounderApproval(state) {
 }
 
 // The ONLY thing that satisfies the high-risk gate: a task-scoped Ed25519
-// assertion that still verifies against the authority recorded on the task.
-// There is no second, weaker path — by design. If this returns false the task
-// stays blocked until a real signature arrives.
+// assertion that verifies against the authority recorded on the task. If this
+// returns false the task stays blocked until a real signature arrives.
+//
+// KNOWN LIMIT, stated plainly: the authority public key is read from the same
+// task-state record as everything else, so an actor that can WRITE task state
+// can swap in its own key and sign for itself. That is pre-existing and is not
+// something this function can fix by itself — closing it needs the gate to
+// cross-check the enrolled key from a store the task cannot edit. Filesystem
+// permissions on the state directory are the current mitigation. See
+// docs/software-factory/FOUNDER_AUTHORITY.md §"Residual risk".
 export function hasValidFounderApproval(state) {
   if (!state?.founderApproval?.assertion || !state.founderApproval?.evidence) return false;
   try {
@@ -600,8 +629,9 @@ export function hasValidFounderApproval(state) {
   }
 }
 
-// Why a high-risk task is still blocked, in words a founder can act on. Used by
-// the Inbox so "waiting for approval" is never confused with "approved".
+// Why a high-risk task is not authorized, in words a founder can act on.
+// Used by the release gate, and exported for the dashboard so "waiting for
+// approval" is never confused with "approved".
 export function founderApprovalStatus(state, now = new Date().toISOString()) {
   if (state?.task?.risk !== "high") return { required: false, satisfied: true, reason: null };
   if (!state.founderApproval?.assertion) {

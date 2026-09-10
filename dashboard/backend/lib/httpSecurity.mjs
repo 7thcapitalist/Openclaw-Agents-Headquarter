@@ -27,7 +27,11 @@ const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 // tradeoff: inline CSS cannot execute JavaScript, and the sanitizer strips the
 // `style` attribute from all untrusted content, so agent-authored CSS never
 // reaches the page.
-export function contentSecurityPolicy({ allowHttpsImages = true } = {}) {
+// `allowHttpsImages` defaults to FALSE. Agent-authored Markdown can embed an
+// <img>, so permitting arbitrary https image sources let any report beacon the
+// founder's view time and source IP to a host of the author's choosing. Local
+// and data: images cover everything Headquarters actually renders.
+export function contentSecurityPolicy({ allowHttpsImages = false } = {}) {
   return [
     "default-src 'self'",
     "script-src 'self'",
@@ -85,19 +89,25 @@ function constantTimeEquals(a, b) {
 
 // Parse the host:port a request claims to be for, so an Origin header can be
 // compared against the server the browser actually reached.
-function expectedOrigins(req, configured) {
+function expectedOrigins(req, configured, { trustProxy = false } = {}) {
   const origins = new Set();
   for (const value of configured || []) {
     if (value) origins.add(String(value).replace(/\/$/, "").toLowerCase());
   }
-  const host = req.headers["x-forwarded-host"] || req.headers.host;
+
+  // `x-forwarded-host` is only consulted when the deployment actually sits
+  // behind a proxy it trusts. Reading it unconditionally meant a request could
+  // nominate its own allowed origin — the origin check then agreed with
+  // whatever the caller claimed and contributed nothing. clientKey() already
+  // follows the trust-proxy setting; this now does too.
+  const forwarded = trustProxy ? req.headers["x-forwarded-host"] : null;
+  const host = forwarded || req.headers.host;
   if (host) {
-    const proto = String(req.headers["x-forwarded-proto"] || req.protocol || "http").split(",")[0].trim();
-    origins.add(`${proto}://${String(host).split(",")[0].trim()}`.toLowerCase());
-    // A dashboard reached over plain http locally and https through a proxy is
-    // the same deployment; accept both rather than forcing operators to config.
-    origins.add(`http://${String(host).split(",")[0].trim()}`.toLowerCase());
-    origins.add(`https://${String(host).split(",")[0].trim()}`.toLowerCase());
+    const bare = String(host).split(",")[0].trim().toLowerCase();
+    // Both schemes: the same deployment is often plain http locally and https
+    // through a proxy, and the browser sends the scheme it actually used.
+    origins.add(`http://${bare}`);
+    origins.add(`https://${bare}`);
   }
   return origins;
 }
@@ -111,7 +121,7 @@ function expectedOrigins(req, configured) {
 //
 // SameSite=lax on the cookie is a third layer, but it is a browser default we
 // do not control and does not cover every client, so it is not relied upon.
-export function csrfProtection({ allowedOrigins = [], exemptPaths = [] } = {}) {
+export function csrfProtection({ allowedOrigins = [], exemptPaths = [], trustProxy = false } = {}) {
   const exempt = new Set(exemptPaths);
   return function csrfMiddleware(req, res, next) {
     if (SAFE_METHODS.has(req.method)) return next();
@@ -119,7 +129,7 @@ export function csrfProtection({ allowedOrigins = [], exemptPaths = [] } = {}) {
 
     const origin = req.headers.origin;
     const referer = req.headers.referer || req.headers.referrer;
-    const allowed = expectedOrigins(req, allowedOrigins);
+    const allowed = expectedOrigins(req, allowedOrigins, { trustProxy });
 
     if (origin) {
       if (!allowed.has(String(origin).replace(/\/$/, "").toLowerCase())) {

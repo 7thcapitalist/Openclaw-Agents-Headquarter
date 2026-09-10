@@ -36,14 +36,35 @@ jobs:
         with:
           node-version: '24'
 
-      # No install step on purpose: the factory suite and both check scripts
-      # import only Node builtins, and the repository root declares no
-      # dependencies. Adding `npm ci` here would fail — there is no root
-      # lockfile — and would buy nothing.
+      # The repository ROOT still declares no dependencies and needs no install.
+      # The dashboard does, and its tests are not optional: the browser-hardening
+      # suite (Markdown sanitization, CSP, CSRF, throttling, session rotation)
+      # skips itself when `marked`/`express` are absent, so without this step CI
+      # was silently running none of it — green, and blind to exactly the
+      # regressions those tests exist to catch.
+      - name: Install dashboard dependencies
+        run: npm ci --prefix dashboard/backend
+
       - name: Verify third-party provenance
         run: npm run check:provenance
 
       # `test:factory` is bounded twice over (per-test and whole-suite), so a
       # hang becomes a failure with a legible message instead of a 6-hour job.
+      #
+      # The run is captured once and inspected afterwards rather than executed
+      # twice — the suite takes most of this job's wall clock.
+      #
+      # A skip is not a pass. The browser-hardening tests degrade to `test.skip`
+      # when their dependencies are missing, which is right for a developer who
+      # has not run `npm run setup`, and wrong to let CI report as success. If
+      # anything skipped here, the install step above is not doing its job.
       - name: Run factory test suite
-        run: npm run test:factory
+        run: |
+          set -o pipefail
+          npm run test:factory 2>&1 | tee /tmp/factory-tests.log
+          skipped="$(grep -oE '^. skipped [0-9]+' /tmp/factory-tests.log | grep -oE '[0-9]+' | head -1)"
+          echo "skipped: ${skipped:-0}"
+          if [ "${skipped:-0}" -ne 0 ]; then
+            echo "::error::${skipped} test(s) were skipped in CI; the browser-hardening suite must run here."
+            exit 1
+          fi
