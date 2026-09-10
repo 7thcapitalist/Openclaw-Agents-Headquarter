@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSyn
 import { dirname, join, resolve } from "path";
 import { createHash, randomUUID, sign as signPayload, verify as verifySignature } from "crypto";
 import { classifyBlocker } from "./hq/blocker-class.mjs";
-import { classifyFailure, isRecoverableFailure, recoveryStrategy } from "./failure-classification.mjs";
+import { classifyFailure, isRecoverableFailure, recoveryStrategy, repairTargetFor } from "./failure-classification.mjs";
 
 export const STAGES = [
   "product",
@@ -231,7 +231,7 @@ export function startRecovery(state, { failedStage, actor, error, evidence = [],
   const attempt = {
     number: used + 1, strategy: recoveryStrategy(used + 1), originalObjective: next.task.outcome,
     failedStage, agent: actor, error: String(error || "unknown failure"), classification: kind,
-    repairTarget: kind === "FACTORY_ERROR" ? "factory" : "project", relevantEvidence: structuredClone(evidence),
+    repairTarget: repairTargetFor(kind), relevantEvidence: structuredClone(evidence),
     attemptedActions: [], currentState: next.status, diagnosis: null, repair: null, verification: null,
     status: "diagnosing", startedAt: now,
   };
@@ -272,24 +272,32 @@ export function recordRecoveryResult(state, { outcome, actor, summary, evidence 
     next.recovery.active = null;
     next.updatedAt = now;
     next.events.push({ at: now, type: "recovery-verified", stage: active.failedStage, actor, attempt: active.attempt });
-    // A verified recovery re-enters the failed stage so the stage gate is still
-    // earned rather than granted by recovery. That re-entry is a stage attempt
-    // like any other and must respect the per-stage budget: without this check
-    // each recovery cycle silently minted a fresh attempt, so a stage could be
-    // dispatched indefinitely while `routeStageFailure`'s limit never applied.
-    const attempts = (next.dispatches || []).filter((item) => item.stage === active.failedStage && (item.kind === "stage" || !item.kind)).length;
+    // A verified repair to the PROJECT rewrote the code every earlier gate
+    // passed against, so those verdicts are stale — resume at the builder and
+    // invalidate everything downstream. A factory repair (the agent could not
+    // run) changed no code, so the failed stage retries in place and earlier
+    // gates stand.
+    const resumeAt = REVIEW_STAGES.has(active.failedStage) && attempt.repairTarget === "project"
+      ? "builder"
+      : active.failedStage;
+    // That re-entry is a stage attempt like any other and must respect the
+    // per-stage budget: without this check each recovery cycle silently minted
+    // a fresh attempt, so a stage could be dispatched indefinitely while
+    // `routeStageFailure`'s limit never applied. Counted against the stage we
+    // are actually about to re-enter.
+    const attempts = (next.dispatches || []).filter((item) => item.stage === resumeAt && (item.kind === "stage" || !item.kind)).length;
     if (attempts >= maxAttemptsPerStage) {
       return escalateRecovery(next, {
-        failedStage: active.failedStage,
+        failedStage: resumeAt,
         kind: "FOUNDER_DECISION_REQUIRED",
-        error: `Recovery attempt ${active.attempt} was independently verified, but ${active.failedStage} has already used ${attempts} of ${maxAttemptsPerStage} stage attempts. Re-running it would exceed the per-stage budget. Founder direction is required: accept the verified work and advance, raise the budget, or change scope.`,
+        error: `Recovery attempt ${active.attempt} was independently verified, but ${resumeAt} has already used ${attempts} of ${maxAttemptsPerStage} stage attempts. Re-running it would exceed the per-stage budget. Founder direction is required: accept the verified work and advance, raise the budget, or change scope.`,
         now,
       });
     }
-    next.stages[active.failedStage] = { status: "pending" };
+    for (const stage of STAGES.slice(STAGES.indexOf(resumeAt))) next.stages[stage] = { status: "pending" };
     next.status = "active";
-    next.currentStage = active.failedStage;
-    next.events.push({ at: now, type: "task-resumed", stage: active.failedStage, actor: "system", reason: "recovery-verified", attempt: attempts + 1 });
+    next.currentStage = resumeAt;
+    next.events.push({ at: now, type: "task-resumed", stage: resumeAt, actor: "system", reason: "recovery-verified", attempt: attempts + 1, ...(resumeAt !== active.failedStage ? { fromStage: active.failedStage, invalidatedDownstream: true } : {}) });
     return next;
   }
   return finishRecoveryFailure(next, { summary, actor, evidence, outcome, now });
@@ -308,7 +316,7 @@ function finishRecoveryFailure(state, { summary, actor, outcome, now }) {
   }
   if (next.recovery.attempts.length < next.recovery.maxAttempts && isRecoverableFailure(kind)) {
     next.recovery.active = { phase: "diagnose", failedStage: active.failedStage, attempt: next.recovery.attempts.length + 1 };
-    next.recovery.attempts.push({ number: next.recovery.attempts.length + 1, strategy: recoveryStrategy(next.recovery.attempts.length + 1), originalObjective: next.task.outcome, failedStage: active.failedStage, agent: "recovery", error, classification: kind, repairTarget: kind === "FACTORY_ERROR" ? "factory" : "project", relevantEvidence: [], attemptedActions: [], currentState: next.status, diagnosis: null, repair: null, verification: null, status: "diagnosing", startedAt: now });
+    next.recovery.attempts.push({ number: next.recovery.attempts.length + 1, strategy: recoveryStrategy(next.recovery.attempts.length + 1), originalObjective: next.task.outcome, failedStage: active.failedStage, agent: "recovery", error, classification: kind, repairTarget: repairTargetFor(kind), relevantEvidence: [], attemptedActions: [], currentState: next.status, diagnosis: null, repair: null, verification: null, status: "diagnosing", startedAt: now });
     next.events.push({ at: now, type: "recovery-diagnosing", stage: active.failedStage, actor: "recovery", attempt: next.recovery.attempts.length, classification: kind });
     return next;
   }
