@@ -161,7 +161,12 @@ test("runObjective: a high-risk node with no founder approval key blocks for the
   const prev = process.env.FACTORY_FOUNDER_PUBLIC_KEY;
   delete process.env.FACTORY_FOUNDER_PUBLIC_KEY;
   try {
-    const res = await runObjective({ hqRoot: HQ, objectivePath, maxConcurrent: 3, stateRoot, execute: makeExecute(), publish: () => ({ published: false }) });
+    // hqRoot must be a fixture root, not the real HQ checkout: a developer who has
+    // enrolled a real founder key at
+    // dashboard/backend/data/factory/founder-approval-key.pem would make this
+    // "no key configured" scenario silently untestable (the enrolled key is
+    // preferred over the env var — see resolveFounderPublicKey()).
+    const res = await runObjective({ hqRoot: root, objectivePath, maxConcurrent: 3, stateRoot, execute: makeExecute(), publish: () => ({ published: false }) });
     const obj = readObjState(objectivePath);
     const a = obj.nodes[`${obj.objectiveId}-a`];
     assert.equal(a.status, "blocked", "the high-risk node blocks, it does not `failed`");
