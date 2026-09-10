@@ -66,6 +66,41 @@ test("a verified recovery will not re-enter a stage that has spent its attempt b
   assert.equal(final.dispatches.filter((d) => d.stage === "builder" && (d.kind === "stage" || !d.kind)).length, 3);
 });
 
+// The budget that applies must be the one the caller configured, not a default
+// baked into the state layer. `ingestResult`/`failDispatch` own the value, so a
+// task running with a tighter budget must escalate earlier, not at 3.
+test("the configured per-stage budget is the one recovery re-entry respects", async () => {
+  const { statePath } = scaffold("factory-attempt-bounds-configured");
+  const state = readState(statePath);
+  state.currentStage = "builder";
+  state.stages.product = { status: "pass", actor: "openclaw", summary: "ok", evidence: [{ path: "evidence/p.md" }] };
+  state.stages.architect = { status: "pass", actor: "claude", summary: "ok", evidence: [{ path: "evidence/a.md" }] };
+  writeState(statePath, state);
+
+  const execute = async ({ dispatch, cwd }) => {
+    mkdirSync(join(cwd, "evidence"), { recursive: true });
+    const evidence = `evidence/${dispatch.dispatchId}.md`;
+    writeFileSync(join(cwd, evidence), "observed proof\n");
+    const outcome = dispatch.kind === "stage" ? "fail" : "pass";
+    writeFileSync(dispatch.resultPath, JSON.stringify({
+      version: 1, dispatchId: dispatch.dispatchId, stage: dispatch.stage, actor: dispatch.actor,
+      outcome, summary: outcome === "fail" ? "test assertion failed" : "repair independently verified",
+      evidence: [evidence],
+    }));
+  };
+  let result;
+  for (let i = 0; i < 30; i += 1) {
+    result = await runOneStage({ hqRoot, statePath, execute, maxAttemptsPerStage: 1, concurrentGroups: [] });
+    if (result.status !== "active") break;
+  }
+  const final = readState(statePath);
+  assert.equal(final.status, "blocked");
+  // With a budget of 1 the single stage attempt is spent immediately, so the
+  // verified repair cannot re-enter and the founder is asked at 1, not 3.
+  assert.match(final.blocker.why || final.blocker.summary || "", /1 of 1 stage attempts/);
+  assert.equal(final.dispatches.filter((d) => d.stage === "builder" && (d.kind === "stage" || !d.kind)).length, 1);
+});
+
 test("worktree initialization makes the evidence directory ignored", () => {
   const repo = mkdtempSync(join(tmpdir(), "factory-evidence-ignore-"));
   const git = (args) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" });

@@ -74,7 +74,8 @@ export function ingestResult({ statePath, result, agentMeta = null, maxAttemptsP
     const evidence = verifyEvidence(result.evidence, state.worktree);
     const next = recordRecoveryResult(state, {
       outcome: result.outcome === "decision-deferred" ? "pass" : result.outcome,
-      actor: result.actor, summary: result.summary, evidence, diagnosis: result.diagnosis || null, now,
+      actor: result.actor, summary: result.summary, evidence, diagnosis: result.diagnosis || null,
+      maxAttemptsPerStage, now,
     });
     next.dispatches = [...(state.dispatches || []), { ...dispatch, status: "completed", outcome: result.outcome, summary: result.summary, completedAt: now, ...(agentMeta ? { usage: sanitizeUsage(agentMeta) } : {}) }];
     delete next.currentDispatch;
@@ -111,7 +112,7 @@ export function failDispatch({ statePath, dispatchId, error, maxAttemptsPerStage
   assertCurrentDispatch(state, dispatchId);
   const dispatch = state.currentDispatch;
   if (dispatch.kind?.startsWith("recovery-")) {
-    const next = recordRecoveryResult(state, { outcome: "fail", actor: dispatch.actor, summary: String(error), evidence: [], now });
+    const next = recordRecoveryResult(state, { outcome: "fail", actor: dispatch.actor, summary: String(error), evidence: [], maxAttemptsPerStage, now });
     next.dispatches = [...(state.dispatches || []), { ...dispatch, status: "failed", error: String(error), completedAt: now }];
     delete next.currentDispatch;
     writeState(statePath, next);
