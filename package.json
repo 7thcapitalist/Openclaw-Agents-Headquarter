@@ -27,6 +27,7 @@
     "factory:probe-cursor": "node scripts/probe-cursor-harness.mjs",
     "factory:model-policy": "node scripts/apply-model-policy.mjs",
     "hq:status": "node scripts/hq-status.mjs",
+    "factory:retention": "node scripts/factory-retention.mjs",
     "check:provenance": "node scripts/check-third-party-provenance.mjs"
   }
 }

@@ -33,6 +33,26 @@ test("every value the Today view fetches has a name bound to it", () => {
     `renderToday() fetches ${fetched} values but binds ${bound.length} names — a positional shift silently feeds each panel another panel's data`);
 });
 
+// Counting names is not enough. A rebase that inserts a fetch in the middle
+// keeps the count correct and still pairs every later name with the wrong
+// payload — the retention panel arrived bound to the decisions endpoint that
+// way, and the count check above passed. For the `/api/hq/*` fetches the
+// convention is exact (binding `planLimits` <- `/api/hq/plan-limits`), so the
+// pairing itself can be asserted rather than eyeballed.
+test("each /api/hq value is bound to the name that matches its endpoint", () => {
+  const { header, body } = renderTodayBlock();
+  const bound = /const \[([^\]]+)\]/.exec(header)[1].split(",").map((n) => n.trim()).filter(Boolean);
+  const calls = body.split("\n").map((line) => line.trim()).filter((line) => line && !line.startsWith("await Promise.all"));
+
+  const mismatched = [];
+  for (const [index, name] of bound.entries()) {
+    const endpoint = /apiJson\("\/api\/hq\/([a-z-]+)"/.exec(calls[index] || "");
+    if (!endpoint) continue; // founder/* routes and loadX() helpers do not follow the convention
+    if (endpoint[1].replace(/-/g, "") !== name.toLowerCase()) mismatched.push(`${name} <- /api/hq/${endpoint[1]}`);
+  }
+  assert.deepEqual(mismatched, [], `Today bindings paired with the wrong endpoint:\n  ${mismatched.join("\n  ")}`);
+});
+
 test("every panel imported into app.js is actually rendered", () => {
   const imported = [...APP.matchAll(/import \{ (\w*[Pp]anel) \} from "\/lib\/\w+\.mjs";/g)].map((match) => match[1]);
   assert.ok(imported.length >= 4, "the Today view should import several panels");
