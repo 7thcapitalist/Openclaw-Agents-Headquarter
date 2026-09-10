@@ -35,5 +35,9 @@
     "sourcePath": "packages/db/src/schema/cost_events.ts",
     "classification": "reference",
     "notes": "Documents the pinned Paperclip source and HQ-specific adaptations."
-  }]
+  },
+  { "localPath": "dashboard/backend/public/lib/operationsView.mjs", "sourceId": "paperclip", "sourcePath": "ui/src/pages/Dashboard.tsx", "classification": "inspired", "notes": "Adapts Paperclip operational visibility concepts to the founder-focused Today view." },
+  { "localPath": "factory/test/operations-panel.test.mjs", "sourceId": "paperclip", "sourcePath": "ui/src/pages/Dashboard.tsx", "classification": "inspired", "notes": "Tests safe operational rendering and degraded states." },
+  { "localPath": "docs/software-factory/PAPERCLIP_OPERATIONS_PANEL.md", "sourceId": "paperclip", "sourcePath": "ui/src/pages/Dashboard.tsx", "classification": "reference", "notes": "Documents the HQ-specific read-only panel." }
+  ]
 }
