@@ -110,6 +110,7 @@ import { defaultStateRoot } from "../../factory/lib/natural-language-intake.mjs"
 import { readDeploymentStatus } from "../../factory/lib/deploy/status.mjs";
 import { addOvernightItem, readOvernightQueue, removeOvernightItem, startOvernight, stopOvernight, overnightLimit } from "./lib/overnightQueue.mjs";
 import { buildOperationsSnapshot } from "../../factory/lib/hq/operations.mjs";
+import { buildRetentionSnapshot } from "../../factory/lib/hq/retention.mjs";
 import { buildDecisionHistory } from "../../factory/lib/hq/decision-history.mjs";
 import { buildPermissionsSnapshot } from "../../factory/lib/hq/permissions-snapshot.mjs";
 import { buildGoalsSnapshot } from "../../factory/lib/hq/goals.mjs";
@@ -857,6 +858,13 @@ app.get("/api/hq/permissions", (_req, res) => {
 app.get("/api/hq/decisions", (_req, res) => {
   try { res.json(buildDecisionHistory({ hqRoot: ROOT })); }
   catch (e) { res.status(500).json({ version: 1, available: false, error: String(e.message || e) }); }
+});
+
+// Read-only. Reports what could be pruned and never prunes; deletion is an
+// operator action at the terminal with an exact confirmed count.
+app.get("/api/hq/retention", (_req, res) => {
+  try { res.json(buildRetentionSnapshot({ hqRoot: ROOT, backupDir: process.env.FACTORY_BACKUP_DIR || null })); }
+  catch (e) { res.status(500).json({ version: 1, available: false, destructiveActionsRequireOperator: true, error: String(e.message || e) }); }
 });
 
 app.get("/api/hq/goals", (_req, res) => {

@@ -388,6 +388,48 @@
       "sourcePath": "server/src/services/approvals.ts",
       "classification": "reference",
       "notes": "Documents the pinned source and why HQ keeps the signed assertion as the sole authority."
+    },
+    {
+      "localPath": "factory/lib/hq/retention.mjs",
+      "sourceId": "paperclip",
+      "sourcePath": "server/src/services/decision-retention.ts",
+      "classification": "adapted",
+      "notes": "Adapts Paperclip retention classes and backup-health inspection into read-only HQ reporting where canonical and audit data are never prunable."
+    },
+    {
+      "localPath": "scripts/factory-retention.mjs",
+      "sourceId": "paperclip",
+      "sourcePath": "server/src/services/database-backup-health.ts",
+      "classification": "inspired",
+      "notes": "Operator CLI: reports by default and deletes only on an exact confirmed count for one prunable class."
+    },
+    {
+      "localPath": "dashboard/backend/public/lib/retentionView.mjs",
+      "sourceId": "paperclip",
+      "sourcePath": "ui/src/pages/InstanceSettings.tsx",
+      "classification": "inspired",
+      "notes": "Adapts Paperclip backup-health presentation into a read-only founder panel with no destructive control."
+    },
+    {
+      "localPath": "factory/test/retention.test.mjs",
+      "sourceId": "paperclip",
+      "sourcePath": "server/src/services/database-backup-health.ts",
+      "classification": "inspired",
+      "notes": "Tests protected-by-default classification, non-destructive planning, drifted-plan refusal, and backup freshness/integrity/failure markers."
+    },
+    {
+      "localPath": "factory/test/retention-panel.test.mjs",
+      "sourceId": "paperclip",
+      "sourcePath": "ui/src/pages/InstanceSettings.tsx",
+      "classification": "inspired",
+      "notes": "Tests backup status presentation, absence of any destructive control, escaping, and accessible labelling."
+    },
+    {
+      "localPath": "docs/software-factory/PAPERCLIP_RETENTION_AND_BACKUPS.md",
+      "sourceId": "paperclip",
+      "sourcePath": "server/src/services/decision-retention.ts",
+      "classification": "reference",
+      "notes": "Documents the pinned sources, the retention classes, and the confirmed-count deletion protocol."
     }
   ]
 }
