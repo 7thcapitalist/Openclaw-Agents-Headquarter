@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "_comment": "Founder intent only. A goal carries a title, a level, its parent, and the canonical work it maps to. Status and percentage are always derived from objective/task state by factory/lib/hq/goals.mjs — never stored here — so no agent can report a goal complete without delivery evidence. Change goals through a pull request like any other tracked change.",
+  "goals": [
+    {
+      "id": "company-operable-factory",
+      "level": "company",
+      "title": "Run a software factory the founder can understand and control without reading logs"
+    },
+    {
+      "id": "project-openclaw-factory",
+      "level": "project",
+      "parentId": "company-operable-factory",
+      "projectId": "openclaw-factory",
+      "title": "OpenClaw Agents Headquarter is the canonical operational layer over GitHub delivery"
+    },
+    {
+      "id": "project-lifemaxing",
+      "level": "project",
+      "parentId": "company-operable-factory",
+      "projectId": "lifemaxing",
+      "title": "LifeMax runs on a real backend the founder uses daily, privacy-first"
+    }
+  ]
+}
