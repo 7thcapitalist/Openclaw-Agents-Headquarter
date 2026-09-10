@@ -16,6 +16,93 @@
 
 const TONE_CLASS = { warn: "fi-tone-warn", bad: "fi-tone-bad", info: "fi-tone-info" };
 
+// ── version skew ────────────────────────────────────────────────────────────
+//
+// Static assets are read from disk on every request; the server's modules are
+// loaded once at boot. So a deploy that is not followed by a restart serves this
+// file against a payload from a server that predates the founder translation —
+// no `founder`, no `technical`. That must cost the founder wording, never the
+// ability to act: an approval still approves, a decision still resolves.
+//
+// The card below is deliberately plain. It is the degraded path, and it should
+// look like one.
+const LEGACY_TYPE = {
+  approval: { type: "approval", label: "Needs your approval", tone: "warn" },
+  decision: { type: "decision", label: "Needs your decision", tone: "warn" },
+  "post-task-decision": { type: "decision", label: "Needs your decision", tone: "warn" },
+  blocked: { type: "blocker", label: "Blocked", tone: "bad" },
+  question: { type: "question", label: "Needs your input", tone: "info" },
+};
+
+// Placeholder options are not real one-click answers, and one of them is worse
+// than useless: resolving with "Keep paused" would record that direction AND
+// resume the task. Source of truth is PLACEHOLDER_OPTION in
+// factory/lib/hq/founder-inbox.mjs; keep the two in step.
+const LEGACY_PLACEHOLDER = /^(provide direction|keep paused|approve and resume|submit signed approval|other\b)/i;
+
+function legacyActions(item) {
+  if (item.kind === "approval") {
+    return item.taskId
+      ? [{ intent: "approve", label: "Approve", tone: "primary" }, { intent: "reject", label: "Reject", tone: "secondary" }]
+      : [];
+  }
+  if (item.kind === "decision" || item.kind === "post-task-decision") {
+    if (!item.statePath) return [];
+    const choices = (item.options || [])
+      .map((option) => String(option || "").trim())
+      .filter((option) => option && !LEGACY_PLACEHOLDER.test(option))
+      .map((option) => ({ intent: "choose", value: option, label: option, tone: "secondary" }));
+    if (choices.length) choices[0].tone = "primary";
+    return [...choices, { intent: "direct", label: choices.length ? "Something else…" : "Tell the team what to do", tone: choices.length ? "secondary" : "primary" }];
+  }
+  if (item.kind === "blocked" && item.taskId) {
+    return [{ intent: "retry-task", label: "Retry", tone: "primary" }, { intent: "report", label: "See what happened", tone: "secondary" }];
+  }
+  return [];
+}
+
+function legacyFounder(item) {
+  const meta = LEGACY_TYPE[item.kind] || LEGACY_TYPE.decision;
+  const raw = String(item.title || "Needs you").replace(/\s+/g, " ").trim();
+  return {
+    type: meta.type,
+    typeLabel: meta.label,
+    tone: meta.tone,
+    // An untranslated title can be a whole diagnosis. Cap the heading; the rest
+    // is still on the card, and all of it is in the details fold.
+    title: raw.length > 140 ? `${raw.slice(0, 140).replace(/\s+\S*$/, "")}…` : raw,
+    subject: "",
+    context: item.detail || "",
+    why: "",
+    next: "",
+    actions: legacyActions(item),
+    priority: 4,
+    waiting: "",
+  };
+}
+
+// The operator payload, rebuilt from the raw item when the server did not send
+// one. Mirrors technicalOf() in factory/lib/hq/founder-inbox.mjs.
+function legacyTechnical(item) {
+  return {
+    kind: item.kind || null,
+    action: item.action || null,
+    project: item.project || null,
+    taskId: item.taskId || null,
+    objectiveId: item.objectiveId || null,
+    stage: item.stage || null,
+    risk: item.risk || null,
+    requestedAt: item.requestedAt || null,
+    statePath: item.statePath || null,
+    objective: item.objective || null,
+    rawTitle: item.title || null,
+    rawDetail: item.detail || null,
+    recommendation: item.recommendation || null,
+    options: item.options || [],
+    outcome: item.outcome || null,
+  };
+}
+
 // Map a translated action onto the dashboard's existing handler contract, so
 // the founder card changes presentation only — no new endpoints, no new wiring.
 function actionAttrs(action, item) {
@@ -31,8 +118,8 @@ function actionAttrs(action, item) {
   }
 }
 
-function renderActions(item, { esc }) {
-  const actions = item.founder?.actions || [];
+function renderActions(item, founder, { esc }) {
+  const actions = founder.actions || [];
   if (!actions.length) return "";
   return `<div class="fi-actions">${actions.map((action) => {
     const attrs = actionAttrs(action, item);
@@ -42,10 +129,10 @@ function renderActions(item, { esc }) {
   }).join("")}</div>`;
 }
 
-function metaLine(item, { esc }) {
+function metaLine(item, founder, { esc }) {
   const bits = [];
   if (item.project) bits.push(esc(item.project));
-  if (item.founder?.waiting) bits.push(esc(item.founder.waiting));
+  if (founder.waiting) bits.push(esc(founder.waiting));
   return bits.join(" · ");
 }
 
@@ -57,7 +144,7 @@ function row(label, value, { esc }) {
 // The operator view, folded away. Nothing here is founder vocabulary, and
 // nothing here is lost — this is the full item as the factory recorded it.
 function renderDetails(item, { esc }) {
-  const t = item.technical || {};
+  const t = item.technical || legacyTechnical(item);
   const drilldowns = [
     t.taskId ? `<button class="btn secondary tiny" data-task-execution="${esc(t.taskId)}">Full execution view</button>` : "",
     t.taskId ? `<button class="btn secondary tiny" data-report-task="${esc(t.taskId)}">Report</button>` : "",
@@ -88,8 +175,8 @@ function renderDetails(item, { esc }) {
 
 // Approvals carry the one-click signing contract: the wrapper attributes the
 // approve handler reads, its status line, and the terminal fallback.
-function approvalExtras(item, { esc }) {
-  if (item.founder?.type !== "approval") return "";
+function approvalExtras(item, founder, { esc }) {
+  if (founder.type !== "approval") return "";
   return `<div class="approve-status" data-approve-status hidden></div>
     <details class="fi-details">
       <summary>Approve from a trusted terminal instead</summary>
@@ -98,9 +185,9 @@ function approvalExtras(item, { esc }) {
 }
 
 export function renderFounderInboxCard(item, { esc }) {
-  const f = item.founder;
-  // An item from an older payload (or an unexpected shape) still has to render.
-  if (!f) return `<article class="fi-card"><h3 class="fi-title">${esc(item.title || "Needs you")}</h3><p class="fi-context">${esc(item.detail || "")}</p></article>`;
+  // An item from a server that predates the founder translation is rendered
+  // from the raw fields instead — same card, same actions, factory wording.
+  const f = item.founder || legacyFounder(item);
   const showSubject = f.subject && f.subject !== f.title;
   return `<article class="fi-card ${TONE_CLASS[f.tone] || "fi-tone-info"} fi-${esc(f.type)}"${f.type === "approval" ? ` data-approval-task="${esc(item.taskId || "")}" data-approval-statepath="${esc(item.statePath || "")}"` : ""}>
     <div class="fi-type">${esc(f.typeLabel)}</div>
@@ -108,11 +195,11 @@ export function renderFounderInboxCard(item, { esc }) {
     ${showSubject ? `<p class="fi-subject">${esc(f.subject)}</p>` : ""}
     ${f.context ? `<p class="fi-context">${esc(f.context)}</p>` : ""}
     ${f.why ? `<p class="fi-why"><span>Why you</span>${esc(f.why)}</p>` : ""}
-    ${renderActions(item, { esc })}
+    ${renderActions(item, f, { esc })}
     ${f.next ? `<p class="fi-next"><span>${f.type === "approval" ? "After you approve" : "After you decide"}</span>${esc(f.next)}</p>` : ""}
-    ${approvalExtras(item, { esc })}
+    ${approvalExtras(item, f, { esc })}
     ${renderDetails(item, { esc })}
-    <div class="fi-meta">${metaLine(item, { esc })}</div>
+    <div class="fi-meta">${metaLine(item, f, { esc })}</div>
   </article>`;
 }
 
