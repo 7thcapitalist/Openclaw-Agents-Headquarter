@@ -39,5 +39,8 @@
   { "localPath": "factory/lib/hq/agents.mjs", "sourceId": "paperclip", "sourcePath": "packages/db/src/schema/agents.ts", "classification": "adapted", "notes": "Adapts organization, capability, availability, adapter-reference, and budget metadata into the existing HQ registry." },
   { "localPath": "factory/test/hq-agents.test.mjs", "sourceId": "paperclip", "sourcePath": "packages/db/src/schema/agents.ts", "classification": "inspired", "notes": "Tests Paperclip-derived organization metadata and HQ-specific non-authority constraints." },
   { "localPath": "docs/software-factory/PAPERCLIP_AGENT_ORG_MODEL.md", "sourceId": "paperclip", "sourcePath": "packages/db/src/schema/agents.ts", "classification": "reference", "notes": "Documents source attribution and safe HQ mapping." }
+  ,{ "localPath": "factory/lib/hq/budget-alerts.mjs", "sourceId": "paperclip", "sourcePath": "server/src/services/budgets.ts", "classification": "adapted", "notes": "Adapts scoped budget evaluation while intentionally omitting automatic pause enforcement." },
+  { "localPath": "factory/test/budget-alerts.test.mjs", "sourceId": "paperclip", "sourcePath": "server/src/services/budgets.ts", "classification": "inspired", "notes": "Tests scope, windows, thresholds, and unpriced usage." },
+  { "localPath": "docs/software-factory/PAPERCLIP_BUDGET_ALERTS.md", "sourceId": "paperclip", "sourcePath": "server/src/services/budgets.ts", "classification": "reference", "notes": "Documents alert-only policy and authority." }
   ]
 }
