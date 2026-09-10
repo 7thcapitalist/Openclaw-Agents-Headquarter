@@ -4,6 +4,7 @@ import { createHash, randomUUID, sign as signPayload, verify as verifySignature 
 import { classifyBlocker } from "./hq/blocker-class.mjs";
 import { classifyFailure, isRecoverableFailure, recoveryStrategy, repairTargetFor } from "./failure-classification.mjs";
 import { mutateTransactionalState, readTransactionalState } from "./store/transactional-json.mjs";
+import { authorityForVerification } from "./founder-authority.mjs";
 
 export const STAGES = [
   "product",
@@ -200,9 +201,9 @@ function normalizeDeferredDecision(input, stage, now) {
   };
 }
 
-export function resumeState(state, now = new Date().toISOString()) {
+export function resumeState(state, now = new Date().toISOString(), options = {}) {
   if (state.status !== "blocked") throw new Error("Only a blocked task can be resumed.");
-  if (state.blocker?.stage === "builder" && state.task.risk === "high" && !hasValidFounderApproval(state)) {
+  if (state.blocker?.stage === "builder" && state.task.risk === "high" && !hasValidFounderApproval(state, options)) {
     throw new Error("High-risk build cannot resume without recorded founder approval.");
   }
   const next = structuredClone(state);
@@ -368,10 +369,10 @@ function escalateRecovery(state, { failedStage, kind, error, now }) {
   return next;
 }
 
-export function recordFounderApproval(state, { assertion, evidence, now = new Date().toISOString() }) {
+export function recordFounderApproval(state, { assertion, evidence, authority = {}, now = new Date().toISOString() }) {
   if (state.task.risk !== "high") throw new Error("Founder approval is only required for high-risk tasks.");
   if (!evidence?.path) throw new Error("Founder approval requires an evidence artifact.");
-  validateFounderAssertion(state, assertion, evidence, now, { enforceFreshness: true });
+  validateFounderAssertion(state, assertion, evidence, now, { enforceFreshness: true, authority });
   const next = structuredClone(state);
   next.founderApproval = { assertion: structuredClone(assertion), evidence, verifiedAt: now };
   next.updatedAt = now;
@@ -479,7 +480,7 @@ function sanitizeTaskContract(task) {
 // way back, because isAwaitingFounderApproval() is false and the Inbox would
 // not offer it for re-approval. Revocation, not expiry, is how a recorded
 // approval is withdrawn.
-function validateFounderAssertion(state, assertion, evidence, now = new Date().toISOString(), { enforceFreshness = false } = {}) {
+function validateFounderAssertion(state, assertion, evidence, now = new Date().toISOString(), { enforceFreshness = false, authority: authorityOptions = {} } = {}) {
   if (!assertion || typeof assertion !== "object") throw new Error("Founder approval assertion is required.");
   const expected = state.founderApprovalRequest;
   if (!expected) throw new Error("This task has no founder approval request to satisfy.");
@@ -501,8 +502,22 @@ function validateFounderAssertion(state, assertion, evidence, now = new Date().t
     throw new Error("Founder approval assertion is incomplete.");
   }
 
-  const authority = state.founderApprovalAuthority;
+  // Which key to trust. When the deployment has an external anchor (the enrolled
+  // key file, or FACTORY_FOUNDER_PUBLIC_KEY) that anchor WINS over whatever the
+  // task state claims — otherwise an actor who can write task state could
+  // substitute its own key and sign for itself, and the fingerprint "binding"
+  // would happily compare two fields it also controls.
+  const authority = authorityForVerification(state, authorityOptions);
   if (!authority?.publicKey) throw new Error("This task has no recorded approval authority.");
+
+  // The task points at a different key than the one this deployment trusts.
+  // That is a tampering signal, not a routine mismatch.
+  if (authority.mismatch) {
+    throw new Error(
+      "This task's approval authority does not match the key this deployment trusts. "
+      + "Re-key the task from Headquarters, or investigate how it changed.",
+    );
+  }
 
   // v2 binds the authority fingerprint into the signed bytes. Reject a v1
   // assertion presented against a task that asked for v2 — that is a downgrade.
@@ -513,7 +528,7 @@ function validateFounderAssertion(state, assertion, evidence, now = new Date().t
   }
   if (requestVersion >= 2) {
     const bound = expected.authorityFingerprint;
-    const actual = authority.fingerprint || publicKeyFingerprint(authority.publicKey);
+    const actual = authority.fingerprint;
     if (!bound || bound !== actual) {
       throw new Error("Founder approval was issued for a different approval key than the one now on this task.");
     }
@@ -524,7 +539,7 @@ function validateFounderAssertion(state, assertion, evidence, now = new Date().t
 
   // Revocation: a key the founder has retired can no longer authorize anything,
   // even if the signature itself is mathematically valid.
-  const fingerprint = authority.fingerprint || publicKeyFingerprint(authority.publicKey);
+  const fingerprint = authority.fingerprint;
   if (isRevokedFingerprint(state, fingerprint)) {
     throw new Error("The approval key for this task has been revoked.");
   }
@@ -621,17 +636,15 @@ export function isAwaitingFounderApproval(state) {
 // assertion that verifies against the authority recorded on the task. If this
 // returns false the task stays blocked until a real signature arrives.
 //
-// KNOWN LIMIT, stated plainly: the authority public key is read from the same
-// task-state record as everything else, so an actor that can WRITE task state
-// can swap in its own key and sign for itself. That is pre-existing and is not
-// something this function can fix by itself — closing it needs the gate to
-// cross-check the enrolled key from a store the task cannot edit. Filesystem
-// permissions on the state directory are the current mitigation. See
-// docs/software-factory/FOUNDER_AUTHORITY.md §"Residual risk".
-export function hasValidFounderApproval(state) {
+// The key this verifies against is resolved by founder-authority.mjs from
+// OUTSIDE the task state (enrolled key file, or FACTORY_FOUNDER_PUBLIC_KEY), so
+// an actor who can write task state cannot swap in a key of their own and sign
+// for themselves. Where no anchor is configured the task's own record is used
+// and founderApprovalStatus() reports `anchored: false`.
+export function hasValidFounderApproval(state, options = {}) {
   if (!state?.founderApproval?.assertion || !state.founderApproval?.evidence) return false;
   try {
-    validateFounderAssertion(state, state.founderApproval.assertion, state.founderApproval.evidence);
+    validateFounderAssertion(state, state.founderApproval.assertion, state.founderApproval.evidence, new Date().toISOString(), options);
     return true;
   } catch {
     return false;
@@ -641,16 +654,33 @@ export function hasValidFounderApproval(state) {
 // Why a high-risk task is not authorized, in words a founder can act on.
 // Used by the release gate, and exported for the dashboard so "waiting for
 // approval" is never confused with "approved".
-export function founderApprovalStatus(state, now = new Date().toISOString()) {
-  if (state?.task?.risk !== "high") return { required: false, satisfied: true, reason: null };
+export function founderApprovalStatus(state, now = new Date().toISOString(), options = {}) {
+  if (state?.task?.risk !== "high") return { required: false, satisfied: true, reason: null, anchored: true };
+
+  // Whether the key we would verify against comes from outside the task file.
+  const authority = authorityForVerification(state, options.authority || {});
+  const anchored = Boolean(authority?.anchored);
+
   if (!state.founderApproval?.assertion) {
-    return { required: true, satisfied: false, reason: "No signed founder approval has been recorded." };
+    return {
+      required: true,
+      satisfied: false,
+      anchored,
+      authoritySource: authority?.source || null,
+      reason: "No signed founder approval has been recorded.",
+    };
   }
   try {
-    validateFounderAssertion(state, state.founderApproval.assertion, state.founderApproval.evidence, now);
-    return { required: true, satisfied: true, reason: null };
+    validateFounderAssertion(state, state.founderApproval.assertion, state.founderApproval.evidence, now, options);
+    return { required: true, satisfied: true, anchored, authoritySource: authority?.source || null, reason: null };
   } catch (error) {
-    return { required: true, satisfied: false, reason: String(error.message || error) };
+    return {
+      required: true,
+      satisfied: false,
+      anchored,
+      authoritySource: authority?.source || null,
+      reason: String(error.message || error),
+    };
   }
 }
 

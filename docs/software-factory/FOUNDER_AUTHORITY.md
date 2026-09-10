@@ -14,9 +14,9 @@ not, and which browser-facing attacks Headquarters now defends against.
 No strategic decision, task-contract field, or dashboard action is an
 alternative to that signature.
 
-One limit is stated up front rather than buried: the authority key is read from
-the same task-state record the signature protects, so this rule holds against
-anything that cannot *write* task state. See §5 "Residual risk".
+The key that signature is checked against comes from **outside** the task
+state — the enrolled key file or `FACTORY_FOUNDER_PUBLIC_KEY` — so an actor
+who can write task state cannot substitute its own. See §3.1.
 
 ## 2. The vulnerability this closes
 
@@ -85,6 +85,27 @@ Verification additionally enforces:
 - **Fail-closed signatures** — a malformed or wrong-length signature returns
   false rather than throwing something a caller might treat as infrastructure.
 
+### 3.1 Where the trusted key comes from
+
+A signature check is only as good as the key it trusts. Verification resolves
+the approval authority in this order, and the first hit **overrides whatever the
+task state claims**:
+
+1. an authority injected by the caller (the dashboard hands down its HQ root);
+2. the enrolled browser key, `dashboard/backend/data/factory/founder-approval-key.pem` (mode `0600`);
+3. `FACTORY_FOUNDER_PUBLIC_KEY`, a path from the deployment environment.
+
+If the task's recorded `founderApprovalAuthority` disagrees with the anchor, the
+approval is refused as tampering — not treated as a routine mismatch.
+
+This closes the attack an independent review demonstrated by execution: rewrite
+`founderApprovalAuthority` in the task-state file to a key you hold, restate the
+v2 fingerprint (which previously compared two fields in that same file), sign
+with your own private key, and the gate agreed. It no longer does.
+
+Only Ed25519 may anchor the gate; a malformed or wrong-type anchor file is
+ignored rather than crashing every gate that consults it.
+
 ## 4. Assertion versions and migration
 
 | | v1 | v2 (current) |
@@ -123,7 +144,8 @@ re-keyed, which re-issues a v1 request. No approval is ever silently downgraded.
 | T2 | Approval replayed onto another task | `challenge` + `taskId` in signed bytes | `founder-authority-gate.test.mjs` |
 | T3 | Evidence swapped after signing | `evidenceSha256` re-checked at execution | same |
 | T4 | Different action substituted | `decision` in signed bytes | same |
-| T5 | Old/compromised key reused | authority fingerprint binding + revocation — **not effective against an actor who can write task state**, see residual risk | same |
+| T5 | Old/compromised key reused | authority fingerprint binding + revocation | `founder-authority-gate.test.mjs` |
+| T5b | Authority key swapped by an actor who can write task state | external trust anchor overrides the recorded key | `founder-authority-anchor.test.mjs` |
 | T6 | Malformed signature treated as an error, not a denial | fail-closed verify | same |
 | T7 | Stale approval used much later | TTL + future-date rejection | same |
 | T8 | Downgrade to v1 | version equality check | same |
@@ -135,23 +157,12 @@ re-keyed, which re-issues a v1 request. No approval is ever silently downgraded.
 
 ### Residual risk (stated, not solved here)
 
-- **The authority key lives inside the record it protects.** ⚠️ Highest residual
-  risk. `founderApprovalAuthority.publicKey` is read from the task's own state
-  file, and the v2 fingerprint binding compares two fields *in that same file*.
-  An actor that can **write task state** can therefore substitute its own key
-  and sign for itself. The same primitive can empty the revocation list.
-
-  This is pre-existing — it is the write primitive described in §2 — and this
-  change does **not** close it. An independent security review confirmed it by
-  execution against a real task. Closing it properly requires the gate to
-  cross-check the enrolled key against a store the task cannot edit
-  (`getEnrolledFounderKey()`, today consulted only on the browser *prepare*
-  path, never at the gate itself). Tracked as follow-on work; the current
-  mitigation is filesystem permissions on the state directory.
-
-  What this change *did* close is that tampering can no longer silently
-  **disable** a control: a missing `challenge`, a missing TTL field, or a
-  mismatched version now fails closed instead of passing.
+- **An unanchored deployment still trusts the task's own record.** When no
+  enrolled key file and no `FACTORY_FOUNDER_PUBLIC_KEY` are configured, there is
+  nothing outside the task state to verify against, so the gate falls back to the
+  key the task names. This is reported rather than hidden:
+  `founderApprovalStatus()` returns `anchored: false` with the authority source.
+  Configure an anchor — a real deployment already does.
 
 - **Trust-on-first-use enrollment.** The first browser key is still accepted on
   the strength of an authenticated session alone. Rotation afterwards requires a
@@ -278,7 +289,7 @@ It did confirm eight defects, all of which are fixed here and locked down by
 | Finding | Severity | Fix |
 | --- | --- | --- |
 | Approval TTL deadlocked long pipelines with no way to re-approve | HIGH | TTL now bounds the signing window only |
-| Authority key readable from the record it protects | HIGH | Documented above; tampering can no longer *disable* controls |
+| Authority key readable from the record it protects | HIGH | **Fixed** — the gate now verifies against an external anchor (§3.1) |
 | CI ran none of the browser-hardening tests | MEDIUM | Workflow installs dashboard deps and fails on any skip |
 | Link text was interpolated unescaped | MEDIUM | Inner tokens are parsed, never raw text |
 | Audit redaction was exact-name-only | MEDIUM | Substring matching + free-text scrubbing |
