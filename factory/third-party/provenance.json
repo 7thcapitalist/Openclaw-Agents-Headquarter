@@ -303,7 +303,26 @@
       "sourceId": "paperclip",
       "sourcePath": "server/src/services/issue-dependency-wakeups.test.ts",
       "classification": "inspired",
-      "notes": "Tests idempotent enqueue, retry identity, invalid graphs, and degraded storage."
+      "notes": "Tests idempotent enqueue, retry identity, invalid graphs, and degraded storage.",
+      "localPath": "factory/goals.json",
+      "sourceId": "paperclip",
+      "sourcePath": "packages/db/src/schema/goals.ts",
+      "classification": "inspired",
+      "notes": "Tracks founder goal intent using Paperclip goal levels and parent relationships, with no status column: HQ derives status from canonical work."
+    },
+    {
+      "localPath": "dashboard/backend/public/lib/goalsView.mjs",
+      "sourceId": "paperclip",
+      "sourcePath": "ui/src/pages/Goals.tsx",
+      "classification": "inspired",
+      "notes": "Adapts Paperclip goal-tree presentation into a read-only founder rollup panel with degraded, partial, and unconfigured states."
+    },
+    {
+      "localPath": "factory/test/goals-panel.test.mjs",
+      "sourceId": "paperclip",
+      "sourcePath": "ui/src/pages/Goals.tsx",
+      "classification": "inspired",
+      "notes": "Tests hierarchy rendering, escaping, accessibility labelling, and honest empty/degraded states."
     }
   ]
 }
