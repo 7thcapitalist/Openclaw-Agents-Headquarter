@@ -1,0 +1,49 @@
+# The release gate cites "tests pass" as evidence. Until this workflow existed
+# nothing verified that claim: `npm run test:factory` had not terminated since
+# #56 — it hung rather than failed, so it produced no result at all, and every
+# green claim for fifteen merged PRs reported something nobody could observe
+# (docs/software-factory/handoffs/2026-09-09-reliability-overhaul.md, item 2).
+#
+# This runs on every PR into main and on main itself, so a red merge is caught
+# by the repository rather than by the next person to run the suite by hand.
+name: factory tests
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# A superseded run on the same PR is wasted signal; keep only the newest.
+concurrency:
+  group: factory-tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: factory test suite
+    runs-on: ubuntu-latest
+    # The suite's own wall-clock bound is 600s (scripts/run-factory-tests.mjs).
+    # This is the outer net for anything that hangs before the runner starts.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      # No install step on purpose: the factory suite and both check scripts
+      # import only Node builtins, and the repository root declares no
+      # dependencies. Adding `npm ci` here would fail — there is no root
+      # lockfile — and would buy nothing.
+      - name: Verify third-party provenance
+        run: npm run check:provenance
+
+      # `test:factory` is bounded twice over (per-test and whole-suite), so a
+      # hang becomes a failure with a legible message instead of a 6-hour job.
+      - name: Run factory test suite
+        run: npm run test:factory
