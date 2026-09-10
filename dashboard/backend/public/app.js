@@ -226,7 +226,7 @@ import { permissionsPanel } from "/lib/permissionsView.mjs";
   // ── Today: the founder observability surface ───────────────────
 
   async function renderToday() {
-    const [state, fc, learning, objectivesResp, autonomy, costs, planLimits, overnight, operations, goals, budgets, permissions] = await Promise.all([
+    const [state, fc, learning, objectivesResp, autonomy, costs, planLimits, overnight, operations, goals, decisions, budgets, permissions] = await Promise.all([
       loadCompany(),
       apiJson("/api/founder/overview").catch(() => ({ jobs: [] })),
       loadLearning().catch(() => null),
@@ -260,7 +260,7 @@ import { permissionsPanel } from "/lib/permissionsView.mjs";
     // "your request was received, agents are on it" confirmation.
     const liveJobs = jobs.filter((j) => j.status === "starting" || j.status === "running" || j.status === "decomposing");
 
-    app.innerHTML = renderFounderHome({ state, projects, agents, inbox, dismissedInbox, objectives, allTasks, runningRows, liveJobs, autoRecovering, finishedTasks, inboxActionable, overnight, operations, goals, budgets, permissions });
+    app.innerHTML = renderFounderHome({ state, projects, agents, inbox, dismissedInbox, objectives, allTasks, runningRows, liveJobs, autoRecovering, finishedTasks, inboxActionable, overnight, operations, goals, decisions, budgets, permissions });
     bindFounderControls();
     return;
 
@@ -393,7 +393,7 @@ import { permissionsPanel } from "/lib/permissionsView.mjs";
     </section>`;
   }
 
-  function renderFounderHome({ state, projects, agents, inbox, dismissedInbox, objectives, allTasks, runningRows, liveJobs, autoRecovering, finishedTasks, inboxActionable, overnight, operations, goals, budgets, permissions }) {
+  function renderFounderHome({ state, projects, agents, inbox, dismissedInbox, objectives, allTasks, runningRows, liveJobs, autoRecovering, finishedTasks, inboxActionable, overnight, operations, goals, decisions, budgets, permissions }) {
     const groups = objectiveView.groupObjectives(objectives);
     const active = [...groups.running, ...groups.waiting, ...groups.blocked];
     const workingAgents = runningRows.filter((row) => row.status === "working");
