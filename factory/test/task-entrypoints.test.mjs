@@ -158,8 +158,13 @@ test("forged high-risk contract fails before creating a branch or worktree", () 
   const priorKey = process.env.FACTORY_FOUNDER_PUBLIC_KEY;
   delete process.env.FACTORY_FOUNDER_PUBLIC_KEY;
   try {
+    // hqRoot must be an isolated fixture, not the real HQ checkout: a developer
+    // who has enrolled a real founder key at
+    // dashboard/backend/data/factory/founder-approval-key.pem would make this
+    // "no key configured" scenario silently untestable (the enrolled key is
+    // preferred over the env var — see resolveFounderPublicKey()).
     assert.throws(
-      () => initializeTask({ hqRoot: process.cwd(), contractPath, repo, worktree: join(root, "worktree"), stateRoot: join(root, "state"), git }),
+      () => initializeTask({ hqRoot: root, contractPath, repo, worktree: join(root, "worktree"), stateRoot: join(root, "state"), git }),
       /founder public key/
     );
   } finally {
