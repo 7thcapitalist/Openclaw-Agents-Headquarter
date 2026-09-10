@@ -68,6 +68,18 @@ export function classifyFailure({ error = "", outcome = "fail", source = "execut
   return "UNKNOWN";
 }
 
+// What a recovery attempt should try to repair. Only a genuine project defect
+// puts the project's code in scope; a dropped model call, an exhausted seat or
+// a broken orchestrator leaves the deliverable untouched, so recovery must not
+// treat the worktree as suspect — and the stages that already passed against
+// that untouched code stay valid. UNKNOWN is deliberately conservative: an
+// unclassified failure is inspected as a project defect rather than retried
+// blindly in place.
+export function repairTargetFor(kind) {
+  if (kind === "PROJECT_ERROR" || kind === "UNKNOWN") return "project";
+  return "factory";
+}
+
 export function isRecoverableFailure(kind) {
   return ["AGENT_ERROR", "FACTORY_ERROR", "PROJECT_ERROR", "INFRASTRUCTURE_ERROR", "UNKNOWN"].includes(kind);
 }

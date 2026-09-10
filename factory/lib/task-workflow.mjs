@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSyn
 import { dirname, join, resolve } from "path";
 import { createHash, randomUUID, sign as signPayload, verify as verifySignature } from "crypto";
 import { classifyBlocker } from "./hq/blocker-class.mjs";
-import { classifyFailure, isRecoverableFailure, recoveryStrategy } from "./failure-classification.mjs";
+import { classifyFailure, isRecoverableFailure, recoveryStrategy, repairTargetFor } from "./failure-classification.mjs";
 
 export const STAGES = [
   "product",
@@ -231,7 +231,7 @@ export function startRecovery(state, { failedStage, actor, error, evidence = [],
   const attempt = {
     number: used + 1, strategy: recoveryStrategy(used + 1), originalObjective: next.task.outcome,
     failedStage, agent: actor, error: String(error || "unknown failure"), classification: kind,
-    repairTarget: kind === "FACTORY_ERROR" ? "factory" : "project", relevantEvidence: structuredClone(evidence),
+    repairTarget: repairTargetFor(kind), relevantEvidence: structuredClone(evidence),
     attemptedActions: [], currentState: next.status, diagnosis: null, repair: null, verification: null,
     status: "diagnosing", startedAt: now,
   };
@@ -270,12 +270,23 @@ export function recordRecoveryResult(state, { outcome, actor, summary, evidence 
     attempt.status = "verified";
     attempt.completedAt = now;
     next.recovery.active = null;
-    next.stages[active.failedStage] = { status: "pending" };
+    // A verified repair to the PROJECT rewrote the code every earlier gate
+    // passed against, so those verdicts are stale — resume at the builder and
+    // invalidate everything downstream, exactly as routeStageFailure does for
+    // the review FAIL it handles directly. Without this, a reviewer's rejection
+    // is answered by a recovery patch and a re-review while the builder stage
+    // still reads `pass` against code it never produced.
+    // A factory repair (the agent could not run) changed no code, so the failed
+    // stage simply retries in place and earlier gates stand.
+    const resumeAt = REVIEW_STAGES.has(active.failedStage) && attempt.repairTarget === "project"
+      ? "builder"
+      : active.failedStage;
+    for (const stage of STAGES.slice(STAGES.indexOf(resumeAt))) next.stages[stage] = { status: "pending" };
     next.status = "active";
-    next.currentStage = active.failedStage;
+    next.currentStage = resumeAt;
     next.updatedAt = now;
     next.events.push({ at: now, type: "recovery-verified", stage: active.failedStage, actor, attempt: active.attempt });
-    next.events.push({ at: now, type: "task-resumed", stage: active.failedStage, actor: "system", reason: "recovery-verified" });
+    next.events.push({ at: now, type: "task-resumed", stage: resumeAt, actor: "system", reason: "recovery-verified", ...(resumeAt !== active.failedStage ? { fromStage: active.failedStage, invalidatedDownstream: true } : {}) });
     return next;
   }
   return finishRecoveryFailure(next, { summary, actor, evidence, outcome, now });
@@ -294,7 +305,7 @@ function finishRecoveryFailure(state, { summary, actor, outcome, now }) {
   }
   if (next.recovery.attempts.length < next.recovery.maxAttempts && isRecoverableFailure(kind)) {
     next.recovery.active = { phase: "diagnose", failedStage: active.failedStage, attempt: next.recovery.attempts.length + 1 };
-    next.recovery.attempts.push({ number: next.recovery.attempts.length + 1, strategy: recoveryStrategy(next.recovery.attempts.length + 1), originalObjective: next.task.outcome, failedStage: active.failedStage, agent: "recovery", error, classification: kind, repairTarget: kind === "FACTORY_ERROR" ? "factory" : "project", relevantEvidence: [], attemptedActions: [], currentState: next.status, diagnosis: null, repair: null, verification: null, status: "diagnosing", startedAt: now });
+    next.recovery.attempts.push({ number: next.recovery.attempts.length + 1, strategy: recoveryStrategy(next.recovery.attempts.length + 1), originalObjective: next.task.outcome, failedStage: active.failedStage, agent: "recovery", error, classification: kind, repairTarget: repairTargetFor(kind), relevantEvidence: [], attemptedActions: [], currentState: next.status, diagnosis: null, repair: null, verification: null, status: "diagnosing", startedAt: now });
     next.events.push({ at: now, type: "recovery-diagnosing", stage: active.failedStage, actor: "recovery", attempt: next.recovery.attempts.length, classification: kind });
     return next;
   }
