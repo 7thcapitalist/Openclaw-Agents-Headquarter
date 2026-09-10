@@ -327,11 +327,6 @@
       "notes": "Tests derived pricing, scope filtering, unavailable states, and degraded sources."
     },
     {
-      "localPath": "factory/test/budget-panel.test.mjs",
-      "sourceId": "paperclip",
-      "sourcePath": "ui/src/pages/Costs.tsx",
-      "classification": "inspired",
-      "notes": "Tests worst-state headers, escaping, bounded bars, and the alert-only disclosure.",
       "localPath": "factory/lib/objective/graph-observer.mjs",
       "sourceId": "paperclip",
       "sourcePath": "server/src/services/issue-dependency-wakeups.ts",
@@ -407,6 +402,41 @@
       "sourcePath": "server/src/services/agent-permissions.ts",
       "classification": "reference",
       "notes": "Documents the pinned source, the subtractive-only boundary, and the report-then-enforce rollout."
+    },
+    {
+      "localPath": "factory/lib/hq/agent-scorecards.mjs",
+      "sourceId": "paperclip",
+      "sourcePath": "server/src/services/agent-task-run-telemetry.ts",
+      "classification": "adapted",
+      "notes": "Adapts Paperclip agent run telemetry into outcome-based HQ scorecards keyed on accepted outcomes rather than activity, with cost only per accepted outcome."
+    },
+    {
+      "localPath": "dashboard/backend/public/lib/scorecardsView.mjs",
+      "sourceId": "paperclip",
+      "sourcePath": "server/src/services/tool-runtime-metrics.ts",
+      "classification": "inspired",
+      "notes": "Adapts Paperclip runtime metric presentation into an advisory founder panel that suppresses rates below a confidence threshold."
+    },
+    {
+      "localPath": "factory/test/agent-scorecards.test.mjs",
+      "sourceId": "paperclip",
+      "sourcePath": "server/src/services/agent-task-run-telemetry.ts",
+      "classification": "inspired",
+      "notes": "Tests that activity is not rewarded, that acceptance requires canonical state, and that incomplete cost data is never presented as free."
+    },
+    {
+      "localPath": "factory/test/scorecards-panel.test.mjs",
+      "sourceId": "paperclip",
+      "sourcePath": "server/src/services/tool-runtime-metrics.ts",
+      "classification": "inspired",
+      "notes": "Tests confidence suppression, cost-per-outcome presentation, escaping, and the advisory boundary."
+    },
+    {
+      "localPath": "docs/software-factory/PAPERCLIP_AGENT_SCORECARDS.md",
+      "sourceId": "paperclip",
+      "sourcePath": "server/src/services/agent-task-run-telemetry.ts",
+      "classification": "reference",
+      "notes": "Documents the pinned source and why HQ measures accepted outcomes rather than activity."
     }
   ]
 }
