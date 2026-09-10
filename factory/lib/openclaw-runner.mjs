@@ -1,11 +1,13 @@
 import { execFile } from "child_process";
 import { promisify } from "util";
+import { randomUUID } from "crypto";
 import { setTimeout as delay } from "timers/promises";
 import { existsSync, mkdirSync, unlinkSync, writeFileSync, readFileSync } from "fs";
 import { basename, dirname, join } from "path";
 import { PROTOCOL_VERSION, computeDispatchPaths, failDispatch, ingestResult, markDispatchRunning, prepareDispatch, readResultFile, recordDispatchAgentId } from "./openclaw-protocol.mjs";
 import { parseAgentMeta } from "./hq/agent-meta.mjs";
-import { readState, writeState } from "./task-workflow.mjs";
+import { readState } from "./task-workflow.mjs";
+import { mutateTransactionalState } from "./store/transactional-json.mjs";
 import { writeHandoff } from "./handoff.mjs";
 import { publishMergeReadyTask } from "./hq/github-publish.mjs";
 import { buildCompletionReport } from "./hq/completion-report.mjs";
@@ -118,17 +120,9 @@ export async function runOneStage({ hqRoot, statePath, agentIds = {}, maxAttempt
       dispatch: prepared,
     });
     if (!existsSync(prepared.resultPath) && isYieldedExecution(executed)) {
-      const current = readState(statePath);
-      current.currentDispatch.yieldedAt = new Date().toISOString();
-      current.events.push({ at: current.currentDispatch.yieldedAt, type: "dispatch-yielded", dispatchId: prepared.dispatchId, stage: prepared.stage });
-      writeState(statePath, current);
+      markYielded(statePath, prepared.dispatchId, prepared.stage);
       observeDispatchState({ hqRoot, statePath, phase: "yielded", dispatchId: prepared.dispatchId });
-      const ready = await waitForResult({ resultPath: prepared.resultPath, heartbeat: () => {
-        const live = readState(statePath);
-        if (live.currentDispatch?.id !== prepared.dispatchId) throw new Error("Yielded dispatch ownership changed");
-        live.updatedAt = new Date().toISOString();
-        writeState(statePath, live);
-      } });
+      const ready = await waitForResult({ resultPath: prepared.resultPath, heartbeat: () => touchState(statePath, prepared.dispatchId) });
       if (!ready) return { ...prepared, waiting: true };
     }
     const agentMeta = parseAgentMeta(executed, { durationMsFallback: Date.now() - startedAt })
@@ -207,11 +201,17 @@ export function writeCompletionReport({ statePath }) {
     const markdown = buildCompletionReport(state);
     const path = join(dirname(statePath), "completion-report.md");
     writeFileSync(path, `${markdown}\n`, "utf8");
-    const next = structuredClone(state);
     const generatedAt = new Date().toISOString();
-    next.completionReport = { path, generatedAt, status: state.status };
-    next.events.push({ at: generatedAt, type: "completion-report", stage: state.currentStage || "release", actor: "system", outcome: state.status });
-    writeState(statePath, next);
+    mutateTransactionalState(statePath, {
+      commandId: `completion-report:${randomUUID()}`,
+      now: () => generatedAt,
+      mutate: (current) => {
+        const next = structuredClone(current);
+        next.completionReport = { path, generatedAt, status: current.status };
+        next.events.push({ at: generatedAt, type: "completion-report", stage: current.currentStage || "release", actor: "system", outcome: current.status });
+        return next;
+      },
+    });
     return { path, generatedAt };
   } catch (error) {
     return { error: summarizeError(error) };
@@ -230,16 +230,21 @@ export function publishAndRecord({ hqRoot, statePath, publish = publishMergeRead
   } catch (error) {
     result = { published: false, reason: summarizeError(error) };
   }
-  const next = structuredClone(state);
-  next.githubPublish = result;
-  next.events.push({
-    at: new Date().toISOString(),
-    type: "github-publish",
-    stage: "release",
-    actor: "system",
-    outcome: result.published ? (result.prUrl ? "pr-opened" : result.pushed ? "pushed" : "skipped") : "skipped",
+  mutateTransactionalState(statePath, {
+    commandId: `github-publish:${randomUUID()}`,
+    mutate: (current) => {
+      const next = structuredClone(current);
+      next.githubPublish = result;
+      next.events.push({
+        at: new Date().toISOString(),
+        type: "github-publish",
+        stage: "release",
+        actor: "system",
+        outcome: result.published ? (result.prUrl ? "pr-opened" : result.pushed ? "pushed" : "skipped") : "skipped",
+      });
+      return next;
+    },
   });
-  writeState(statePath, next);
   return result;
 }
 
@@ -311,15 +316,8 @@ export async function runConcurrentGroupIfReady({ hqRoot, statePath, agentIds = 
         },
       });
       if (!existsSync(m.resultPath) && isYieldedExecution(executed)) {
-        const current = readState(statePath);
-        current.yieldedGroup = members.map(({ dispatchId, stage, resultPath }) => ({ dispatchId, stage, resultPath }));
-        current.updatedAt = new Date().toISOString();
-        writeState(statePath, current);
-        await waitForResult({ resultPath: m.resultPath, heartbeat: () => {
-          const live = readState(statePath);
-          live.updatedAt = new Date().toISOString();
-          writeState(statePath, live);
-        } });
+        markYieldedGroup(statePath, members);
+        await waitForResult({ resultPath: m.resultPath, heartbeat: () => touchState(statePath) });
       }
       const meta = parseAgentMeta(executed, { durationMsFallback: Date.now() - startedAt });
       if (meta) agentMetaByDispatchId.set(m.dispatchId, meta);
@@ -344,9 +342,14 @@ export async function runConcurrentGroupIfReady({ hqRoot, statePath, agentIds = 
   if (settled.some((r, i) => r.status === "fulfilled" && isYieldedExecution(r.value) && !existsSync(members[i].resultPath))) {
     return { version: PROTOCOL_VERSION, status: "dispatch", taskId: state.task.id, waiting: true };
   }
-  const completedGroup = readState(statePath);
-  delete completedGroup.yieldedGroup;
-  writeState(statePath, completedGroup);
+  mutateTransactionalState(statePath, {
+    commandId: `group-collected:${randomUUID()}`,
+    mutate: (current) => {
+      const next = structuredClone(current);
+      delete next.yieldedGroup;
+      return next;
+    },
+  });
   // Apply through the real engine, one stage at a time, with a no-op execute so
   // `runOneStage` consumes the result file each member already wrote.
   const noop = async () => {};
@@ -470,6 +473,47 @@ function redactTail(value) {
     text: truncated ? `… ${clean.text}` : clean.text,
     truncated: truncated || clean.truncated,
   };
+}
+
+function markYielded(statePath, dispatchId, stage) {
+  mutateTransactionalState(statePath, {
+    commandId: `yielded:${dispatchId}`,
+    mutate: (current) => {
+      if (current.currentDispatch?.id !== dispatchId) return undefined;
+      const next = structuredClone(current);
+      next.currentDispatch.yieldedAt = new Date().toISOString();
+      next.events.push({ at: next.currentDispatch.yieldedAt, type: "dispatch-yielded", dispatchId, stage });
+      return next;
+    },
+  });
+}
+
+function markYieldedGroup(statePath, members) {
+  mutateTransactionalState(statePath, {
+    commandId: `yielded-group:${randomUUID()}`,
+    mutate: (current) => {
+      const next = structuredClone(current);
+      next.yieldedGroup = members.map(({ dispatchId, stage, resultPath }) => ({ dispatchId, stage, resultPath }));
+      return next;
+    },
+  });
+}
+
+// A liveness ping while waiting on a yielded worker: bumps updatedAt so a
+// watchdog does not mistake a slow delegate for a dead one. Never a source of
+// truth for anything, so a fresh commandId (not deduped) every tick is
+// correct — each tick is a genuinely new heartbeat, not a retry of a
+// previous one.
+function touchState(statePath, expectDispatchId = null) {
+  mutateTransactionalState(statePath, {
+    commandId: `heartbeat:${randomUUID()}`,
+    mutate: (current) => {
+      if (expectDispatchId && current.currentDispatch?.id !== expectDispatchId) throw new Error("Yielded dispatch ownership changed");
+      const next = structuredClone(current);
+      next.updatedAt = new Date().toISOString();
+      return next;
+    },
+  });
 }
 
 function summarizeError(error) {
