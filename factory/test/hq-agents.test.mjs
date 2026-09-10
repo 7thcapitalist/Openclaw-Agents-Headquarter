@@ -104,3 +104,21 @@ test("validateAgentRegistry rejects a bad harnessAvailable/harnessFallback", () 
     /harnessFallback is invalid/
   );
 });
+
+test("org metadata validates adapters, budgets, reporting lines, and cycles", () => {
+  const valid = { version: 1, agents: [
+    { id: "manager", name: "Manager", role: "Lead", reportsTo: "founder", capabilities: ["delegate"], availability: "available", adapter: { type: "openclaw-gateway", secretRefs: ["gateway-token"] }, budgetPolicy: { monthlyCents: 5000, alertPercent: 80, hardStop: false } },
+    { id: "worker", name: "Worker", role: "Build", reportsTo: "manager" }
+  ] };
+  assert.equal(validateAgentRegistry(valid), valid);
+  assert.throws(() => validateAgentRegistry({ version: 1, agents: [{ id: "worker", name: "W", role: "R", reportsTo: "missing" }] }), /unknown agent/);
+  assert.throws(() => validateAgentRegistry({ version: 1, agents: [{ id: "a", name: "A", role: "R", reportsTo: "b" }, { id: "b", name: "B", role: "R", reportsTo: "a" }] }), /reporting cycle/);
+  assert.throws(() => validateAgentRegistry({ version: 1, agents: [{ id: "a", name: "A", role: "R", adapter: { type: "x", token: "secret" } }] }), /token is not allowed/);
+});
+
+test("normalised org metadata is explicitly non-authoritative", () => {
+  const root = makeHq({ version: 1, agents: [{ id: "worker", name: "Worker", role: "Build", reportsTo: "founder", status: "disabled" }] });
+  const agent = listAgents(root).agents[0];
+  assert.equal(agent.availability, "paused");
+  assert.equal(agent.orgMetadataIsAuthority, false);
+});

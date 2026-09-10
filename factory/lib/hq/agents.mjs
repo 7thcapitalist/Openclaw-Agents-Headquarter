@@ -23,6 +23,7 @@ export const AGENT_KINDS = new Set(["claude", "codex", "openclaw", "cursor", "le
 // `none` = the agent is not model-backed on a schedule (e.g. Research Agent).
 export const AGENT_HARNESSES = new Set(["claude", "codex", "cursor", "openclaw", "multiple", "none"]);
 export const AGENT_STATUSES = new Set(["working", "idle", "waiting", "blocked", "needs-founder", "offline", "disabled"]);
+export const AGENT_AVAILABILITY = new Set(["available", "busy", "paused", "offline"]);
 const ID_RE = /^[a-z0-9][a-z0-9-]*$/;
 
 export function agentRegistryPath(hqRoot) {
@@ -89,10 +90,15 @@ export function validateAgentRegistry(value) {
       }
     }
     if (agent.capabilities !== undefined) {
-      if (!Array.isArray(agent.capabilities) || !agent.capabilities.every((c) => typeof c === "string")) {
+      if (!Array.isArray(agent.capabilities) || !agent.capabilities.every((c) => ID_RE.test(String(c)))) {
         throw new Error(`agents: agents[${i}].capabilities must be an array of strings.`);
       }
     }
+    if (agent.availability !== undefined && !AGENT_AVAILABILITY.has(agent.availability)) {
+      throw new Error(`agents: agents[${i}].availability is invalid.`);
+    }
+    if (agent.adapter !== undefined) validateAdapter(agent.adapter, i);
+    if (agent.budgetPolicy !== undefined) validateBudgetPolicy(agent.budgetPolicy, i);
     if (agent.currentProject !== undefined && agent.currentProject !== null &&
       !ID_RE.test(String(agent.currentProject))) {
       throw new Error(`agents: agents[${i}].currentProject must be a project key or null.`);
@@ -109,7 +115,11 @@ export function validateAgentRegistry(value) {
         throw new Error(`agents: agents[${i}].harnessAgentIds must be an array of strings.`);
       }
     }
+    if (agent.reportsTo !== undefined && agent.reportsTo !== null && !ID_RE.test(String(agent.reportsTo))) {
+      throw new Error(`agents: agents[${i}].reportsTo must be an agent id, founder, or null.`);
+    }
   }
+  validateReportingGraph(value.agents, seen);
   return value;
 }
 
@@ -160,16 +170,44 @@ export function listAgents(hqRoot) {
       harnessFallback: a.harnessFallback || null,
       stages: Array.isArray(a.stages) ? a.stages : [],
       capabilities: Array.isArray(a.capabilities) ? a.capabilities : [],
+      availability: a.availability || (a.status === "offline" ? "offline" : a.status === "disabled" ? "paused" : "available"),
+      adapter: a.adapter || null,
+      budgetPolicy: a.budgetPolicy || null,
       currentProject: a.currentProject || null,
       status: a.status || "idle",
       runtimeAgentId: a.runtimeAgentId !== undefined ? a.runtimeAgentId : (harnessAgentIds[0] || a.id),
       harnessAgentId: a.harnessAgentId || null,
       harnessAgentIds,
       reportsTo: a.reportsTo || null,
+      orgMetadataIsAuthority: false,
       notes: a.notes || null,
     };
   });
   return { agents, warnings: [] };
+}
+
+function validateAdapter(adapter, index) {
+  if (!adapter || typeof adapter !== "object" || Array.isArray(adapter) || typeof adapter.type !== "string" || !adapter.type.trim()) throw new Error(`agents: agents[${index}].adapter.type is required.`);
+  if (adapter.secretRefs !== undefined && (!Array.isArray(adapter.secretRefs) || !adapter.secretRefs.every((x) => ID_RE.test(String(x))))) throw new Error(`agents: agents[${index}].adapter.secretRefs must contain reference ids only.`);
+  for (const key of Object.keys(adapter)) if (!["type", "secretRefs"].includes(key)) throw new Error(`agents: agents[${index}].adapter.${key} is not allowed.`);
+}
+
+function validateBudgetPolicy(policy, index) {
+  if (!policy || typeof policy !== "object" || Array.isArray(policy)) throw new Error(`agents: agents[${index}].budgetPolicy must be an object.`);
+  if (policy.monthlyCents !== undefined && (!Number.isInteger(policy.monthlyCents) || policy.monthlyCents < 0)) throw new Error(`agents: agents[${index}].budgetPolicy.monthlyCents is invalid.`);
+  if (policy.alertPercent !== undefined && (!Number.isInteger(policy.alertPercent) || policy.alertPercent < 1 || policy.alertPercent > 100)) throw new Error(`agents: agents[${index}].budgetPolicy.alertPercent is invalid.`);
+  if (policy.hardStop !== undefined && typeof policy.hardStop !== "boolean") throw new Error(`agents: agents[${index}].budgetPolicy.hardStop must be boolean.`);
+}
+
+function validateReportingGraph(agents, ids) {
+  for (const agent of agents) if (agent.reportsTo && agent.reportsTo !== "founder" && !ids.has(agent.reportsTo)) throw new Error(`agents: ${agent.id} reports to unknown agent ${agent.reportsTo}.`);
+  for (const agent of agents) {
+    const path = new Set([agent.id]); let current = agent;
+    while (current?.reportsTo && current.reportsTo !== "founder") {
+      if (path.has(current.reportsTo)) throw new Error(`agents: reporting cycle includes ${current.reportsTo}.`);
+      path.add(current.reportsTo); current = agents.find((candidate) => candidate.id === current.reportsTo);
+    }
+  }
 }
 
 export function resolveAgent(hqRoot, id) {

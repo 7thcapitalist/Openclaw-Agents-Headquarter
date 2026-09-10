@@ -36,6 +36,9 @@
     "classification": "reference",
     "notes": "Documents the pinned Paperclip source and HQ-specific adaptations."
   },
+  { "localPath": "factory/lib/hq/agents.mjs", "sourceId": "paperclip", "sourcePath": "packages/db/src/schema/agents.ts", "classification": "adapted", "notes": "Adapts organization, capability, availability, adapter-reference, and budget metadata into the existing HQ registry." },
+  { "localPath": "factory/test/hq-agents.test.mjs", "sourceId": "paperclip", "sourcePath": "packages/db/src/schema/agents.ts", "classification": "inspired", "notes": "Tests Paperclip-derived organization metadata and HQ-specific non-authority constraints." },
+  { "localPath": "docs/software-factory/PAPERCLIP_AGENT_ORG_MODEL.md", "sourceId": "paperclip", "sourcePath": "packages/db/src/schema/agents.ts", "classification": "reference", "notes": "Documents source attribution and safe HQ mapping." },
   { "localPath": "factory/lib/hq/operations.mjs", "sourceId": "paperclip", "sourcePath": "server/src/routes/dashboard.ts", "classification": "inspired", "notes": "Projects Paperclip-derived audit, wakeup, lease, liveness, and cost concepts into a bounded HQ operator API." },
   { "localPath": "factory/test/hq-operations.test.mjs", "sourceId": "paperclip", "sourcePath": "server/src/routes/dashboard.ts", "classification": "inspired", "notes": "Tests empty, populated, and degraded operational projections." },
   { "localPath": "docs/software-factory/PAPERCLIP_OPERATIONS_API.md", "sourceId": "paperclip", "sourcePath": "server/src/routes/dashboard.ts", "classification": "reference", "notes": "Documents the sanitized read-only dashboard contract." }
