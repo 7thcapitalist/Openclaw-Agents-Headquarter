@@ -123,13 +123,18 @@ test("shared initializer creates state and handoff using a single worktree opera
     if (args[0] === "rev-parse") return `${repo}\n`;
     if (args[0] === "show-ref") return { ok: false, stdout: "" };
     if (args[0] === "worktree") { mkdirSync(worktree); return ""; }
+    if (args[0] === "add" || args[0] === "commit") return { ok: true, stdout: "" };
     throw new Error(`Unexpected git call: ${args.join(" ")}`);
   };
   const result = initializeTask({ hqRoot: process.cwd(), contractPath, repo, worktree, stateRoot, git });
   assert.equal(result.next, "product");
   // rev-parse --show-toplevel, show-ref (branch exists?), rev-parse HEAD (base
-  // sha for the publish gate), then the single worktree add.
-  assert.deepEqual(calls.map((args) => args[0]), ["rev-parse", "show-ref", "rev-parse", "worktree"]);
+  // sha for the publish gate), then the single worktree add — followed by the
+  // isolated add+commit that makes `evidence/` ignored on the task branch
+  // before any agent runs.
+  assert.deepEqual(calls.map((args) => args[0]), ["rev-parse", "show-ref", "rev-parse", "worktree", "add", "commit"]);
+  // Still exactly one worktree operation, which is what this test guards.
+  assert.equal(calls.filter((args) => args[0] === "worktree").length, 1);
   assert.equal(existsSync(result.state), true);
   assert.match(readFileSync(join(stateRoot, "tasks", "issue-42", "handoff-product.md"), "utf8"), /Assigned harness: openclaw/);
 });
