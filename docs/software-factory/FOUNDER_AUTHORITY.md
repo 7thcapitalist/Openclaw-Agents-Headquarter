@@ -7,11 +7,16 @@ not, and which browser-facing attacks Headquarters now defends against.
 
 ## 1. The rule
 
-> A high-risk task moves past `builder` if, and only if, a fresh Ed25519
-> assertion — scoped to that task, that challenge, that action, and that
-> evidence — verifies against the approval authority recorded on the task.
+> A high-risk task moves past `builder` if, and only if, an Ed25519 assertion —
+> scoped to that task, that challenge, that action, and that evidence — verifies
+> against the approval authority recorded on the task.
 
-There is no second path. There is no weaker path.
+No strategic decision, task-contract field, or dashboard action is an
+alternative to that signature.
+
+The key that signature is checked against comes from **outside** the task
+state — the enrolled key file or `FACTORY_FOUNDER_PUBLIC_KEY` — so an actor
+who can write task state cannot substitute its own. See §3.1.
 
 ## 2. The vulnerability this closes
 
@@ -67,12 +72,39 @@ The signed payload (`founderApprovalPayload`) covers:
 
 Verification additionally enforces:
 
-- **Expiry** — `FACTORY_APPROVAL_TTL_SECONDS` (default 24h) from `approvedAt`.
+- **Expiry** — `FACTORY_APPROVAL_TTL_SECONDS` (default 24h) bounds how long a
+  signature may sit **unused before it is recorded**. It is deliberately *not*
+  re-evaluated afterwards. Re-checking age at every later gate killed tasks the
+  founder genuinely approved whose pipeline outran the TTL, and left them
+  unrecoverable: once an approval is recorded `isAwaitingFounderApproval()` is
+  false, so the Inbox will not offer re-approval and `prepareFounderApproval`
+  refuses. Revocation, not expiry, withdraws a recorded approval.
 - **Clock skew** — an approval dated more than 2 minutes in the future is refused.
 - **Revocation** — a fingerprint in `state.founderApprovalRevocations` stops
   verifying immediately, even for an approval that was previously valid.
 - **Fail-closed signatures** — a malformed or wrong-length signature returns
   false rather than throwing something a caller might treat as infrastructure.
+
+### 3.1 Where the trusted key comes from
+
+A signature check is only as good as the key it trusts. Verification resolves
+the approval authority in this order, and the first hit **overrides whatever the
+task state claims**:
+
+1. an authority injected by the caller (the dashboard hands down its HQ root);
+2. the enrolled browser key, `dashboard/backend/data/factory/founder-approval-key.pem` (mode `0600`);
+3. `FACTORY_FOUNDER_PUBLIC_KEY`, a path from the deployment environment.
+
+If the task's recorded `founderApprovalAuthority` disagrees with the anchor, the
+approval is refused as tampering — not treated as a routine mismatch.
+
+This closes the attack an independent review demonstrated by execution: rewrite
+`founderApprovalAuthority` in the task-state file to a key you hold, restate the
+v2 fingerprint (which previously compared two fields in that same file), sign
+with your own private key, and the gate agreed. It no longer does.
+
+Only Ed25519 may anchor the gate; a malformed or wrong-type anchor file is
+ignored rather than crashing every gate that consults it.
 
 ## 4. Assertion versions and migration
 
@@ -112,7 +144,8 @@ re-keyed, which re-issues a v1 request. No approval is ever silently downgraded.
 | T2 | Approval replayed onto another task | `challenge` + `taskId` in signed bytes | `founder-authority-gate.test.mjs` |
 | T3 | Evidence swapped after signing | `evidenceSha256` re-checked at execution | same |
 | T4 | Different action substituted | `decision` in signed bytes | same |
-| T5 | Old/compromised key reused | authority fingerprint binding + revocation | same |
+| T5 | Old/compromised key reused | authority fingerprint binding + revocation | `founder-authority-gate.test.mjs` |
+| T5b | Authority key swapped by an actor who can write task state | external trust anchor overrides the recorded key | `founder-authority-anchor.test.mjs` |
 | T6 | Malformed signature treated as an error, not a denial | fail-closed verify | same |
 | T7 | Stale approval used much later | TTL + future-date rejection | same |
 | T8 | Downgrade to v1 | version equality check | same |
@@ -123,6 +156,13 @@ re-keyed, which re-issues a v1 request. No approval is ever silently downgraded.
 | T13 | Privileged action with no attribution | append-only audit log | `dashboard-security-audit.test.mjs` |
 
 ### Residual risk (stated, not solved here)
+
+- **An unanchored deployment still trusts the task's own record.** When no
+  enrolled key file and no `FACTORY_FOUNDER_PUBLIC_KEY` are configured, there is
+  nothing outside the task state to verify against, so the gate falls back to the
+  key the task names. This is reported rather than hidden:
+  `founderApprovalStatus()` returns `anchored: false` with the authority source.
+  Configure an anchor — a real deployment already does.
 
 - **Trust-on-first-use enrollment.** The first browser key is still accepted on
   the strength of an authenticated session alone. Rotation afterwards requires a
@@ -162,7 +202,7 @@ All four `marked.parse()` sinks in `server.mjs` now route through this module.
 
 ```
 default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';
-img-src 'self' data: https:; connect-src 'self'; object-src 'none';
+img-src 'self' data:; connect-src 'self'; object-src 'none';
 frame-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'
 ```
 
@@ -222,7 +262,7 @@ founder's action would be worse than the gap. A corrupt line is surfaced as
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `FACTORY_APPROVAL_TTL_SECONDS` | `86400` | Approval validity window |
+| `FACTORY_APPROVAL_TTL_SECONDS` | `86400` | How long a signature may sit unused before being recorded |
 | `DASHBOARD_ALLOWED_ORIGINS` | derived from Host | Extra CSRF origins |
 | `DASHBOARD_LOGIN_MAX_ATTEMPTS` | `5` | Failures before backoff |
 | `DASHBOARD_LOGIN_WINDOW_MS` | `900000` | Throttle window |
@@ -232,3 +272,27 @@ founder's action would be worse than the gap. A corrupt line is surfaced as
 Per the campaign constraints: pipeline gates, stage ordering, independence
 rules, and founder merge authority are untouched. Correct one-click approval
 still resumes exactly the intended task or objective.
+
+## 10. Independent security review
+
+This change was reviewed by an independent agent that did not write it, per
+AGENTS.md ("a model cannot be the sole reviewer of its own implementation").
+
+The reviewer built an HTML5-faithful tokenizer and fuzzed **300,000 inputs**
+through the sanitizer, asserting that every tag a real browser would find in the
+output is allowlisted with inert URLs. **No bypass was found**, and the
+`founderDecisions` fix was confirmed complete by execution.
+
+It did confirm eight defects, all of which are fixed here and locked down by
+`factory/test/security-review-regressions.test.mjs`:
+
+| Finding | Severity | Fix |
+| --- | --- | --- |
+| Approval TTL deadlocked long pipelines with no way to re-approve | HIGH | TTL now bounds the signing window only |
+| Authority key readable from the record it protects | HIGH | **Fixed** — the gate now verifies against an external anchor (§3.1) |
+| CI ran none of the browser-hardening tests | MEDIUM | Workflow installs dashboard deps and fails on any skip |
+| Link text was interpolated unescaped | MEDIUM | Inner tokens are parsed, never raw text |
+| Audit redaction was exact-name-only | MEDIUM | Substring matching + free-text scrubbing |
+| `x-forwarded-host` trusted regardless of proxy config | MEDIUM | Honoured only when `DASHBOARD_TRUST_PROXY=1` |
+| A link title containing `rel=` suppressed link hardening | LOW | Fallback tests emitted attribute names |
+| Agent markdown could beacon the founder via remote images | LOW | `img-src 'self' data:` |

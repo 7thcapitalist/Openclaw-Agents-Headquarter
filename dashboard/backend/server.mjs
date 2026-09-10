@@ -207,6 +207,8 @@ app.use(
       .map((v) => v.trim())
       .filter(Boolean),
     exemptPaths: ["/api/auth/login"],
+    // Only honour x-forwarded-host when this deployment actually trusts a proxy.
+    trustProxy: Boolean(TRUST_PROXY),
   })
 );
 

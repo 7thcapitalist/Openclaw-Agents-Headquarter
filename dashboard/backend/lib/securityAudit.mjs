@@ -14,12 +14,33 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 
-// Field names whose values must never be written, at any nesting depth.
-const REDACT_KEYS = new Set([
-  "signature", "assertion", "privatekey", "private_key", "secret", "password",
-  "token", "csrftoken", "csrf_token", "sessionsecret", "cookie", "authorization",
-  "apikey", "api_key", "pem", "key",
+// Substrings that mark a field as sensitive, at any nesting depth.
+//
+// Matching is by SUBSTRING, not exact name. An exact-name list silently passed
+// through every plural, compound and env-var spelling — `tokens`, `accessToken`,
+// `passwordHash`, `newPassword`, `privKey`, `DASHBOARD_PASSWORD`,
+// `secretValue` — which is precisely the shape real config and error payloads
+// take. The module promises "never written, at any nesting depth"; it has to
+// mean it.
+const REDACT_PATTERNS = [
+  "signature", "assertion", "secret", "password", "passphrase", "passwd",
+  "token", "cookie", "authorization", "credential", "apikey", "privatekey",
+  "privkey", "pem", "sessionid",
+];
+
+// Names that contain a sensitive substring but carry no secret, so redacting
+// them would only destroy useful audit context.
+const REDACT_EXCEPTIONS = new Set([
+  "tokenized", "passwordless", "hastoken", "haspassword", "tokencount",
+  "secretcount", "credentialtype", "signaturealgorithm",
 ]);
+
+function isSensitiveKey(key) {
+  // Normalise camelCase, snake_case, SCREAMING_CASE and kebab-case alike.
+  const normalized = String(key).toLowerCase().replace(/[^a-z]/g, "");
+  if (REDACT_EXCEPTIONS.has(normalized)) return false;
+  return REDACT_PATTERNS.some((pattern) => normalized.includes(pattern));
+}
 
 const MAX_VALUE_LENGTH = 500;
 
@@ -38,8 +59,7 @@ export function redact(value, depth = 0) {
   if (typeof value === "object") {
     const out = {};
     for (const [key, raw] of Object.entries(value)) {
-      const normalized = key.toLowerCase().replace(/[^a-z_]/g, "");
-      if (REDACT_KEYS.has(normalized)) {
+      if (isSensitiveKey(key)) {
         // Record that a credential was present, and a stable digest so two
         // events can be correlated, but never the credential itself.
         out[key] = raw ? `[redacted:${shortDigest(raw)}]` : "[redacted]";
@@ -54,6 +74,15 @@ export function redact(value, depth = 0) {
     return value.length > MAX_VALUE_LENGTH ? `${value.slice(0, MAX_VALUE_LENGTH)}…[truncated]` : value;
   }
   return value;
+}
+
+// Strip anything that looks like a credential out of free text.
+export function redactText(text) {
+  return String(text ?? "")
+    .replace(/-----BEGIN[^-]*PRIVATE KEY-----[\s\S]*?-----END[^-]*PRIVATE KEY-----/g, "[redacted:private-key]")
+    .replace(/\b(?:password|passphrase|secret|token|api[_-]?key)\b\s*[:=]\s*\S+/gi, (m) => `${m.split(/[:=]/)[0]}=[redacted]`)
+    .replace(/\beyJ[\w-]{10,}\.[\w-]{10,}\.[\w-]{10,}\b/g, "[redacted:jwt]")
+    .slice(0, MAX_VALUE_LENGTH);
 }
 
 function shortDigest(value) {
@@ -87,7 +116,9 @@ export function recordSecurityEvent(root, event) {
     ...(event?.sessionHandle ? { session: String(event.sessionHandle) } : {}),
     ...(event?.ip ? { ip: String(event.ip) } : {}),
     ...(event?.userAgent ? { userAgent: String(event.userAgent).slice(0, 200) } : {}),
-    ...(event?.reason ? { reason: String(event.reason).slice(0, MAX_VALUE_LENGTH) } : {}),
+    // `reason` carries founder free text and raw error strings, either of which
+    // can quote a secret. Length-capping alone was not enough.
+    ...(event?.reason ? { reason: redactText(String(event.reason)) } : {}),
     ...(event?.details ? { details: redact(event.details) } : {}),
   };
   const path = auditLogPath(root);
