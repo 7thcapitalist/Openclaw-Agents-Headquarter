@@ -426,6 +426,39 @@
       "notes": "Documents the pinned source and why HQ keeps the signed assertion as the sole authority."
     },
     {
+      "localPath": "factory/lib/hq/run-timeline.mjs",
+      "sourceId": "paperclip",
+      "sourcePath": "server/src/services/work-timeline.ts",
+      "classification": "adapted",
+      "notes": "Adapts Paperclip activity and liveness timelines into one HQ run projection that merges seven local layers and names the source of every entry."
+    },
+    {
+      "localPath": "dashboard/backend/public/lib/timelineView.mjs",
+      "sourceId": "paperclip",
+      "sourcePath": "ui/src/components/IssueTimeline.tsx",
+      "classification": "inspired",
+      "notes": "Adapts Paperclip timeline presentation into a founder run-detail section that shows absent and unreadable sources explicitly."
+    },
+    {
+      "localPath": "factory/test/run-timeline.test.mjs",
+      "sourceId": "paperclip",
+      "sourcePath": "server/src/services/work-timeline.ts",
+      "classification": "inspired",
+      "notes": "Tests layer merging, cross-task isolation, unreadable-source reporting, path-traversal rejection, and the evidence/prompt boundary."
+    },
+    {
+      "localPath": "factory/test/timeline-view.test.mjs",
+      "sourceId": "paperclip",
+      "sourcePath": "ui/src/components/IssueTimeline.tsx",
+      "classification": "inspired",
+      "notes": "Tests source labelling, incompleteness disclosure, truncation, and escaping."
+    },
+    {
+      "localPath": "docs/software-factory/PAPERCLIP_RUN_TIMELINE.md",
+      "sourceId": "paperclip",
+      "sourcePath": "server/src/services/work-timeline.ts",
+      "classification": "reference",
+      "notes": "Documents the pinned sources and the layers-and-honesty contract.",
       "localPath": "factory/lib/hq/retention.mjs",
       "sourceId": "paperclip",
       "sourcePath": "server/src/services/decision-retention.ts",
