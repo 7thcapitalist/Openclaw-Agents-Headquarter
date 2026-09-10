@@ -4,6 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { retryStuckTasks } from "../lib/hq/auto-retry.mjs";
+import { readState, writeState } from "../lib/task-workflow.mjs";
 
 function hqRoot() {
   const root = mkdtempSync(join(tmpdir(), "hq-auto-retry-"));
@@ -69,11 +70,17 @@ test("a second sweep bumps to 2; a fourth is refused", async () => {
   const stateRoot = join(root, "state");
   const p = writeTask(stateRoot, "task-x", { status: "blocked", autoRetries: 2, blocker: { outcome: "fail", stage: "release", summary: "no result file", at: "2026-09-07T00:00:00Z" } });
   // Simulate a run that fails again: re-block the task but keep the bumped counter.
+  // Go through readState/writeState (now backed by the transactional store),
+  // not raw fs calls: a real harness completion always lands via
+  // ingestResult()/failDispatch(), never a direct write to state.json, and
+  // once this task has a live SQLite row (from the sweep below), a raw
+  // writeFileSync here would be silently ignored on the next transactional
+  // read rather than actually simulating a re-block.
   const runTask = async ({ statePath }) => {
-    const s = JSON.parse(readFileSync(statePath, "utf8"));
+    const s = readState(statePath);
     s.status = "blocked";
     s.blocker = { outcome: "fail", stage: "release", summary: "no result file", at: "2026-09-07T00:00:01Z" };
-    writeFileSync(statePath, JSON.stringify(s, null, 2));
+    writeState(statePath, s);
     return { status: "blocked" };
   };
 

@@ -28,8 +28,16 @@ test("dispatch packet is persistent and idempotent until claimed", () => {
   assert.equal(first.actor, "openclaw");
   assert.equal(first.cwd, fixture.worktree);
   assert.match(readFileSync(first.promptPath, "utf8"), new RegExp(first.dispatchId));
-  markDispatchRunning({ statePath: fixture.statePath, dispatchId: first.dispatchId });
-  assert.throws(() => markDispatchRunning({ statePath: fixture.statePath, dispatchId: first.dispatchId }), /already running/);
+  const markedRunning = markDispatchRunning({ statePath: fixture.statePath, dispatchId: first.dispatchId });
+  // Duplicate command replay (FCT-P0-02): markDispatchRunning's idempotency
+  // key is stable per dispatchId, so a second call for the same dispatch —
+  // e.g. a runner retrying after a timed-out response to its first call —
+  // replays the exact same recorded response instead of re-running the
+  // transition (which would otherwise throw "already running"). This is the
+  // documented behavior change from the transactional store: a duplicate
+  // request must not execute twice, and here "executing" a second time
+  // would have meant treating a harmless retry as a hard error.
+  assert.deepEqual(markDispatchRunning({ statePath: fixture.statePath, dispatchId: first.dispatchId }), markedRunning);
 });
 
 test("JSON stdin adapter exposes the dispatch packet to OpenClaw", () => {
