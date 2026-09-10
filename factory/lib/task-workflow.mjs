@@ -5,8 +5,8 @@ import { classifyBlocker } from "./hq/blocker-class.mjs";
 import { classifyFailure, isRecoverableFailure, recoveryStrategy, repairTargetFor } from "./failure-classification.mjs";
 import { mutateTransactionalState, readTransactionalState } from "./store/transactional-json.mjs";
 import { authorityForVerification } from "./founder-authority.mjs";
-import { buildManifest, summarizeManifest, verifyManifest } from "./evidence/manifest.mjs";
-import { criteriaForState, stageMustProveCriteria } from "./evidence/criteria.mjs";
+import { buildManifest, summarizeManifest, verifyManifest } from "./evidence-manifest.mjs";
+import { criteriaForState, stageMustProveCriteria } from "./evidence-criteria.mjs";
 
 export const STAGES = [
   "product",

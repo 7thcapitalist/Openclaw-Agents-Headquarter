@@ -16,7 +16,7 @@ import {
   criterionId,
   criteriaForState,
   stageMustProveCriteria,
-} from "../lib/evidence/criteria.mjs";
+} from "../lib/evidence-criteria.mjs";
 import {
   EVIDENCE_MANIFEST_VERSION,
   buildManifest,
@@ -24,7 +24,7 @@ import {
   resolveContainedPath,
   summarizeManifest,
   verifyManifest,
-} from "../lib/evidence/manifest.mjs";
+} from "../lib/evidence-manifest.mjs";
 
 // ── fixture ──────────────────────────────────────────────────────────────────
 
