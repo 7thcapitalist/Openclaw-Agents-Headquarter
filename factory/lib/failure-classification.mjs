@@ -10,7 +10,12 @@ export const FAILURE_CLASSES = Object.freeze([
   "UNKNOWN",
 ]);
 
-const INFRA = /timeout|timed out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|EPIPE|socket hang up|rate.?limit|\b429\b|\b5\d\d\b|quota|overloaded|capacity|temporarily unavailable|no result file|did not write/i;
+// Kept deliberately in step with blocker-class.mjs's INFRA_FAIL_RE and the
+// objective orchestrator's INFRA_FAILURE_RE. When these three disagree the same
+// failure is infrastructure to one layer and the project's fault to another —
+// which is how "[openclaw] Could not start the CLI" was classified PROJECT_ERROR
+// and handed to recovery as if the code were broken.
+const INFRA = /timeout|timed out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|EPIPE|socket hang up|rate.?limit|\b429\b|\b5\d\d\b|quota|overloaded|capacity|temporarily unavailable|no result file|did not write|could not start|cannot start|failed to start|start the cli|could not run|unable to launch|all models failed|usage limit|cooldown|auth profile|provider .*unavailable|model .*unavailable|orphaned|host restart/i;
 const FACTORY = /factory|orchestrator|workflow|state\.json|dispatch|protocol|invalid .*result|unsupported .*version|cannot advance|expected stage/i;
 
 export function classifyFailure({ error = "", outcome = "fail", source = "execution", founderDecision = false } = {}) {
