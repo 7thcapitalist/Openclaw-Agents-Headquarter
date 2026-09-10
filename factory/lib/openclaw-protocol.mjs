@@ -1,6 +1,21 @@
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync } from "fs";
 import { dirname, join } from "path";
 import { completeStage, readState, recordRecoveryResult, routeStageFailure, startRecovery, verifyEvidence, writeState } from "./task-workflow.mjs";
+
+// Which stages the workflow can route a failure AWAY from.
+//
+// A review stage judges someone else's work, so a FAIL there has a destination:
+// the builder, who can fix it. That is the review loop, not a malfunction, and
+// it is what #56 broke by putting recovery in front of every `fail` outcome —
+// "the reviewer found a bug", the most routine event in a code factory, was
+// diagnosed as an environment problem, burned the whole recovery budget, and
+// escalated to the founder.
+//
+// A non-review stage (product, architect, builder) failed at its OWN work.
+// There is nowhere to route it: the builder is already the one who failed, so
+// re-dispatching it unchanged just repeats the failure. Those keep going to
+// recovery first, which diagnoses before anyone retries.
+const ROUTABLE_STAGES = new Set(["reviewer", "qa", "security", "release"]);
 import { writeHandoff } from "./handoff.mjs";
 
 export const PROTOCOL_VERSION = 1;
@@ -142,8 +157,20 @@ export function ingestResult({ statePath, result, agentMeta = null, maxAttemptsP
   next.dispatches = [...(state.dispatches || []), finished];
   delete next.currentDispatch;
   if (result.outcome === "fail") {
-    next = startRecovery(next, { failedStage: result.stage, actor, error: result.summary, evidence, source: "project", maxRecoveryAttempts: state.recovery?.maxAttempts || 3, now });
-    if (!next.recovery?.active && next.status === "blocked") next = routeStageFailure(next, { failedStage: result.stage, maxAttemptsPerStage, now });
+    // For a review stage the workflow's own loop runs first: a FAIL verdict
+    // there is a judgement about the code, and it belongs back with the
+    // builder. `routeStageFailure` already draws the right distinctions (review
+    // FAIL to builder, infrastructure retried in place, release conflicts kept
+    // at release) — since #56 it was simply unreachable. It returns the state
+    // unchanged when it declines, which is how the per-stage budget still ends
+    // the loop: once the stage has spent its attempts, recovery takes over and,
+    // failing that, escalates to the founder.
+    const routed = ROUTABLE_STAGES.has(result.stage)
+      ? routeStageFailure(next, { failedStage: result.stage, maxAttemptsPerStage, now })
+      : next;
+    next = routed !== next
+      ? routed
+      : startRecovery(next, { failedStage: result.stage, actor, error: result.summary, evidence, source: "project", maxRecoveryAttempts: state.recovery?.maxAttempts || 3, now });
   }
   writeState(statePath, next);
   return terminalResponse(next);
@@ -166,8 +193,16 @@ export function failDispatch({ statePath, dispatchId, error, maxAttemptsPerStage
   delete state.currentDispatch;
   state.updatedAt = now;
   state.events.push({ at: now, type: "dispatch-failed", stage: dispatch.stage, actor: dispatch.actor, dispatchId });
-  const recovered = startRecovery(state, { failedStage: dispatch.stage, actor: dispatch.actor, error: String(error), source: "harness", maxRecoveryAttempts: state.recovery?.maxAttempts || 3, now });
-  const next = recovered.recovery?.active ? recovered : routeStageFailure(recovered, { failedStage: dispatch.stage, targetStage: dispatch.stage, maxAttemptsPerStage, now });
+  // Same order as the verdict path above, and for the same reason. A review
+  // member whose agent never started has nothing for the builder to fix, so
+  // `routeStageFailure` retries that stage in place rather than rebuilding the
+  // world — but it has to be reached to do so.
+  const routedFirst = ROUTABLE_STAGES.has(dispatch.stage)
+    ? routeStageFailure(state, { failedStage: dispatch.stage, targetStage: dispatch.stage, maxAttemptsPerStage, now })
+    : state;
+  const next = routedFirst !== state
+    ? routedFirst
+    : startRecovery(state, { failedStage: dispatch.stage, actor: dispatch.actor, error: String(error), source: "harness", maxRecoveryAttempts: state.recovery?.maxAttempts || 3, now });
   writeState(statePath, next);
   return terminalResponse(next);
 }

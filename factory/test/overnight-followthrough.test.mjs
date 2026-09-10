@@ -118,7 +118,7 @@ test("yield polling tolerates a partially written result instead of retrying a l
 // returned NOT MERGE READY three times with nothing assigned to rebase.
 // Rewriting this test to match would bless the dead-end, so it is skipped with a
 // reason and carried as the top recommendation in the handoff.
-test("release conflict runs builder and all downstream gates again before publication", { skip: "KNOWN REGRESSION (see docs/software-factory/handoffs/2026-09-09-reliability-overhaul.md): a release conflict re-dispatches `release` three times instead of re-running builder and the downstream gates, so a branch that fell behind main can never be rebased and the node dead-ends. This stranded two fully-gated nodes on obj-c7b263bb (PR #36). Skipped, not rewritten, so the regression stays visible." }, async () => {
+test("release conflict runs builder and all downstream gates again before publication", async () => {
   const { runToTerminal } = await import("../lib/openclaw-runner.mjs");
   const { readFileSync } = await import("node:fs");
   const f = fixture(); const calls = []; let failedRelease = false;

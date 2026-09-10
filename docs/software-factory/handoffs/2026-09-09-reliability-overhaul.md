@@ -117,13 +117,27 @@ grounds, but not on the grounds that Claude is unreachable.
 OpenClaw OAuth profile. Readiness is unconfirmable by inspection but confirmed by
 probe. **No interactive login is required.**
 
-## Regressions found and deliberately NOT fixed
+## Regressions — RESOLVED 2026-09-10
+
+> **Update.** All three regressions below shared one root cause: since #56
+> recovery sat in front of every `fail` outcome, so `routeStageFailure()` was
+> unreachable. Restoring routing ahead of recovery for the stages that have
+> somewhere to route *to* fixed all three at once, and all three tests are
+> un-skipped and passing. The suite is **549 tests, 549 pass, 0 skipped**.
+>
+> The escalation ladder is now: the review loop routes a FAIL back to the
+> builder (up to the per-stage budget) → recovery diagnoses and repairs → the
+> founder is asked. Recovery is the second line, not the first.
+>
+> The original analysis is kept below as the record of how each was found.
+
+## Regressions found and deliberately NOT fixed (original analysis)
 
 Three tests assert behaviour the factory was designed around and no longer has.
 Rewriting them to match today would bless the defect, so each is **skipped with a
 reason** naming this document. They are visible in every test run as skips.
 
-### 1. A review/QA verdict no longer returns work to the builder — *highest impact*
+### 1. A review/QA verdict no longer returns work to the builder — *highest impact* — **FIXED**
 
 Since #56 recovery sits in front of **every** `fail` outcome, so
 `routeStageFailure()` is never reached. An ordinary *"reviewer found a bug"* —
@@ -141,7 +155,10 @@ verdict at all (missing result, crash, infra) is an environment problem. In
 two skipped tests in `openclaw-runner-concurrent.test.mjs` become the acceptance
 criteria.
 
-### 2. A release conflict dead-ends instead of rebasing
+### 2. A release conflict dead-ends instead of rebasing — **FIXED**
+
+*Resolved by the same routing change: `routeStageFailure` already detected a
+release conflict and targeted the builder; it was simply never reached.*
 
 `overnight-followthrough.test.mjs` asserts that a release conflict re-runs the
 builder and every downstream gate before publication. Today `release` is simply
@@ -157,7 +174,11 @@ sat unmergeable.
 the merged tree → release re-evaluates. Bounded attempts, no gate bypass. A clean
 rebase must not require the founder; only a real semantic conflict should.
 
-### 3. `maxAttemptsPerStage` no longer means what it says
+### 3. `maxAttemptsPerStage` no longer means what it says — **FIXED**
+
+*The config key is honoured again: a routable stage gets its configured
+attempts before recovery engages. The value is also now forwarded to
+`recordRecoveryResult`, which previously ignored it.*
 
 Recovery intercepts on the **first** stage failure, so a stage gets one attempt,
 not the configured three; the recovery budget then applies. Documented in
