@@ -355,51 +355,37 @@
       "notes": "Tests hierarchy rendering, escaping, accessibility labelling, and honest empty/degraded states."
     },
     {
-      "localPath": "factory/lib/hq/permissions.mjs",
+      "localPath": "factory/lib/hq/decision-history.mjs",
       "sourceId": "paperclip",
-      "sourcePath": "server/src/services/agent-permissions.ts",
+      "sourcePath": "server/src/services/approvals.ts",
       "classification": "adapted",
-      "notes": "Adapts Paperclip fail-closed agent permissions into a strictly subtractive, deny-by-default capability gate whose vocabulary excludes merge, deploy, secret, billing and publishing authority."
+      "notes": "Adapts Paperclip approval lifecycle states into a read-only projection of canonical HQ task state; unlike Paperclip the record is never the authority."
     },
     {
-      "localPath": "factory/lib/hq/permissions-snapshot.mjs",
+      "localPath": "dashboard/backend/public/lib/decisionsView.mjs",
       "sourceId": "paperclip",
-      "sourcePath": "server/src/services/authorization.ts",
+      "sourcePath": "ui/src/pages/Approvals.tsx",
       "classification": "inspired",
-      "notes": "Projects permission mode, grants and audited denials into a bounded read-only operator view."
+      "notes": "Adapts Paperclip approval presentation into a read-only founder panel with no approve control."
     },
     {
-      "localPath": "factory/permissions.example.json",
+      "localPath": "factory/test/decision-history.test.mjs",
       "sourceId": "paperclip",
-      "sourcePath": "server/src/services/agent-permissions.ts",
+      "sourcePath": "server/src/services/approvals.ts",
       "classification": "inspired",
-      "notes": "Example grant table showing the report-first enablement path; the real file is operator-supplied."
+      "notes": "Tests derived lifecycle, consumption ordering, re-key revocation, non-destructive expiry, and secret withholding."
     },
     {
-      "localPath": "dashboard/backend/public/lib/permissionsView.mjs",
+      "localPath": "factory/test/decisions-panel.test.mjs",
       "sourceId": "paperclip",
-      "sourcePath": "ui/src/pages/Agents.tsx",
+      "sourcePath": "ui/src/pages/Approvals.tsx",
       "classification": "inspired",
-      "notes": "Adapts Paperclip permission presentation into a read-only founder panel that distinguishes off, observing, enforcing and broken."
+      "notes": "Tests lifecycle presentation, unsigned-approval alerting, escaping, and accessible labelling."
     },
     {
-      "localPath": "factory/test/permissions.test.mjs",
+      "localPath": "docs/software-factory/PAPERCLIP_DECISION_HISTORY.md",
       "sourceId": "paperclip",
-      "sourcePath": "server/src/services/agent-permissions.ts",
-      "classification": "inspired",
-      "notes": "Tests founder supremacy, forbidden-capability rejection, scope containment, fail-closed defaults, and audited denials."
-    },
-    {
-      "localPath": "factory/test/permissions-panel.test.mjs",
-      "sourceId": "paperclip",
-      "sourcePath": "ui/src/pages/Agents.tsx",
-      "classification": "inspired",
-      "notes": "Tests mode presentation, broken-registry handling, escaping, and denial collection from both audit logs."
-    },
-    {
-      "localPath": "docs/software-factory/PAPERCLIP_SCOPED_PERMISSIONS.md",
-      "sourceId": "paperclip",
-      "sourcePath": "server/src/services/agent-permissions.ts",
+      "sourcePath": "server/src/services/approvals.ts",
       "classification": "reference",
       "notes": "Documents the pinned source, the subtractive-only boundary, and the report-then-enforce rollout."
     },
@@ -436,7 +422,8 @@
       "sourceId": "paperclip",
       "sourcePath": "server/src/services/agent-task-run-telemetry.ts",
       "classification": "reference",
-      "notes": "Documents the pinned source and why HQ measures accepted outcomes rather than activity."
+      "notes": "Documents the pinned source and why HQ measures accepted outcomes rather than activity.",
+      "notes": "Documents the pinned source and why HQ keeps the signed assertion as the sole authority."
     }
   ]
 }
