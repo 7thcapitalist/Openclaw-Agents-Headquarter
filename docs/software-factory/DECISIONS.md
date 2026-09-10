@@ -154,6 +154,29 @@ entries. When a decision changes, add a new entry and mark the old one
   completed. After merge, the branch and worktree are disposable and no work
   continues from them. Agents synchronize with the latest `main` before starting
   new work.
+## SFD-2026-010 — Founder-authorized multi-PR campaigns may share a recorded main baseline
+
+- Date: 2026-09-09
+- Status: Accepted (explicit founder direction)
+- Decision: A founder may authorize a bounded campaign to prepare multiple
+  isolated PRs before any of them merge. Each campaign change keeps its own
+  branch/worktree, starts from the campaign's recorded `main` commit, targets
+  `main`, declares dependencies and merge order, and is updated and reverified
+  against the then-latest `main` immediately before human-authorized merge.
+  Shared writable branches, integration branches, stacked PR targets, direct
+  pushes, self-merge, and gate bypasses remain prohibited.
+- Rationale: Some reviewed programs need a complete set of PRs visible before
+  the founder begins merging. A narrow campaign protocol enables that review
+  shape without hiding dependencies or weakening the single-branch source of
+  truth.
+- Consequences: Campaign PRs can be open concurrently but are classified as
+  prepared, not merge-ready, until their declared predecessors have merged and
+  their latest-main refresh and verification have passed. Every campaign needs
+  a durable tracker with scope, base SHA, order, dependencies, owner, and expiry.
+  The normal sequential workflow remains the default. The first authorized use
+  is the Paperclip capability campaign tracked in
+  `docs/software-factory/campaigns/PAPERCLIP_2026.md`.
+
 ## SFD-2026-009 — Deploy orchestrator is dry-run by default; real production deploy is founder-triggered
 
 - Date: 2026-09-08

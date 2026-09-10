@@ -32,7 +32,10 @@ a short-lived branch/worktree that is deleted after merge, and nobody pushes to
    `factory/templates/task.md`, including outcome, acceptance criteria, scope,
    risk, and prior human decisions.
 3. OpenClaw routes exactly one primary implementation owner to an isolated
-   branch/worktree. Two agents must never share a writable branch.
+   branch/worktree. Two agents must never share a writable branch. A bounded,
+   founder-authorized multi-PR campaign may prepare several independently owned
+   PRs from one recorded `main` baseline, but each must be refreshed and
+   reverified in declared merge order before it becomes merge-ready.
 4. The assigned harness implements and verifies the smallest coherent change,
    then opens a PR targeting `main`. GitHub preserves the
    issue-to-branch-to-PR trail.

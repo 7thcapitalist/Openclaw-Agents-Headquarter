@@ -17,6 +17,17 @@
     "deleteBranchAfterMerge": true,
     "deleteWorktreeAfterMerge": true,
     "startFromLatestMain": true,
+    "campaignPolicy": {
+      "enabledOnlyWithFounderAuthorization": true,
+      "sharedBaseAllowed": true,
+      "separateBranchAndWorktreePerChange": true,
+      "prTarget": "main",
+      "integrationBranchesAllowed": false,
+      "dependencyAndMergeOrderRequired": true,
+      "refreshAgainstLatestMainBeforeMerge": true,
+      "reverifyAfterRefresh": true,
+      "policyDecision": "SFD-2026-010"
+    },
     "policyDoc": "docs/software-factory/GIT_WORKFLOW.md"
   },
   "openclawIntegration": {
