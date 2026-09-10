@@ -27,3 +27,10 @@ runner processes a dispatch. Delete only the projection files to rebuild or
 reset visibility; never delete canonical `state.json`. A missing or malformed
 projection is reported as unavailable by consumers and must not mutate task
 state.
+
+## Rollback
+
+Revert the PR. Dispatch stops writing audit, liveness and cost projections; the
+existing files become inert data. Telemetry is best-effort by construction and
+already cannot change a canonical task outcome, so reverting it cannot either.
+Every projection it wrote is rebuildable from `state.json`.

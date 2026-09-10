@@ -16,3 +16,11 @@ not secret values. Validation rejects duplicate agents, dangling managers,
 cycles, malformed budgets, and unknown adapter fields.
 
 Central provenance registration is required during pre-merge refresh after #79.
+
+## Rollback
+
+Revert the PR. Organisation metadata lives in `factory/agents.json` alongside
+the registry entries that predate it; reverting removes the extra fields and
+their validation, and no factory transition reads them. Nothing derives
+authority from this metadata — it is explicitly non-authoritative — so removing
+it cannot change who may do what.

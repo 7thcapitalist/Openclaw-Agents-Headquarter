@@ -11,3 +11,10 @@ continuable. Liveness never changes durable task state, and semantic continuatio
 attempts remain separate from process/factory recovery attempts.
 
 Central provenance registration is required during pre-merge refresh after #79.
+
+## Rollback
+
+Revert the PR. `liveness.json` files become inert data. Liveness is a projection
+beside canonical task state, never a substitute for it, so task status, gates
+and recovery behave exactly as before. Views that read liveness show `unknown`
+rather than failing.

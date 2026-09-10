@@ -13,3 +13,10 @@ remains canonical. The linter from issue #86 is injected at the seam after that
 dependency merges.
 
 Central provenance registration is required during pre-merge refresh after #79.
+
+## Rollback
+
+Revert the PR. The exporter only ever writes into an output directory an
+operator names, so reverting removes the command and leaves any previously
+exported package where it is — delete it by hand if it is no longer wanted.
+Nothing in HQ reads an exported package.

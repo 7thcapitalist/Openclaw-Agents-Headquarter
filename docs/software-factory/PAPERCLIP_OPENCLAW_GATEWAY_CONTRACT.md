@@ -14,3 +14,10 @@ credentials. Factory work remains behind `scripts/openclaw-factory.mjs` and
 registered workers remain behind `./run.sh`.
 
 Central provenance registration is required during pre-merge refresh after #79.
+
+## Rollback
+
+Revert the PR. This is a synthetic contract harness with no credentials, no
+network calls and no runtime wiring — reverting removes tests and a
+specification document and changes no behaviour. Connecting a real Gateway was
+never enabled by this change and still requires a founder Decision Card.

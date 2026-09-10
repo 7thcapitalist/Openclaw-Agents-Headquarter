@@ -13,3 +13,9 @@ and secret-shaped content. It performs no network access and writes nothing.
 
 Run `node scripts/lint-agent-company.mjs /path/to/package`. Central provenance
 registration is required during pre-merge refresh after #79.
+
+## Rollback
+
+Revert the PR. The linter is read-only: it opens a package directory and
+returns findings. Reverting removes `npm run lint:company` and the library, and
+changes nothing on disk.
