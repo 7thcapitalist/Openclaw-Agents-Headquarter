@@ -5,6 +5,7 @@ import { costLimitsPanel } from "/cost-limits.mjs";
 import { operationsPanel } from "/lib/operationsView.mjs";
 import { renderFounderInboxCard, renderFounderInboxEmpty } from "/lib/founderInbox.mjs";
 import { goalsPanel } from "/lib/goalsView.mjs";
+import { decisionsPanel } from "/lib/decisionsView.mjs";
 import { budgetPanel } from "/lib/budgetView.mjs";
 import { permissionsPanel } from "/lib/permissionsView.mjs";
 
@@ -236,6 +237,7 @@ import { permissionsPanel } from "/lib/permissionsView.mjs";
       apiJson("/api/founder/overnight").catch(() => ({ status: "unavailable", items: [] })),
       apiJson("/api/hq/operations").catch(() => null),
       apiJson("/api/hq/goals").catch(() => null),
+      apiJson("/api/hq/decisions").catch(() => null),
       apiJson("/api/hq/budgets").catch(() => null),
       apiJson("/api/hq/permissions").catch(() => null),
     ]);
@@ -409,6 +411,7 @@ import { permissionsPanel } from "/lib/permissionsView.mjs";
       </main><aside>
         <section class="founder-section"><div class="section-heading"><div><span class="eyebrow">Recently</span><h2>Completed</h2></div></div>${groups.recentlyCompleted.slice(0, 3).map((o) => founderObjectiveCard(o, true)).join("") || `<div class="quiet-state">No recent completions.</div>`}</section>
         ${goalsPanel(goals, { esc })}
+        ${decisionsPanel(decisions, { esc, fmtTime })}
         ${operationsPanel(operations, { esc, fmtTime })}
         ${budgetPanel(budgets, { esc })}
         ${permissionsPanel(permissions, { esc, fmtTime })}
