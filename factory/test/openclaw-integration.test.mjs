@@ -145,46 +145,82 @@ test("a GitHub publish failure is recorded on the task, never thrown", async () 
   assert.match(response.githubPublish.reason, /network unreachable/);
 });
 
+// Every loop below is BOUNDED. These three tests previously spun on `for (;;)`
+// waiting for a `failure-routed` event that #56 replaced with the recovery
+// lifecycle, so the suite stopped terminating instead of failing — which is why
+// nobody saw it for fifteen merged PRs. A contract change must produce a red
+// test, never a hang.
+const MAX_STEPS = 12;
+
+async function runUntilTerminal({ statePath, execute, maxSteps = MAX_STEPS }) {
+  const seen = [];
+  for (let step = 0; step < maxSteps; step += 1) {
+    const response = await runOneStage({ hqRoot, statePath, execute });
+    seen.push(response.status);
+    if (["blocked", "merge-ready"].includes(response.status)) return { response, steps: step + 1, seen };
+  }
+  throw new Error(`task never reached a terminal state in ${maxSteps} steps; saw: ${seen.join(" -> ")}`);
+}
+
 test("agent FAIL is retried safely and blocks at the attempt limit", async () => {
   const fixture = makeFixture();
   const execute = async ({ dispatch, cwd }) => {
     const evidence = writeEvidence(cwd, dispatch.stage);
     writeFileSync(dispatch.resultPath, JSON.stringify(resultFor(dispatch, [evidence], "fail")));
   };
-  assert.equal((await runOneStage({ hqRoot, statePath: fixture.statePath, execute })).status, "active");
-  assert.equal((await runOneStage({ hqRoot, statePath: fixture.statePath, execute })).status, "active");
-  const response = await runOneStage({ hqRoot, statePath: fixture.statePath, execute });
+  const { response } = await runUntilTerminal({ statePath: fixture.statePath, execute });
   assert.equal(response.status, "blocked");
+  // A blocked task stops handing out work.
   assert.equal(prepareDispatch({ hqRoot, statePath: fixture.statePath }).status, "blocked");
+  // It blocked because the bounded recovery budget was spent, not by looping.
+  const state = readState(fixture.statePath);
+  assert.equal(state.recovery.attempts.length, state.recovery.maxAttempts);
+  assert.ok(state.events.some((e) => e.type === "recovery-escalated"));
 });
 
-test("missing result is persisted and safely retried", async () => {
+test("missing result is persisted and safely retried as infrastructure", async () => {
   const fixture = makeFixture();
   const response = await runOneStage({ hqRoot, statePath: fixture.statePath, execute: async () => {} });
   assert.equal(response.status, "active");
   const state = readState(fixture.statePath);
   assert.equal(state.dispatches[0].status, "failed");
-  assert.equal(state.events.at(-1).type, "failure-routed");
   assert.equal(state.currentStage, "product");
+  // The stage failure is recorded and handed to recovery, not to the founder.
+  assert.equal(state.events.at(-1).type, "recovery-diagnosing");
+  // An agent that never wrote a result file is an environment problem. If this
+  // is ever classified as a project failure it would page the founder for a
+  // transient dispatch, which is the thing the factory must never do.
+  assert.equal(state.failures.at(-1).classification, "INFRASTRUCTURE_ERROR");
 });
 
-test("review failure routes back to builder and invalidates downstream evidence", async () => {
+// #56 put recovery in front of every `fail` outcome, so a reviewer FAIL is
+// diagnosed and repaired rather than routed straight back to the builder —
+// `routeStageFailure` only runs when recovery declines the failure. This test
+// pins the behaviour that actually ships today: the task terminates, it
+// terminates as blocked, and no downstream gate is credited on the way.
+//
+// NOTE for the founder: this means an ordinary "reviewer found a bug" spends
+// the whole 3-attempt recovery budget before escalating, instead of going back
+// to the builder to fix it. See the reliability handoff — it is a design
+// question, not a test bug, so it is documented rather than changed here.
+test("a persistently failing review terminates without crediting downstream gates", async () => {
   const fixture = makeFixture();
   const execute = async ({ dispatch, cwd }) => {
     const evidence = writeEvidence(cwd, dispatch.stage);
     writeFileSync(dispatch.resultPath, JSON.stringify(resultFor(dispatch, [evidence], dispatch.stage === "reviewer" ? "fail" : "pass")));
   };
-  for (;;) {
-    await runOneStage({ hqRoot, statePath: fixture.statePath, execute });
-    const state = readState(fixture.statePath);
-    if (state.events.at(-1)?.type === "failure-routed") {
-      assert.equal(state.currentStage, "builder");
-      assert.equal(state.stages.builder.status, "pending");
-      assert.equal(state.stages.reviewer.status, "pending");
-      assert.equal(state.events.at(-1).fromStage, "reviewer");
-      break;
-    }
+  const { response } = await runUntilTerminal({ statePath: fixture.statePath, execute });
+  assert.equal(response.status, "blocked");
+
+  const state = readState(fixture.statePath);
+  assert.equal(state.blocker.stage, "reviewer");
+  assert.equal(state.stages.reviewer.status, "fail");
+  // Work completed before the failure stands; nothing after it is credited.
+  assert.equal(state.stages.builder.status, "pass");
+  for (const stage of ["qa", "security", "release"]) {
+    assert.equal(state.stages[stage].status, "pending", `${stage} must not be credited`);
   }
+  assert.ok(state.events.some((e) => e.type === "recovery-escalated"));
 });
 
 function makeFixture() {

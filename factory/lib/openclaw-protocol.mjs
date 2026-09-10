@@ -47,6 +47,43 @@ export function prepareDispatch({ hqRoot, statePath, now = new Date().toISOStrin
   return dispatchResponse(dispatch, state);
 }
 
+// A dispatch names its worker twice. `actor` is the workflow's logical actor
+// (`codex`, `claude`, `openclaw`); `agentId` is the OpenClaw runtime agent that
+// actually ran it (`backend-builder`). The handoff asks the agent to echo the
+// logical actor, but an agent that knows its canonical id from AGENTS.md
+// reports that instead — `backend-builder` rather than `codex`. Both name the
+// same worker, so either is a truthful self-report. Accepting only the logical
+// one discards a valid deliverable and sends an already-finished stage back
+// into recovery, which is how one green builder result burned 11 attempts.
+export function actorMatchesDispatch(resultActor, dispatch) {
+  if (resultActor === dispatch.actor) return true;
+  return Boolean(dispatch.agentId) && resultActor === dispatch.agentId;
+}
+
+function dispatchIdentityMismatch(result, dispatch) {
+  const accepted = [dispatch.actor, dispatch.agentId].filter(Boolean).join("' or '");
+  return `Agent result stage/actor does not match the active dispatch. ` +
+    `Dispatch ${dispatch.id} is stage '${dispatch.stage}' by '${accepted}'; ` +
+    `the result claims stage '${result.stage}' by '${result.actor}'.`;
+}
+
+// Record which runtime agent a dispatch was routed to. The runner resolves this
+// only after the dispatch is already `ready`, so persist it separately rather
+// than widening prepareDispatch — it is additive and lets a later ingest (after
+// a restart, or through the concurrent fan-out) still recognise the identity
+// the agent will report.
+export function recordDispatchAgentId({ statePath, dispatchId, agentId }) {
+  if (!agentId) return null;
+  return withStateLock(statePath, () => {
+    const state = readState(statePath);
+    if (state.currentDispatch?.id !== dispatchId) return null;
+    if (state.currentDispatch.agentId === agentId) return state.currentDispatch.agentId;
+    state.currentDispatch.agentId = agentId;
+    writeState(statePath, state);
+    return agentId;
+  });
+}
+
 export function markDispatchRunning({ statePath, dispatchId, now = new Date().toISOString() }) {
   return withStateLock(statePath, () => {
     const state = readState(statePath);
@@ -67,14 +104,20 @@ export function ingestResult({ statePath, result, agentMeta = null, maxAttemptsP
   const state = readState(statePath);
   assertCurrentDispatch(state, result.dispatchId);
   const dispatch = state.currentDispatch;
-  if (result.stage !== dispatch.stage || result.actor !== dispatch.actor) {
-    throw new Error("Agent result stage/actor does not match the active dispatch.");
+  if (result.stage !== dispatch.stage || !actorMatchesDispatch(result.actor, dispatch)) {
+    throw new Error(dispatchIdentityMismatch(result, dispatch));
   }
+  // Past the identity gate, the workflow speaks only logical actors: the
+  // independence gates (builder != reviewer != qa) and every stage record
+  // compare against `assignments`. Normalise here so a runtime-id self-report
+  // never leaks into state and trip those comparisons downstream.
+  const actor = dispatch.actor;
   if (dispatch.kind?.startsWith("recovery-")) {
     const evidence = verifyEvidence(result.evidence, state.worktree);
     const next = recordRecoveryResult(state, {
       outcome: result.outcome === "decision-deferred" ? "pass" : result.outcome,
-      actor: result.actor, summary: result.summary, evidence, diagnosis: result.diagnosis || null, now,
+      actor, summary: result.summary, evidence, diagnosis: result.diagnosis || null,
+      maxAttemptsPerStage, now,
     });
     next.dispatches = [...(state.dispatches || []), { ...dispatch, status: "completed", outcome: result.outcome, summary: result.summary, completedAt: now, ...(agentMeta ? { usage: sanitizeUsage(agentMeta) } : {}) }];
     delete next.currentDispatch;
@@ -85,7 +128,7 @@ export function ingestResult({ statePath, result, agentMeta = null, maxAttemptsP
   const deferredDecision = result.outcome === "decision-deferred" ? result.decision : null;
   let next = completeStage(state, {
     stage: result.stage,
-    actor: result.actor,
+    actor,
     outcome: result.outcome === "decision-deferred" ? "pass" : result.outcome,
     summary: result.summary,
     evidence,
@@ -99,7 +142,7 @@ export function ingestResult({ statePath, result, agentMeta = null, maxAttemptsP
   next.dispatches = [...(state.dispatches || []), finished];
   delete next.currentDispatch;
   if (result.outcome === "fail") {
-    next = startRecovery(next, { failedStage: result.stage, actor: result.actor, error: result.summary, evidence, source: "project", maxRecoveryAttempts: state.recovery?.maxAttempts || 3, now });
+    next = startRecovery(next, { failedStage: result.stage, actor, error: result.summary, evidence, source: "project", maxRecoveryAttempts: state.recovery?.maxAttempts || 3, now });
     if (!next.recovery?.active && next.status === "blocked") next = routeStageFailure(next, { failedStage: result.stage, maxAttemptsPerStage, now });
   }
   writeState(statePath, next);
@@ -111,7 +154,7 @@ export function failDispatch({ statePath, dispatchId, error, maxAttemptsPerStage
   assertCurrentDispatch(state, dispatchId);
   const dispatch = state.currentDispatch;
   if (dispatch.kind?.startsWith("recovery-")) {
-    const next = recordRecoveryResult(state, { outcome: "fail", actor: dispatch.actor, summary: String(error), evidence: [], now });
+    const next = recordRecoveryResult(state, { outcome: "fail", actor: dispatch.actor, summary: String(error), evidence: [], maxAttemptsPerStage, now });
     next.dispatches = [...(state.dispatches || []), { ...dispatch, status: "failed", error: String(error), completedAt: now }];
     delete next.currentDispatch;
     writeState(statePath, next);
