@@ -4,7 +4,7 @@ import { setTimeout as delay } from "timers/promises";
 import { existsSync, mkdirSync, unlinkSync, writeFileSync, readFileSync } from "fs";
 import { basename, dirname, join } from "path";
 import { PROTOCOL_VERSION, computeDispatchPaths, failDispatch, ingestResult, markDispatchRunning, prepareDispatch, readResultFile, recordDispatchAgentId } from "./openclaw-protocol.mjs";
-import { parseAgentMeta } from "./hq/agent-meta.mjs";
+import { describeAgentCompletion, parseAgentMeta } from "./hq/agent-meta.mjs";
 import { readState, writeState } from "./task-workflow.mjs";
 import { writeHandoff } from "./handoff.mjs";
 import { publishMergeReadyTask } from "./hq/github-publish.mjs";
@@ -428,7 +428,17 @@ function writeMissingResultDiagnostic({ worktree, dispatchId, stage, actor, sess
   const out = redactTail(stdout);
   const err = redactTail(stderr);
   const cleanReason = reason ? sanitizeExcerpt(reason, { maxLength: 240 }).text : "";
-  const summary = `${stage} dispatch wrote no result file (session ${sessionKey}); redacted executor output captured at ${rel}.${cleanReason ? ` Reason: ${cleanReason}` : ""}`;
+  // An agent that ran, answered, and stopped without writing its result is a
+  // different failure from an agent that could not be reached: retrying the
+  // same route reproduces it exactly. Say so in the summary, because that
+  // string is what the failure classifier and the founder both read.
+  const finished = describeAgentCompletion({ stdout });
+  const route = [finished.provider, finished.model].filter(Boolean).join("/");
+  const summary = finished.completed
+    ? `${stage} agent completed its turn without writing a result file${route ? ` (${route})` : ""}; ` +
+      `the route ran but produced no gate artifact, so retrying it unchanged will repeat. ` +
+      `Session ${sessionKey}; redacted executor output captured at ${rel}.${cleanReason ? ` Reason: ${cleanReason}` : ""}`
+    : `${stage} dispatch wrote no result file (session ${sessionKey}); redacted executor output captured at ${rel}.${cleanReason ? ` Reason: ${cleanReason}` : ""}`;
   try {
     mkdirSync(join(worktree, "evidence"), { recursive: true });
     const lines = [
@@ -439,6 +449,8 @@ function writeMissingResultDiagnostic({ worktree, dispatchId, stage, actor, sess
       `- actor: ${actor}`,
       `- sessionKey: ${sessionKey}`,
       `- expectedResultFile: ${basename(resultPath)}`,
+      finished.completed ? `- agentCompletedTurn: yes (stopReason ${finished.stopReason || "unknown"})` : null,
+      finished.completed && route ? `- route: ${route}` : null,
       cleanReason ? `- reason: ${cleanReason}` : null,
       "",
       "## Executor stdout (redacted, truncated)",

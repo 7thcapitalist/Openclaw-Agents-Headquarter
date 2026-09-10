@@ -12,6 +12,8 @@
 //
 // Pure. Node builtins only.
 
+import { AGENT_STALL_RE } from "../failure-classification.mjs";
+
 const INFRA_FAIL_RE = new RegExp(
   [
     "did not write its result file",
@@ -77,6 +79,10 @@ export function classifyBlocker(blocker) {
   if (blocker.founderAction === true) return "decision";
   if (blocker.outcome === "fail") {
     const text = String(blocker.summary || blocker.detail || blocker.reason || "");
+    // Checked first: INFRA_FAIL_RE matches the bare phrase "result file", so an
+    // agent that ran and stopped without writing one would otherwise read as a
+    // transient hiccup and be swept forever on the route that just failed.
+    if (AGENT_STALL_RE.test(text)) return "hard";
     return INFRA_FAIL_RE.test(text) ? "infra" : "hard";
   }
   // Any other non-empty blocker outcome: treat as needing a look, not infra.
@@ -117,6 +123,9 @@ export function classifyObjectiveNodeBlocker(blocker) {
 // The machine classification recorded at escalation time is authoritative.
 export function isRetriableInfraBlocker(blocker) {
   if (!blocker) return false;
+  // The route ran and produced nothing. Re-running it unchanged reproduces it,
+  // so this is never safe for the sweep — whatever the wrapper says.
+  if (AGENT_STALL_RE.test(String(blocker.summary || "")) || AGENT_STALL_RE.test(String(blocker.why || ""))) return false;
   if (classifyBlocker(blocker) === "infra") return true;
   if (blocker.classification === "INFRASTRUCTURE_ERROR") return true;
   // Recovery escalation keeps the ORIGINAL error in `why` and prefixes
