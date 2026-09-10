@@ -245,7 +245,6 @@ import { permissionsPanel } from "/lib/permissionsView.mjs";
     objectivesById = Object.fromEntries(objectives.map((o) => [o.objectiveId, o]));
     const projects = state.projects || [];
     const agents = state.agents?.agents || [];
-    const decisions = state.decisions || [];
     const inbox = fc.inbox || [];
     const dismissedInbox = fc.dismissedInbox || [];
     // "Needs you" counts what the founder can actually act on. The translated
