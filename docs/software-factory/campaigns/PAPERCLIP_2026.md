@@ -47,3 +47,22 @@ base is insufficient.
 - No credentials, private OpenClaw state, or generated personal data enter Git.
 - No campaign PR may deploy, publish, purchase, delete production data, or
   broaden network exposure.
+
+## Native activation extension
+
+The founder explicitly authorized continued implementation on 2026-09-09
+without waiting for each predecessor merge. The activation extension remains
+native and credential-free and expires when issues #100–#104 are merged or
+cancelled.
+
+| Position | Issue | PR | Capability | Dependency |
+| --- | --- | --- | --- | --- |
+| 1 | #100 | #105 | Runtime audit, liveness, and cost projections | #91, #94, #95 |
+| 2 | #101 | #106 | Bounded wakeup worker under atomic leases | #92, #93 |
+| 3 | #102 | #107 | Sanitized operations API | #105, #106 |
+| 4 | #103 | #108 | Today operations panel | #107 |
+| 5 | #104 | this PR | End-to-end proof and runbook | #105–#108 |
+
+Every activation PR targets `main`; dependencies are refreshed and reverified
+immediately before founder merge. No live Paperclip service, scheduler, or
+Gateway credential is authorized by this extension.
