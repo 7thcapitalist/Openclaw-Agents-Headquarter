@@ -16,7 +16,7 @@ import { executeOpenClaw, runToTerminal } from "../openclaw-runner.mjs";
 import { publishAndRecord } from "../openclaw-runner.mjs";
 import { ensureBranchHasCommit } from "../hq/github-publish.mjs";
 import { assertAcyclic, buildNodesComplete, descendants, isDeadlocked, readyNodes, GATE_SATISFIED } from "./graph.mjs";
-import { classifyBlocker, classifyObjectiveNodeBlocker, founderApprovalSetupBlocker, isFounderApprovalSetupFailure } from "../hq/blocker-class.mjs";
+import { classifyBlocker, classifyObjectiveNodeBlocker, founderApprovalSetupBlocker, isFounderApprovalSetupFailure, isRetriableInfraBlocker } from "../hq/blocker-class.mjs";
 import { classifyFailure } from "../failure-classification.mjs";
 
 const INTEGRATION_SYNTHETIC_STAGES = new Set(["product", "architect", "builder"]);
@@ -27,6 +27,27 @@ class MergeConflict extends Error {
 
 const INFRA_FAILURE_RE = /could not start the cli|rate.?limit|cooldown|all models failed|did not write its result file|429|quota|usage limit|provider .* unavailable|ECONNREFUSED|ETIMEDOUT/i;
 const isInfrastructureFailure = (text) => INFRA_FAILURE_RE.test(String(text || ""));
+
+// True when the underlying failure is environmental, however it was surfaced.
+//
+// Recovery (#56) escalates with `outcome: "decision-required"` and a machine
+// `classification`, so the original `outcome === "fail"` guard below stopped
+// firing for anything that went through recovery. The `infra` tag was then
+// never set, `classifyObjectiveNodeBlocker()` fell through to "decision", and
+// the founder was paged for an exhausted seat or an agent that never started —
+// exactly what must never reach them. Trust the machine classification first
+// and fall back to prose only when there is none.
+const isInfraBlocker = (blocker) => blocker?.classification === "INFRASTRUCTURE_ERROR"
+  || isInfrastructureFailure(blocker?.summary);
+
+// Restate an infrastructure failure as the founder-legible, machine-taggable
+// blocker the objective views and the retry sweep both key off.
+const asInfraBlocker = (blocker) => ({
+  ...blocker,
+  outcome: "decision-required",
+  infra: true, // machine-readable; recovery classifies without prose matching
+  summary: `The ${blocker.stage || "agent"} for this task could not run (${firstLine(blocker.why || blocker.summary)}). Retry the objective later, or adjust model routing for that role.`,
+});
 const firstLine = (text) => String(text || "").split("\n").map((s) => s.trim()).filter(Boolean)[0] || "no detail";
 
 // ── objective-state.json IO (the file is the source of truth; every mutation is
@@ -192,14 +213,7 @@ async function runNode({ hqRoot, objectivePath, nodeId, execute, agentIds, maxAt
   // wrote a result) is not a code problem the builder can fix by retrying — it
   // needs the founder to retry later or adjust routing. Surface it as an
   // actionable decision, not a dead `failed`.
-  if (blocker.outcome === "fail" && isInfrastructureFailure(blocker.summary)) {
-    blocker = {
-      ...blocker,
-      outcome: "decision-required",
-      infra: true, // machine-readable; recovery classifies without prose matching
-      summary: `The ${blocker.stage || "agent"} for this task could not run (${firstLine(blocker.summary)}). Retry the objective later, or adjust model routing for that role.`,
-    };
-  }
+  if (isInfraBlocker(blocker)) blocker = asInfraBlocker(blocker);
   const status = blocker.outcome === "decision-required" ? "blocked" : "failed";
   patchNode(objectivePath, nodeId, { status, finishedAt: new Date().toISOString(), attempts, blocker },
     { type: `node-${status}`, detail: blocker.summary });
@@ -294,14 +308,7 @@ async function runIntegration({ hqRoot, objectivePath, execute, agentIds, maxAtt
 
   const state = readState(statePath);
   let blocker = resp.status === "merge-ready" ? null : (state.blocker || null);
-  if (blocker?.outcome === "fail" && isInfrastructureFailure(blocker.summary)) {
-    blocker = {
-      ...blocker,
-      outcome: "decision-required",
-      infra: true,
-      summary: `The ${blocker.stage || "agent"} for this task could not run (${firstLine(blocker.summary)}). Retry the objective later, or adjust model routing for that role.`,
-    };
-  }
+  if (blocker && isInfraBlocker(blocker)) blocker = asInfraBlocker(blocker);
   patchNode(objectivePath, integ.id, {
     mergeLog,
     status: resp.status === "merge-ready" ? GATE_SATISFIED : "blocked",
@@ -437,7 +444,7 @@ export function resumeObjectiveNodes({ objectivePath, nodeIds, now = () => new D
       }
       // The task engine is authoritative; a stale presentation-level infra tag
       // cannot override a newer real decision or substantive failure.
-      if (state.status === "blocked" && classifyBlocker(state.blocker) !== "infra") {
+      if (state.status === "blocked" && !isRetriableInfraBlocker(state.blocker)) {
         skipped.push({ id: nodeId, reason: "task requires a decision or substantive repair" }); continue;
       }
       if (state.status === "active") {
