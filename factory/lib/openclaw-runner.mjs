@@ -3,7 +3,7 @@ import { promisify } from "util";
 import { setTimeout as delay } from "timers/promises";
 import { existsSync, mkdirSync, unlinkSync, writeFileSync, readFileSync } from "fs";
 import { basename, dirname, join } from "path";
-import { PROTOCOL_VERSION, computeDispatchPaths, failDispatch, ingestResult, markDispatchRunning, prepareDispatch, readResultFile } from "./openclaw-protocol.mjs";
+import { PROTOCOL_VERSION, computeDispatchPaths, failDispatch, ingestResult, markDispatchRunning, prepareDispatch, readResultFile, recordDispatchAgentId } from "./openclaw-protocol.mjs";
 import { parseAgentMeta } from "./hq/agent-meta.mjs";
 import { readState, writeState } from "./task-workflow.mjs";
 import { writeHandoff } from "./handoff.mjs";
@@ -99,6 +99,9 @@ export async function runOneStage({ hqRoot, statePath, agentIds = {}, maxAttempt
     if (["merge-ready", "blocked"].includes(response.status)) writeCompletionReport({ statePath });
     return response;
   }
+  // The agent will self-report either the logical actor or this runtime id.
+  // Persist the routing decision so ingest recognises both.
+  recordDispatchAgentId({ statePath, dispatchId: prepared.dispatchId, agentId });
   const sessionKey = `agent:${agentId}:factory-${prepared.dispatchId}`;
   let response;
   const startedAt = Date.now();

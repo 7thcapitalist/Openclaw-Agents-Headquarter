@@ -29,6 +29,7 @@ export function writeHandoff({ hqRoot, statePath, state, companyState = null, re
   const resultInstructions = resultPath
     ? `\n## Machine result contract\n\nBefore ending, write exactly one JSON object to:\n\n${resultPath}\n\n` +
       `Schema: {"version":1,"dispatchId":"${dispatchId}","stage":"${stage}","actor":"${resultActor}","outcome":"pass|fail|decision-required|decision-deferred","summary":"...","evidence":["relative/path"],"decision":{"question":"...","options":["A ...","B ...","Other"]}}\n\n` +
+    `Copy "dispatchId", "stage" and "actor" verbatim from the schema above. "actor" is this dispatch's routing token, not your agent name — write "${resultActor}" even if you know yourself by another id.\n\n` +
     "Evidence paths must be relative, non-empty files inside the assigned worktree, written under `evidence/` (e.g. `evidence/qa-test-output.log`). `evidence/` is git-ignored — it holds your gate proof, not product files, so never place code, tests, or docs there. Do not report PASS unless the evidence exists. You must write this result file even when returning FAIL or decision-required.\n"
     : "";
   let contextBlock;
@@ -58,7 +59,7 @@ export function writeHandoff({ hqRoot, statePath, state, companyState = null, re
       `- Blocks dispatch: ${advisory.blocksDispatch === true ? "yes" : "no"}\n\n`
     : "";
   const body = `# Factory handoff: ${state.task.id} -> ${stage}\n\n` +
-    `Assigned harness: ${state.assignments[stage]}\n\nRepository: ${state.repo}\nWorktree: ${state.worktree}\nBranch: ${state.branch}\nIssue: ${state.task.issue}\n\n` +
+    `Assigned harness: ${state.assignments[stage]} (this is also your "actor" routing token in the result contract below)\n\nRepository: ${state.repo}\nWorktree: ${state.worktree}\nBranch: ${state.branch}\nIssue: ${state.task.issue}\n\n` +
     contextBlock +
     advisoryBlock +
     `## Outcome\n\n${state.task.outcome}\n\n## Acceptance criteria\n\n${state.task.acceptanceCriteria.map((x) => `- ${x}`).join("\n")}\n\n` +
