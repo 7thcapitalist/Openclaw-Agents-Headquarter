@@ -299,11 +299,6 @@
       "notes": "Connects Paperclip-derived dependency wakeups and graph liveness to real HQ objective runs as a best-effort projection that cannot change a canonical outcome."
     },
     {
-      "localPath": "factory/test/graph-observer.test.mjs",
-      "sourceId": "paperclip",
-      "sourcePath": "server/src/services/issue-dependency-wakeups.test.ts",
-      "classification": "inspired",
-      "notes": "Tests idempotent enqueue, retry identity, invalid graphs, and degraded storage.",
       "localPath": "factory/goals.json",
       "sourceId": "paperclip",
       "sourcePath": "packages/db/src/schema/goals.ts",
@@ -323,6 +318,55 @@
       "sourcePath": "ui/src/pages/Goals.tsx",
       "classification": "inspired",
       "notes": "Tests hierarchy rendering, escaping, accessibility labelling, and honest empty/degraded states."
+    },
+    {
+      "localPath": "factory/lib/hq/permissions.mjs",
+      "sourceId": "paperclip",
+      "sourcePath": "server/src/services/agent-permissions.ts",
+      "classification": "adapted",
+      "notes": "Adapts Paperclip fail-closed agent permissions into a strictly subtractive, deny-by-default capability gate whose vocabulary excludes merge, deploy, secret, billing and publishing authority."
+    },
+    {
+      "localPath": "factory/lib/hq/permissions-snapshot.mjs",
+      "sourceId": "paperclip",
+      "sourcePath": "server/src/services/authorization.ts",
+      "classification": "inspired",
+      "notes": "Projects permission mode, grants and audited denials into a bounded read-only operator view."
+    },
+    {
+      "localPath": "factory/permissions.example.json",
+      "sourceId": "paperclip",
+      "sourcePath": "server/src/services/agent-permissions.ts",
+      "classification": "inspired",
+      "notes": "Example grant table showing the report-first enablement path; the real file is operator-supplied."
+    },
+    {
+      "localPath": "dashboard/backend/public/lib/permissionsView.mjs",
+      "sourceId": "paperclip",
+      "sourcePath": "ui/src/pages/Agents.tsx",
+      "classification": "inspired",
+      "notes": "Adapts Paperclip permission presentation into a read-only founder panel that distinguishes off, observing, enforcing and broken."
+    },
+    {
+      "localPath": "factory/test/permissions.test.mjs",
+      "sourceId": "paperclip",
+      "sourcePath": "server/src/services/agent-permissions.ts",
+      "classification": "inspired",
+      "notes": "Tests founder supremacy, forbidden-capability rejection, scope containment, fail-closed defaults, and audited denials."
+    },
+    {
+      "localPath": "factory/test/permissions-panel.test.mjs",
+      "sourceId": "paperclip",
+      "sourcePath": "ui/src/pages/Agents.tsx",
+      "classification": "inspired",
+      "notes": "Tests mode presentation, broken-registry handling, escaping, and denial collection from both audit logs."
+    },
+    {
+      "localPath": "docs/software-factory/PAPERCLIP_SCOPED_PERMISSIONS.md",
+      "sourceId": "paperclip",
+      "sourcePath": "server/src/services/agent-permissions.ts",
+      "classification": "reference",
+      "notes": "Documents the pinned source, the subtractive-only boundary, and the report-then-enforce rollout."
     }
   ]
 }

@@ -1497,3 +1497,4 @@ ul.timeline time { color: var(--muted); margin-right: 6px; }
   .fi-actions .btn { flex: 1 1 auto; }
   .fi-fact { grid-template-columns: 1fr; gap: .2rem; }
 }
+.permission-blurb{margin:0 0 .8rem;color:var(--muted);font-size:.75rem}.permission-warnings{margin:.6rem 0 0;padding-left:1.1rem;color:var(--muted);font-size:.72rem}.permissions-panel .status-dot{background:var(--amber)}
