@@ -92,3 +92,45 @@ function findUsageEnvelope(value, depth = 0) {
   }
   return null;
 }
+
+// Did the agent actually run and finish its turn, and simply not write the
+// result file it was asked for?
+//
+// This is the difference between "the model could not be reached" and "the
+// model answered, said it would start, and stopped" — which look identical
+// from the outside (both leave no result file) but need opposite handling.
+// The first is worth retrying as-is; the second will repeat forever on the
+// same route, and the auto-retry sweep only revives infra-class blockers, so
+// mislabelling the second as infra spends the task's revival budget on a
+// dispatch that cannot succeed.
+//
+// Deliberately conservative: only an explicit success signal counts. Anything
+// unrecognised returns completed:false and keeps the previous behaviour.
+export function describeAgentCompletion(source) {
+  const envelope = parseEnvelope(source);
+  const unknown = { completed: false, provider: null, model: null, stopReason: null };
+  if (!envelope) return unknown;
+  if (envelope.ok === false || envelope.status === "error" || envelope.status === "timeout") return unknown;
+
+  const result = asObject(envelope.result) || envelope;
+  const trace = asObject(result.executionTrace) || asObject(envelope.executionTrace);
+  const completion = asObject(result.completion) || asObject(envelope.completion);
+  const stopReason = pickString(
+    result.stopReason,
+    envelope.stopReason,
+    completion?.stopReason,
+    completion?.finishReason,
+  );
+  const attempts = Array.isArray(trace?.attempts) ? trace.attempts : [];
+  const succeeded = attempts.some((attempt) => asObject(attempt)?.result === "success");
+
+  // A turn that stopped normally, or a provider attempt that reported success.
+  if (stopReason !== "stop" && !succeeded) return unknown;
+
+  return {
+    completed: true,
+    provider: pickString(trace?.winnerProvider, result.provider, envelope.provider),
+    model: pickString(trace?.winnerModel, result.model, envelope.model),
+    stopReason,
+  };
+}
