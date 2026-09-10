@@ -18,6 +18,7 @@
 // with a corruption report, for operators who want it.
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { basename, dirname, extname, join } from "node:path";
+import { assertSupportedVersion } from "./durable-version.mjs";
 import { randomUUID } from "node:crypto";
 import { CorruptStateError, StaleRevisionError, importLegacyState, mutateEntity, openStateDb, peekEntity, quarantineRow } from "./sqlite-state.mjs";
 
@@ -70,7 +71,11 @@ function writeJsonExport(jsonPath, state) {
 // (importing a legacy file on first touch). Same return shape as the old
 // plain `JSON.parse(readFileSync(jsonPath))` — just sourced from the db when
 // one exists, so every existing reader keeps working unmodified.
-export function readTransactionalState(jsonPath) {
+// `format` distinguishes the two canonical shapes that share this store —
+// task state and objective state — so a refusal names the right thing. Both
+// are version 1 today; the check exists so a version 2 written by a newer HQ
+// is refused rather than parsed into a confidently wrong projection.
+export function readTransactionalState(jsonPath, { format = "task-state" } = {}) {
   const handle = openStateDb(dbPathFor(jsonPath));
   const row = ensureImported(handle, jsonPath);
   if (!row) {
@@ -83,6 +88,7 @@ export function readTransactionalState(jsonPath) {
     error.path = jsonPath;
     throw error;
   }
+  assertSupportedVersion(row.state?.version, { format, path: jsonPath });
   return row.state;
 }
 

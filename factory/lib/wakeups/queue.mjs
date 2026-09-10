@@ -2,6 +2,7 @@
 // 6abeb67334348dcb6fde2d591a27ffc7efc7118d (MIT).
 import { randomUUID } from "crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
+import { assertSupportedVersion } from "../store/durable-version.mjs";
 import { dirname, resolve } from "path";
 
 export const WAKEUP_SOURCES = Object.freeze(["schedule", "assignment", "mention", "dependency", "recovery", "manual"]);
@@ -46,7 +47,8 @@ export function finishWakeup(path, { wakeupId, actorId, outcome, error = null, n
 export function readWakeupQueue(path) {
   if (!existsSync(path)) return { version: 1, items: [] };
   const state = JSON.parse(readFileSync(path, "utf8"));
-  if (state.version !== 1 || !Array.isArray(state.items)) throw new Error("Invalid wakeup queue");
+  assertSupportedVersion(state?.version, { format: "wakeup-queue", path });
+  if (!Array.isArray(state.items)) throw new Error("Invalid wakeup queue");
   state.items.forEach(validateRequest); return state;
 }
 
