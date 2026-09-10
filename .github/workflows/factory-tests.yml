@@ -35,11 +35,17 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
+          cache: npm
+          cache-dependency-path: dashboard/backend/package-lock.json
 
-      # No install step on purpose: the factory suite and both check scripts
-      # import only Node builtins, and the repository root declares no
-      # dependencies. Adding `npm ci` here would fail — there is no root
-      # lockfile — and would buy nothing.
+      # The repository root declares no dependencies and has no lockfile, so
+      # there is nothing to install there. `dashboard/backend` does, and its
+      # absence is not harmless: the CSRF, CSP, session and stored-XSS tests
+      # SKIP themselves when those deps are missing rather than fail, so
+      # without this step CI reported green while 14 security tests never ran.
+      - name: Install dashboard dependencies
+        run: npm ci --prefix dashboard/backend --no-audit --no-fund
+
       - name: Verify third-party provenance
         run: npm run check:provenance
 
