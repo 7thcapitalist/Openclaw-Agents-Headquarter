@@ -1,8 +1,9 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "fs";
-import { dirname, join, resolve } from "path";
+import { existsSync, readFileSync, statSync } from "fs";
+import { join, resolve } from "path";
 import { createHash, randomUUID, sign as signPayload, verify as verifySignature } from "crypto";
 import { classifyBlocker } from "./hq/blocker-class.mjs";
 import { classifyFailure, isRecoverableFailure, recoveryStrategy, repairTargetFor } from "./failure-classification.mjs";
+import { mutateTransactionalState, readTransactionalState } from "./store/transactional-json.mjs";
 
 export const STAGES = [
   "product",
@@ -493,14 +494,24 @@ export function taskStatePath(stateRoot, taskId) {
 }
 
 export function readState(path) {
-  return JSON.parse(readFileSync(path, "utf8"));
+  return readTransactionalState(path);
 }
 
+// Every caller that still does its own external read -> mutate -> writeState
+// (rather than going through mutateTransactionalState directly) gets routed
+// through the same SQLite authority here, unconditionally. This does not by
+// itself add compare-and-swap protection for those external callers (the
+// read and the decision to write still happen outside any one transaction,
+// same as before), but it closes a worse bug: once any code path has
+// touched a given state.json transactionally, that entity has a live SQLite
+// row, and readTransactionalState()/ensureImported() only auto-imports the
+// legacy file when NO row exists yet. A caller that kept writing the plain
+// JSON file directly here would therefore be silently ignored on the very
+// next transactional read — a second, competing "source of truth" exactly
+// like the one this store exists to remove. Routing every writeState() call
+// through the same mutateTransactionalState() keeps there being exactly one.
 export function writeState(path, state) {
-  mkdirSync(dirname(path), { recursive: true });
-  const temp = `${path}.tmp-${process.pid}`;
-  writeFileSync(temp, `${JSON.stringify(state, null, 2)}\n`, "utf8");
-  renameSync(temp, path);
+  mutateTransactionalState(path, { commandId: `writeState:${randomUUID()}`, mutate: () => state });
 }
 
 export function verifyEvidence(paths, worktree) {
