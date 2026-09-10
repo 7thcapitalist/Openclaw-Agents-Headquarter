@@ -2,7 +2,16 @@ import { createHash, timingSafeEqual } from "crypto";
 import dotenv from "dotenv";
 import express from "express";
 import session from "express-session";
-import { marked } from "marked";
+import { renderUntrustedMarkdown } from "./lib/safeMarkdown.mjs";
+import {
+  LoginThrottle,
+  clientKey,
+  csrfProtection,
+  issueCsrfToken,
+  regenerateSession,
+  securityHeaders,
+} from "./lib/httpSecurity.mjs";
+import { auditFromRequest } from "./lib/securityAudit.mjs";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
@@ -168,6 +177,9 @@ setInterval(() => sessionStore.pruneExpired(), 60 * 60 * 1000).unref();
 const app = express();
 if (TRUST_PROXY) app.set("trust proxy", 1);
 
+// Security headers go on every response, including static assets and errors.
+app.use(securityHeaders());
+
 app.use(express.json({ limit: "2mb" }));
 app.use(
   session({
@@ -184,6 +196,25 @@ app.use(
     },
   })
 );
+
+// Every mutating request must prove it came from Headquarters itself.
+// `/api/auth/login` is exempt: the browser has no session-bound token yet, and
+// that endpoint is protected by throttling plus the password instead.
+app.use(
+  csrfProtection({
+    allowedOrigins: (process.env.DASHBOARD_ALLOWED_ORIGINS || "")
+      .split(",")
+      .map((v) => v.trim())
+      .filter(Boolean),
+    exemptPaths: ["/api/auth/login"],
+  })
+);
+
+const loginThrottle = new LoginThrottle({
+  maxAttempts: Number(process.env.DASHBOARD_LOGIN_MAX_ATTEMPTS || 5),
+  windowMs: Number(process.env.DASHBOARD_LOGIN_WINDOW_MS || 15 * 60 * 1000),
+});
+setInterval(() => loginThrottle.prune(), 10 * 60 * 1000).unref();
 
 function requireAuth(req, res, next) {
   if (req.session && req.session.authenticated) return next();
@@ -227,30 +258,69 @@ function loginGate(req, res, next) {
 
 app.use(loginGate);
 
-app.post("/api/auth/login", (req, res) => {
+app.post("/api/auth/login", async (req, res) => {
   const body = req.body || {};
   const password = typeof body.password === "string" ? body.password : "";
+  const key = clientKey(req);
+
   if (!PASSWORD) {
     return res.status(503).json({ error: "Password not configured on server" });
   }
+
+  const gate = loginThrottle.check(key);
+  if (!gate.allowed) {
+    auditFromRequest(ROOT, req, { action: "login.throttled", outcome: "denied", reason: gate.reason });
+    res.setHeader("Retry-After", String(gate.retryAfterSeconds));
+    // Deliberately the same shape as a wrong password, plus the wait, so the
+    // response does not reveal whether the guess itself was close.
+    return res.status(429).json({
+      error: "Too many attempts. Try again later.",
+      retryAfterSeconds: gate.retryAfterSeconds,
+    });
+  }
+
   if (!passOk(password, PASSWORD)) {
+    const state = loginThrottle.recordFailure(key);
+    auditFromRequest(ROOT, req, {
+      action: "login.failed",
+      outcome: "denied",
+      details: { failures: state.failures },
+    });
     return res.status(401).json({ error: "Invalid password" });
   }
+
+  loginThrottle.recordSuccess(key);
+  // Session fixation: a session id fixed by an attacker before login must not
+  // be the id that ends up authenticated.
+  try {
+    await regenerateSession(req);
+  } catch (error) {
+    auditFromRequest(ROOT, req, { action: "login.error", outcome: "error", reason: String(error.message || error) });
+    return res.status(500).json({ error: "Could not establish a session." });
+  }
   req.session.authenticated = true;
+  req.session.loggedInAt = new Date().toISOString();
+  const csrfToken = issueCsrfToken(req.session);
   req.session.touch();
-  return res.json({ ok: true });
+  auditFromRequest(ROOT, req, { action: "login.succeeded", outcome: "ok" });
+  return res.json({ ok: true, csrfToken });
 });
 
 app.post("/api/auth/logout", (req, res) => {
+  auditFromRequest(ROOT, req, { action: "logout", outcome: "ok" });
   req.session.destroy(() => {
     res.json({ ok: true });
   });
 });
 
-marked.setOptions({ gfm: true, breaks: true });
-
 app.get("/api/auth/me", (req, res) => {
-  res.json({ authenticated: !!(req.session && req.session.authenticated) });
+  const authenticated = !!(req.session && req.session.authenticated);
+  // The SPA reads its CSRF token from here on boot. Only an authenticated
+  // session gets one — an unauthenticated caller learns nothing.
+  res.json({
+    authenticated,
+    csrfToken: authenticated ? issueCsrfToken(req.session) : null,
+  });
 });
 
 app.get("/api/founder/overview", (_req, res) => {
@@ -718,8 +788,17 @@ app.post("/api/founder/approval-key", (req, res) => {
   try {
     const { publicKeyPem, rotationSignature } = req.body || {};
     if (!publicKeyPem) return res.status(400).json({ error: "publicKeyPem is required." });
-    res.json(enrollFounderKey(ROOT, { publicKeyPem, rotationSignature }));
-  } catch (e) { approvalError(res, e); }
+    const out = enrollFounderKey(ROOT, { publicKeyPem, rotationSignature });
+    auditFromRequest(ROOT, req, {
+      action: out.rotated ? "approval-key.rotated" : "approval-key.enrolled",
+      outcome: "ok",
+      details: { fingerprint: out.fingerprint, previousSource: out.previousSource },
+    });
+    res.json(out);
+  } catch (e) {
+    auditFromRequest(ROOT, req, { action: "approval-key.enroll", outcome: "denied", reason: String(e.message || e) });
+    approvalError(res, e);
+  }
 });
 
 // `statePath` is the absolute task-state path the Founder Inbox already carries
@@ -737,21 +816,51 @@ app.post("/api/founder/approvals/:taskId/submit", async (req, res) => {
     if (!APPROVAL_ID.test(req.params.taskId)) return res.status(400).json({ error: "Invalid task id." });
     const out = await submitFounderApproval(ROOT, ROOT, req.params.taskId, { assertion: req.body?.assertion, statePath: req.body?.statePath },
       { runObjective: approvalRunObjective, runTask: approvalRunTask });
+    // The assertion and its signature are deliberately NOT recorded here; the
+    // audit trail attributes the authorization, it does not copy the credential.
+    auditFromRequest(ROOT, req, {
+      action: "approval.granted",
+      outcome: "ok",
+      taskId: req.params.taskId,
+      details: { status: out.status, currentStage: out.currentStage, resume: out.resume?.kind },
+    });
     res.json(out);
-  } catch (e) { approvalError(res, e); }
+  } catch (e) {
+    auditFromRequest(ROOT, req, {
+      action: "approval.rejected-by-gate",
+      outcome: "denied",
+      taskId: req.params.taskId,
+      reason: String(e.message || e),
+    });
+    approvalError(res, e);
+  }
 });
 
 app.post("/api/founder/approvals/:taskId/reject", (req, res) => {
   try {
     if (!APPROVAL_ID.test(req.params.taskId)) return res.status(400).json({ error: "Invalid task id." });
-    res.json(rejectFounderApproval(ROOT, req.params.taskId, { reason: req.body?.reason || "", statePath: req.body?.statePath }));
+    const out = rejectFounderApproval(ROOT, req.params.taskId, { reason: req.body?.reason || "", statePath: req.body?.statePath });
+    auditFromRequest(ROOT, req, {
+      action: "approval.declined",
+      outcome: "ok",
+      taskId: req.params.taskId,
+      reason: req.body?.reason || null,
+    });
+    res.json(out);
   } catch (e) { approvalError(res, e); }
 });
 
 app.post("/api/founder/approvals/:taskId/rekey", (req, res) => {
   try {
     if (!APPROVAL_ID.test(req.params.taskId)) return res.status(400).json({ error: "Invalid task id." });
-    res.json(rekeyPendingApproval(ROOT, req.params.taskId, { statePath: req.body?.statePath }));
+    const out = rekeyPendingApproval(ROOT, req.params.taskId, { statePath: req.body?.statePath });
+    auditFromRequest(ROOT, req, {
+      action: "approval.rekeyed",
+      outcome: "ok",
+      taskId: req.params.taskId,
+      details: { from: out.from, to: out.to, rekeyed: out.rekeyed },
+    });
+    res.json(out);
   } catch (e) { approvalError(res, e); }
 });
 
@@ -832,7 +941,7 @@ app.get("/api/founder/tasks/:id/report", (req, res) => {
     if (!/^[a-z0-9][a-z0-9-]*$/.test(req.params.id)) return res.status(400).json({ error: "Invalid task id." });
     const report = readTaskCompletionReport(ROOT, req.params.id);
     if (!report) return res.status(404).json({ error: "No such factory task." });
-    res.json({ ...report, html: report.markdown ? marked.parse(report.markdown) : null });
+    res.json({ ...report, html: report.markdown ? renderUntrustedMarkdown(report.markdown) : null });
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
   }
@@ -868,6 +977,12 @@ app.post("/api/founder/tasks/:id/retry", (req, res) => {
     resumed.autoRetries = state.autoRetries || 0; // manual retries don't consume the auto budget
     resumed.events.push({ at, type: "manual-retry", stage: resumed.currentStage, actor: "founder" });
     writeTaskState(statePath, resumed);
+    auditFromRequest(ROOT, req, {
+      action: "task.retried",
+      outcome: "ok",
+      taskId: req.params.id,
+      details: { stage: resumed.currentStage },
+    });
   } catch (e) {
     return res.status(400).json({ error: String(e.message || e) });
   }
@@ -888,7 +1003,7 @@ app.get("/api/founder/objectives/:id/report", (req, res) => {
     if (!/^obj-[a-z0-9-]+$/i.test(req.params.id)) return res.status(400).json({ error: "Invalid objective id." });
     const report = readObjectiveReport(ROOT, req.params.id);
     if (!report) return res.status(404).json({ error: "No such objective." });
-    res.json({ ...report, html: report.markdown ? marked.parse(report.markdown) : null });
+    res.json({ ...report, html: report.markdown ? renderUntrustedMarkdown(report.markdown) : null });
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
   }
@@ -1314,7 +1429,7 @@ app.get("/api/runs/:runId", (req, res) => {
         try {
           const md = readFileSync(p, "utf8").slice(0, 400000);
           outputMarkdown = md;
-          if (p.endsWith(".md")) outputHtml = marked.parse(md);
+          if (p.endsWith(".md")) outputHtml = renderUntrustedMarkdown(md);
         } catch {
           /* ignore */
         }
@@ -1387,7 +1502,7 @@ app.get("/api/agents/:project/:id/markdown", (req, res) => {
     const md = readFileSync(p, "utf8");
     res.json({
       markdown: md,
-      html: marked.parse(md),
+      html: renderUntrustedMarkdown(md),
       fileName: base,
     });
   } catch (e) {
@@ -1516,6 +1631,11 @@ app.post("/api/admin/agents/:project/:id/pm2/:action", async (req, res) => {
     const name = pm2Name(req.params.project, req.params.id);
     const runSh = join(dir, "run.sh");
     if (!existsSync(runSh)) return res.status(404).json({ error: "Missing run.sh" });
+    auditFromRequest(ROOT, req, {
+      action: `process.${action}`,
+      outcome: "ok",
+      details: { project: req.params.project, agent: req.params.id },
+    });
 
     if (action === "start") {
       try {
@@ -1558,6 +1678,11 @@ app.patch("/api/admin/agents/:project/:id/config", (req, res) => {
     registerAgent(ROOT, req.params.project, req.params.id, db);
     const key = agentKey(req.params.project, req.params.id);
     logEvent(db, key, "config_update", "agent.config.json saved from dashboard");
+    auditFromRequest(ROOT, req, {
+      action: "config.updated",
+      outcome: "ok",
+      details: { project: req.params.project, agent: req.params.id, keys: Object.keys(body.config).slice(0, 40) },
+    });
     res.json({ ok: true });
   } catch (e) {
     res.status(400).json({ error: String(e.message || e) });

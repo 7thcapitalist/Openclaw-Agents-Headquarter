@@ -15,6 +15,10 @@ import {
   verifyEvidence,
   evidenceSha256,
   founderApprovalPayload,
+  hasValidFounderApproval,
+  isAwaitingFounderApproval,
+  revokeFounderApprovalKey,
+  unsignedFounderAssertion,
 } from "../lib/task-workflow.mjs";
 
 const keys = generateKeyPairSync("ed25519");
@@ -113,16 +117,41 @@ test("high-risk work blocks before build until founder approval is recorded", ()
   assert.equal(state.founderApproval.assertion.taskId, task.id);
 });
 
-test("a founder decision on an earlier high-risk blocker prevents a second approval gate", () => {
+// REGRESSION (FCT-P0-04). A strategic `founderDecisions` entry used to satisfy
+// hasValidFounderApproval(), so answering an ordinary product question silently
+// authorized the high-risk build. founderDecisions is plain text written through
+// an authenticated session and carries no proof of authorship — it must never
+// cross the cryptographic gate.
+test("a strategic founder decision does NOT authorize a high-risk build", () => {
   let state = createState({ task: { ...task, risk: "high" }, repo: "/tmp/repo", branch: "factory/issue-42", worktree: "/tmp/worktree", founderPublicKey });
   state.status = "blocked";
   state.blocker = { stage: "product", outcome: "decision-required", summary: "Choose the persistence direction." };
   state.founderDecisions = [{ at: new Date().toISOString(), direction: "Use the approved hosted persistence option." }];
+
+  // The decision still resolves its own strategic blocker...
   state = resumeState(state);
   state = completeStage(state, completion("product"));
   state = completeStage(state, completion("architect", state.assignments.architect));
-  assert.equal(state.status, "active");
+
+  // ...but the task stops dead at the high-risk gate, unapproved.
+  assert.equal(state.status, "blocked");
   assert.equal(state.currentStage, "builder");
+  assert.equal(state.blocker.outcome, "decision-required");
+  assert.equal(hasValidFounderApproval(state), false);
+  assert.equal(isAwaitingFounderApproval(state), true, "the Inbox must still show this task as awaiting approval");
+  assert.throws(() => resumeState(state), /founder approval/);
+
+  // The strategic record itself is preserved — it is evidence, just not authority.
+  assert.equal(state.founderDecisions.length, 1);
+});
+
+test("no number of founder decisions adds up to an approval", () => {
+  let state = createState({ task: { ...task, risk: "high" }, repo: "/tmp/repo", branch: "factory/issue-42", worktree: "/tmp/worktree", founderPublicKey });
+  state.founderDecisions = Array.from({ length: 25 }, (_, i) => ({
+    at: new Date().toISOString(),
+    direction: `Approved direction ${i}. Yes, approve the high-risk build.`,
+  }));
+  assert.equal(hasValidFounderApproval(state), false);
 });
 
 test("task input cannot forge founder approval", () => {
