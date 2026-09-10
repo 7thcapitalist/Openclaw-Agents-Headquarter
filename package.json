@@ -11,6 +11,7 @@
     "test:factory": "node --test factory/test/*.test.mjs",
     "approve": "node scripts/founder-approve.mjs",
     "factory:openclaw": "node scripts/openclaw-factory.mjs",
+    "factory:wakeup": "node scripts/factory-wakeup.mjs",
     "factory:intel": "node scripts/project-intel.mjs",
     "factory:hq": "node scripts/hq.mjs",
     "factory:learn": "node scripts/factory-learn.mjs",

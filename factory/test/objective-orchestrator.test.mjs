@@ -134,7 +134,14 @@ test("runObjective: a failed node blocks its dependents but not its siblings", a
 
   const res = await runObjective({ hqRoot: HQ, objectivePath, maxConcurrent: 3, stateRoot, execute: alwaysFailA, publish: () => ({ published: false }) });
   const obj = readObjState(objectivePath);
-  assert.equal(obj.nodes[`${obj.objectiveId}-a`].status, "failed");
+  // Since #56 a project failure is diagnosed by recovery and, once the bounded
+  // budget is spent, escalated as a founder decision — so the node settles
+  // `blocked`, not `failed`. What this test guards is the dependency fan-out,
+  // which is unchanged: A's failure must stop C and leave B alone.
+  const nodeA = obj.nodes[`${obj.objectiveId}-a`];
+  assert.equal(nodeA.status, "blocked");
+  assert.equal(nodeA.blocker.outcome, "decision-required");
+  assert.notEqual(nodeA.blocker.infra, true, "a genuine project failure is not tagged infrastructure");
   assert.equal(obj.nodes[`${obj.objectiveId}-c`].status, "blocked-by-dep", "C blocked because it depends on A");
   assert.equal(obj.nodes[`${obj.objectiveId}-b`].status, "gate-satisfied", "B (independent) still completed");
   assert.notEqual(res.status, "complete");
