@@ -110,6 +110,8 @@ import { defaultStateRoot } from "../../factory/lib/natural-language-intake.mjs"
 import { readDeploymentStatus } from "../../factory/lib/deploy/status.mjs";
 import { addOvernightItem, readOvernightQueue, removeOvernightItem, startOvernight, stopOvernight, overnightLimit } from "./lib/overnightQueue.mjs";
 import { buildOperationsSnapshot } from "../../factory/lib/hq/operations.mjs";
+import { appendInteraction, buildInteractionThread, createInteraction, interactionsPath, mentionWakeups } from "../../factory/lib/hq/interactions.mjs";
+import { enqueueWakeup } from "../../factory/lib/wakeups/queue.mjs";
 import { buildRetentionSnapshot } from "../../factory/lib/hq/retention.mjs";
 import { buildRunTimeline } from "../../factory/lib/hq/run-timeline.mjs";
 import { buildDecisionHistory } from "../../factory/lib/hq/decision-history.mjs";
@@ -763,6 +765,63 @@ app.get("/api/founder/tasks/:id/timeline", (req, res) => {
     const timeline = buildRunTimeline({ hqRoot: ROOT, taskId: req.params.id });
     if (!timeline) return res.status(404).json({ error: "No such factory task." });
     res.json(timeline);
+  } catch (e) {
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+// The founder's thread on a task. Interaction text is untrusted data: it is
+// stored, redacted and attributed here, and nothing in the dispatch path reads
+// it. See docs/software-factory/PAPERCLIP_TASK_INTERACTIONS.md.
+app.get("/api/founder/tasks/:id/interactions", (req, res) => {
+  try {
+    const statePath = findTaskStatePath(ROOT, req.params.id);
+    if (!statePath) return res.status(404).json({ error: "No such factory task." });
+    res.json(buildInteractionThread({ taskDir: dirname(statePath) }));
+  } catch (e) {
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+// Posting a comment records it and, for a mention of an agent HQ actually has,
+// enqueues an identifier-only wakeup. It cannot enqueue anything else: the
+// wakeup queue rejects any item carrying a command or payload.
+app.post("/api/founder/tasks/:id/interactions", (req, res) => {
+  try {
+    const statePath = findTaskStatePath(ROOT, req.params.id);
+    if (!statePath) return res.status(404).json({ error: "No such factory task." });
+
+    const interaction = createInteraction({
+      taskId: req.params.id,
+      kind: req.body?.kind || "comment",
+      // The author is the authenticated founder, never a value from the body.
+      author: { type: "human", id: "founder" },
+      body: req.body?.body,
+      idempotencyKey: req.body?.idempotencyKey,
+    });
+
+    const taskDir = dirname(statePath);
+    const result = appendInteraction(interactionsPath(taskDir), interaction);
+
+    const wakeups = [];
+    if (result.accepted) {
+      let cfg = {};
+      try { cfg = JSON.parse(readFileSync(join(ROOT, "factory", "factory.config.json"), "utf8")); } catch { /* defaults */ }
+      const knownAgents = [...new Set(Object.values(cfg.openclawIntegration?.agentIds || {}).filter((value) => typeof value === "string"))];
+      const queuePath = join(dirname(dirname(taskDir)), "wakeups.json");
+      for (const wakeup of mentionWakeups({ interactions: [interaction], knownAgents, objectiveId: interaction.objectiveId })) {
+        // Best effort: failing to announce a mention must not lose the comment.
+        try { enqueueWakeup(queuePath, wakeup); wakeups.push(wakeup.actorId); }
+        catch { /* the thread is the record; the wakeup is a hint */ }
+      }
+    }
+
+    res.status(result.accepted ? 201 : 200).json({
+      accepted: result.accepted, duplicate: result.duplicate,
+      interactionId: result.interaction.interactionId,
+      mentions: result.interaction.mentions, notified: wakeups,
+      redactions: result.interaction.redactions,
+    });
   } catch (e) {
     res.status(400).json({ error: String(e.message || e) });
   }
