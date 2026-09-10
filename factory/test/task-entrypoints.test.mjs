@@ -123,13 +123,18 @@ test("shared initializer creates state and handoff using a single worktree opera
     if (args[0] === "rev-parse") return `${repo}\n`;
     if (args[0] === "show-ref") return { ok: false, stdout: "" };
     if (args[0] === "worktree") { mkdirSync(worktree); return ""; }
+    if (args[0] === "add" || args[0] === "commit") return { ok: true, stdout: "" };
     throw new Error(`Unexpected git call: ${args.join(" ")}`);
   };
   const result = initializeTask({ hqRoot: process.cwd(), contractPath, repo, worktree, stateRoot, git });
   assert.equal(result.next, "product");
   // rev-parse --show-toplevel, show-ref (branch exists?), rev-parse HEAD (base
-  // sha for the publish gate), then the single worktree add.
-  assert.deepEqual(calls.map((args) => args[0]), ["rev-parse", "show-ref", "rev-parse", "worktree"]);
+  // sha for the publish gate), then the single worktree add — followed by the
+  // isolated add+commit that makes `evidence/` ignored on the task branch
+  // before any agent runs.
+  assert.deepEqual(calls.map((args) => args[0]), ["rev-parse", "show-ref", "rev-parse", "worktree", "add", "commit"]);
+  // Still exactly one worktree operation, which is what this test guards.
+  assert.equal(calls.filter((args) => args[0] === "worktree").length, 1);
   assert.equal(existsSync(result.state), true);
   assert.match(readFileSync(join(stateRoot, "tasks", "issue-42", "handoff-product.md"), "utf8"), /Assigned harness: openclaw/);
 });
@@ -153,8 +158,13 @@ test("forged high-risk contract fails before creating a branch or worktree", () 
   const priorKey = process.env.FACTORY_FOUNDER_PUBLIC_KEY;
   delete process.env.FACTORY_FOUNDER_PUBLIC_KEY;
   try {
+    // hqRoot must be an isolated fixture, not the real HQ checkout: a developer
+    // who has enrolled a real founder key at
+    // dashboard/backend/data/factory/founder-approval-key.pem would make this
+    // "no key configured" scenario silently untestable (the enrolled key is
+    // preferred over the env var — see resolveFounderPublicKey()).
     assert.throws(
-      () => initializeTask({ hqRoot: process.cwd(), contractPath, repo, worktree: join(root, "worktree"), stateRoot: join(root, "state"), git }),
+      () => initializeTask({ hqRoot: root, contractPath, repo, worktree: join(root, "worktree"), stateRoot: join(root, "state"), git }),
       /founder public key/
     );
   } finally {

@@ -4,6 +4,7 @@ import * as objectiveView from "/lib/objectiveView.mjs";
 import { costLimitsPanel } from "/cost-limits.mjs";
 import { operationsPanel } from "/lib/operationsView.mjs";
 import { renderFounderInboxCard, renderFounderInboxEmpty } from "/lib/founderInbox.mjs";
+import { goalsPanel } from "/lib/goalsView.mjs";
 
 (function () {
   const app = document.getElementById("app");
@@ -222,7 +223,7 @@ import { renderFounderInboxCard, renderFounderInboxEmpty } from "/lib/founderInb
   // ── Today: the founder observability surface ───────────────────
 
   async function renderToday() {
-    const [state, fc, learning, objectivesResp, autonomy, costs, planLimits, overnight, operations] = await Promise.all([
+    const [state, fc, learning, objectivesResp, autonomy, costs, planLimits, overnight, operations, goals] = await Promise.all([
       loadCompany(),
       apiJson("/api/founder/overview").catch(() => ({ jobs: [] })),
       loadLearning().catch(() => null),
@@ -232,6 +233,7 @@ import { renderFounderInboxCard, renderFounderInboxEmpty } from "/lib/founderInb
       apiJson("/api/hq/plan-limits").catch(() => null),
       apiJson("/api/founder/overnight").catch(() => ({ status: "unavailable", items: [] })),
       apiJson("/api/hq/operations").catch(() => null),
+      apiJson("/api/hq/goals").catch(() => null),
     ]);
     const objectives = objectivesResp.objectives || [];
     objectivesById = Object.fromEntries(objectives.map((o) => [o.objectiveId, o]));
@@ -252,7 +254,7 @@ import { renderFounderInboxCard, renderFounderInboxEmpty } from "/lib/founderInb
     // "your request was received, agents are on it" confirmation.
     const liveJobs = jobs.filter((j) => j.status === "starting" || j.status === "running" || j.status === "decomposing");
 
-    app.innerHTML = renderFounderHome({ state, projects, agents, inbox, dismissedInbox, objectives, allTasks, runningRows, liveJobs, autoRecovering, finishedTasks, inboxActionable, overnight, operations });
+    app.innerHTML = renderFounderHome({ state, projects, agents, inbox, dismissedInbox, objectives, allTasks, runningRows, liveJobs, autoRecovering, finishedTasks, inboxActionable, overnight, operations, goals });
     bindFounderControls();
     return;
 
@@ -385,7 +387,7 @@ import { renderFounderInboxCard, renderFounderInboxEmpty } from "/lib/founderInb
     </section>`;
   }
 
-  function renderFounderHome({ state, projects, agents, inbox, dismissedInbox, objectives, allTasks, runningRows, liveJobs, autoRecovering, finishedTasks, inboxActionable, overnight, operations }) {
+  function renderFounderHome({ state, projects, agents, inbox, dismissedInbox, objectives, allTasks, runningRows, liveJobs, autoRecovering, finishedTasks, inboxActionable, overnight, operations, goals }) {
     const groups = objectiveView.groupObjectives(objectives);
     const active = [...groups.running, ...groups.waiting, ...groups.blocked];
     const workingAgents = runningRows.filter((row) => row.status === "working");
@@ -402,6 +404,7 @@ import { renderFounderInboxCard, renderFounderInboxEmpty } from "/lib/founderInb
         <section class="founder-section"><div class="section-heading"><div><span class="eyebrow">Live floor</span><h2>Agents at work</h2></div></div>${[...liveJobs.map((j) => ({ title: j.objective, sub: "Starting the team", status: "starting" })), ...autoRecovering.map((r) => ({ title: r.objective || r.taskId, sub: "Recovering a safe infrastructure failure", status: "recovering" })), ...runningRows].map((r) => `<div class="agent-work-row"><span class="status-dot ${r.status === "working" ? "is-working" : "is-waiting"}"></span><div><strong>${esc(r.title || r.objective || "Factory work")}</strong><span>${esc(r.sub || `${r.agent || "Agent"} · ${r.stage || "next stage"}`)}</span></div><em>${esc(r.status || "waiting")}</em></div>`).join("") || `<div class="quiet-state">The floor is quiet.</div>`}</section>
       </main><aside>
         <section class="founder-section"><div class="section-heading"><div><span class="eyebrow">Recently</span><h2>Completed</h2></div></div>${groups.recentlyCompleted.slice(0, 3).map((o) => founderObjectiveCard(o, true)).join("") || `<div class="quiet-state">No recent completions.</div>`}</section>
+        ${goalsPanel(goals, { esc })}
         ${operationsPanel(operations, { esc, fmtTime })}
       </aside></div>
     </div>`;

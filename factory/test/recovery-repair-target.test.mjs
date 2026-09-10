@@ -34,12 +34,13 @@ test("only a project defect puts the project's code in scope", () => {
 });
 
 test("a verified project repair resumes at the builder and invalidates downstream verdicts", async () => {
-  const fixture = makeFixture();
-  // The reviewer rejects the work once — a real FAIL verdict, so a project
-  // defect. Recovery repairs it and an independent verifier confirms.
-  let reviewerFails = 1;
+  // The review loop has already bounced this work back twice and the reviewer
+  // is still rejecting it — so routing is spent and recovery is next in line.
+  const fixture = makeFixture({ spentReviewerAttempts: 2 });
+  // A real FAIL verdict means a project defect. Recovery repairs it and an
+  // independent verifier confirms.
   const execute = async ({ dispatch, cwd }) => {
-    const outcome = dispatch.stage === "reviewer" && dispatch.kind === "stage" && reviewerFails-- > 0 ? "fail" : "pass";
+    const outcome = dispatch.stage === "reviewer" && dispatch.kind === "stage" ? "fail" : "pass";
     writeResult(dispatch, cwd, outcome);
   };
   const resumed = await driveUntilResumed(fixture, execute);
@@ -52,21 +53,32 @@ test("a verified project repair resumes at the builder and invalidates downstrea
   assert.equal(resumed.events.at(-1).invalidatedDownstream, true);
 });
 
-test("a factory-side repair retries in place and keeps the builder's work", async () => {
+// An infrastructure failure in a review stage never puts the builder's work at
+// risk. With routing restored ahead of recovery, that guarantee is delivered by
+// `routeStageFailure` retrying the stage in place — recovery only sees the
+// stage once those attempts are spent, and by then re-entry is spent too, so
+// the task escalates. What must hold throughout: nothing rebuilds, and the
+// builder's pass is never invalidated by an environment problem.
+test("an infrastructure failure never invalidates the builder's work", async () => {
   const fixture = makeFixture();
-  // The reviewer's agent never writes a result — an infrastructure failure.
-  // Nothing in the project changed, so re-running the builder would be pure
-  // waste; the builder's pass must survive.
-  let reviewerDrops = 1;
+  // The reviewer's agent never writes a result. Nothing in the project changed,
+  // so re-running the builder would be pure waste.
   const execute = async ({ dispatch, cwd }) => {
-    if (dispatch.stage === "reviewer" && dispatch.kind === "stage" && reviewerDrops-- > 0) return;
+    if (dispatch.stage === "reviewer" && dispatch.kind === "stage") return;
     writeResult(dispatch, cwd, "pass");
   };
-  const resumed = await driveUntilResumed(fixture, execute);
-  assert.equal(resumed.recovery.attempts.at(-1).repairTarget, "factory");
-  assert.equal(resumed.currentStage, "reviewer");
-  assert.equal(resumed.stages.builder.status, "pass");
-  assert.equal(resumed.events.at(-1).invalidatedDownstream, undefined);
+  const final = await driveUntilSettled(fixture, execute);
+
+  assert.equal(final.status, "blocked", "an unfixable environment problem ends with the founder, not a loop");
+  assert.equal(final.stages.builder.status, "pass", "the builder's verdict survived every retry");
+  // Every reviewer retry stayed at the reviewer; the builder was never
+  // re-dispatched to answer someone else's dropped model call.
+  assert.equal(final.dispatches.filter((d) => d.stage === "builder" && (d.kind === "stage" || !d.kind)).length, 1,
+    "no rebuild for an infrastructure failure");
+  const routed = final.events.filter((e) => e.type === "failure-routed");
+  assert.ok(routed.length > 0, "the failure was routed, not silently recovered");
+  assert.ok(routed.every((e) => e.stage === "reviewer"), "each retry stayed in place at the reviewer");
+  assert.ok(routed.every((e) => e.infra === true), "and each was marked infrastructure");
 });
 
 // Bounded on purpose: a contract change must make these tests red, never hang.
@@ -86,6 +98,20 @@ async function driveUntilResumed(fixture, execute, maxSteps = 25) {
   throw new Error(`recovery never resumed the task in ${maxSteps} steps; saw: ${seen.join(" -> ")}`);
 }
 
+// Same bound, different terminal condition: drive until the task stops being
+// active rather than until it resumes.
+async function driveUntilSettled(fixture, execute, maxSteps = 25) {
+  for (let i = 0; i < maxSteps; i += 1) {
+    await runOneStage({
+      hqRoot, statePath: fixture.statePath, execute,
+      publish: () => ({ published: false, reason: "no github in fixture" }),
+    });
+    const state = readState(fixture.statePath);
+    if (state.status !== "active") return state;
+  }
+  throw new Error(`task never settled in ${maxSteps} steps`);
+}
+
 function writeResult(dispatch, cwd, outcome) {
   mkdirSync(join(cwd, "evidence"), { recursive: true });
   const relative = `evidence/${dispatch.stage}.md`;
@@ -96,11 +122,21 @@ function writeResult(dispatch, cwd, outcome) {
   }));
 }
 
-function makeFixture() {
+function makeFixture({ spentReviewerAttempts = 0 } = {}) {
   const root = mkdtempSync(join(tmpdir(), "repair-target-"));
   const worktree = join(root, "worktree");
   const statePath = join(root, "state", "state.json");
   mkdirSync(worktree);
-  writeState(statePath, createState({ task, repo: join(root, "repo"), branch: "factory/repair", worktree }));
+  const state = createState({ task, repo: join(root, "repo"), branch: "factory/repair", worktree });
+  // A reviewer that has already used its per-stage attempts, while the builder
+  // still has headroom — the ordinary shape once the review loop has bounced
+  // work back a couple of times and the reviewer is still unhappy. This is what
+  // puts recovery, rather than another route, next in line.
+  if (spentReviewerAttempts) {
+    state.dispatches = Array.from({ length: spentReviewerAttempts }, (_, i) => ({
+      id: `${task.id}-reviewer-${i + 1}`, stage: "reviewer", actor: "claude", kind: "stage", status: "failed", attempt: i + 1,
+    }));
+  }
+  writeState(statePath, state);
   return { root, worktree, statePath };
 }
