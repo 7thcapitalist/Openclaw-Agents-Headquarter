@@ -97,7 +97,12 @@ test("high-risk release requires recorded founder approval", () => {
   state.task.risk = "low";
   for (const stage of STAGES.slice(0, -1)) state = completeStage(state, completion(stage, state.assignments[stage]));
   state.task.risk = "high";
-  assert.throws(() => completeStage(state, completion("release", state.assignments.release)), /founderApproval/);
+  // The gate now names the actual problem rather than always claiming nothing
+  // was recorded — see founderApprovalStatus().
+  assert.throws(
+    () => completeStage(state, completion("release", state.assignments.release)),
+    /not authorized — No signed founder approval/,
+  );
 });
 
 test("high-risk work blocks before build until founder approval is recorded", () => {

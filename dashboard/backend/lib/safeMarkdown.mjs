@@ -159,6 +159,20 @@ function safeClassAttr(value) {
 // A marked instance that cannot emit author-supplied HTML. Kept module-local so
 // callers cannot reconfigure it, and separate from any global marked.setOptions
 // the server does for other purposes.
+// Render a token's children through the parser, falling back to escaped text
+// when no parser is attached. Never returns raw author HTML.
+function renderInline(rendererThis, token) {
+  const parser = rendererThis?.parser;
+  if (parser && Array.isArray(token?.tokens) && token.tokens.length) {
+    try {
+      return parser.parseInline(token.tokens);
+    } catch {
+      /* fall through to escaping */
+    }
+  }
+  return escapeHtml(token?.text ?? "");
+}
+
 function buildRenderer(marked) {
   const renderer = new marked.Renderer();
 
@@ -166,15 +180,21 @@ function buildRenderer(marked) {
   // single most important line in the file.
   renderer.html = (token) => escapeHtml(typeof token === "string" ? token : token?.raw ?? token?.text ?? "");
 
-  renderer.link = (token) => {
+  renderer.link = function link(token) {
     const href = safeUrl(token?.href);
-    const text = token?.text ?? "";
+    // Render the link's INNER TOKENS rather than its raw text. Interpolating
+    // token.text would put author-supplied HTML into the output as live markup
+    // — which broke this layer's whole promise and left the allowlist as the
+    // only thing between agent HTML and the founder's session. Parsing inline
+    // also means nested markup (a linked image, bold text) renders correctly
+    // instead of leaking its literal Markdown source.
+    const body = renderInline(this, token);
     // A link we refuse to trust still shows its text — dropping it silently
     // would hide content from the founder.
-    if (!href) return escapeHtml(text);
+    if (!href) return body;
     const title = token?.title ? ` title="${escapeHtml(token.title)}"` : "";
     // noopener/noreferrer: an opened tab must not get a handle on the dashboard.
-    return `<a href="${escapeHtml(href)}"${title} target="_blank" rel="noopener noreferrer nofollow">${text}</a>`;
+    return `<a href="${escapeHtml(href)}"${title} target="_blank" rel="noopener noreferrer nofollow">${body}</a>`;
   };
 
   renderer.image = (token) => {
@@ -260,7 +280,8 @@ export function sanitizeHtml(html) {
 
 function sanitizeAttributes(tag, rawAttrs) {
   const allowed = ALLOWED_ATTRS[tag];
-  if (!allowed || !rawAttrs) return tag === "a" ? "" : "";
+  if (!allowed || !rawAttrs) return "";
+  const emitted = new Set();
   let result = "";
   const re = /([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*(?:=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+)))?/g;
   let m;
@@ -274,28 +295,37 @@ function sanitizeAttributes(tag, rawAttrs) {
       const safe = safeUrl(value);
       if (!safe) continue;
       result += ` ${name}="${escapeHtml(safe)}"`;
+      emitted.add(name);
       continue;
     }
     if (name === "class") {
       const safe = safeClassAttr(value);
       if (!safe) continue;
       result += ` class="${escapeHtml(safe)}"`;
+      emitted.add("class");
       continue;
     }
     if (name === "width" || name === "height" || name === "colspan" || name === "rowspan" || name === "start") {
       if (!/^\d{1,5}$/.test(value)) continue;
       result += ` ${name}="${value}"`;
+      emitted.add(name);
       continue;
     }
     if (name === "align" || name === "scope") {
       if (!/^[a-z]{1,10}$/i.test(value)) continue;
       result += ` ${name}="${value.toLowerCase()}"`;
+      emitted.add(name);
       continue;
     }
     result += ` ${name}="${escapeHtml(value)}"`;
+    emitted.add(name);
   }
   // Links always leave with a safe rel, even if the renderer was bypassed.
-  if (tag === "a" && /href=/.test(result) && !/rel=/.test(result)) {
+  //
+  // This tests the attribute NAMES actually emitted, not the serialized string:
+  // matching /rel=/ against the output let a link whose *title* contained the
+  // text "rel=" suppress its own hardening.
+  if (tag === "a" && emitted.has("href")) {
     result += ' target="_blank" rel="noopener noreferrer nofollow"';
   }
   return result;

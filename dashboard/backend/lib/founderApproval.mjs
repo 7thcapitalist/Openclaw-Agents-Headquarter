@@ -258,7 +258,13 @@ export async function submitFounderApproval(root, hqRoot, taskId, { assertion, s
   // key snapshotted in state. A forged / unsigned body throws here.
   let next;
   try {
-    next = recordFounderApproval(state, { assertion, evidence: { path: EVIDENCE_REL } });
+    // Pass the HQ root so the gate anchors on the ENROLLED key file rather than
+    // whatever key the task-state record happens to name.
+    next = recordFounderApproval(state, {
+      assertion,
+      evidence: { path: EVIDENCE_REL },
+      authority: { hqRoot: root },
+    });
   } catch (error) {
     throw badRequest(`Approval rejected: ${error.message}`);
   }
