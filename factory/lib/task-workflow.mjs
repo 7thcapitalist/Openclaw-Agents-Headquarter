@@ -30,6 +30,12 @@ export const FOUNDER_APPROVAL_VERSION = 2;
 export const FOUNDER_APPROVAL_TTL_SECONDS = Number(process.env.FACTORY_APPROVAL_TTL_SECONDS || 24 * 60 * 60);
 const FOUNDER_APPROVAL_SKEW_MS = 2 * 60 * 1000;
 
+// Opt-in only, and never the default: a high-risk build should not be
+// authorizable by a key nothing outside the task file vouches for.
+function allowUnanchoredApproval() {
+  return process.env.FACTORY_ALLOW_UNANCHORED_APPROVAL === "1";
+}
+
 export function validateTaskContract(task) {
   if (!task || typeof task !== "object" || Array.isArray(task)) {
     throw new Error("Task contract must be a JSON object.");
@@ -509,6 +515,23 @@ function validateFounderAssertion(state, assertion, evidence, now = new Date().t
   // would happily compare two fields it also controls.
   const authority = authorityForVerification(state, authorityOptions);
   if (!authority?.publicKey) throw new Error("This task has no recorded approval authority.");
+
+  // Fail closed when nothing outside the task state vouches for the key.
+  //
+  // Previously an unresolvable anchor fell back to the task's own record, so
+  // deleting or corrupting one small file silently restored the exact
+  // vulnerability this gate exists to close — and "no anchor" was
+  // indistinguishable from "approved" at the two places that matter. A
+  // high-risk build now requires a real anchor.
+  //
+  // FACTORY_ALLOW_UNANCHORED_APPROVAL=1 is an explicit, deliberately awkward
+  // escape hatch for a deployment that has not enrolled a key yet.
+  if (!authority.anchored && !allowUnanchoredApproval()) {
+    throw new Error(
+      "No trusted founder approval key is configured, so this approval cannot be verified. "
+      + "Enroll a key in Headquarters or set FACTORY_FOUNDER_PUBLIC_KEY.",
+    );
+  }
 
   // The task points at a different key than the one this deployment trusts.
   // That is a tampering signal, not a routine mismatch.

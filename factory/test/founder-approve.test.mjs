@@ -1,4 +1,5 @@
 import test from "node:test";
+import { anchorFounderKey } from "./helpers/anchor.mjs";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
@@ -22,6 +23,9 @@ const APPROVE = join(HQ, "scripts", "founder-approve.mjs");
 
 const keys = generateKeyPairSync("ed25519");
 const founderPublicKey = keys.publicKey.export({ type: "spki", format: "pem" });
+// This suite's own key is what the deployment trusts. Without an anchor the
+// high-risk gate fails closed, by design.
+anchorFounderKey(founderPublicKey);
 const founderPrivateKey = keys.privateKey.export({ type: "pkcs8", format: "pem" });
 
 function highRiskTask(id) {
