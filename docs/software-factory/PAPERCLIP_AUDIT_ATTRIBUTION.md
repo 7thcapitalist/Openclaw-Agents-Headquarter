@@ -16,3 +16,10 @@ and does not use Paperclip's PostgreSQL or Drizzle implementation.
 This file is the campaign compatibility attribution until issue #79's central
 provenance manifest is merged. Before this PR becomes merge-ready, its local
 artifacts must also be registered in that manifest.
+
+## Rollback
+
+Revert the PR. Existing `audit.ndjson` files become inert data that nothing
+reads; they are append-only projections and canonical workflow state lives in
+`state.json`, which this capability never writes. Task events continue exactly
+as before, because the legacy projection was preserved rather than replaced.

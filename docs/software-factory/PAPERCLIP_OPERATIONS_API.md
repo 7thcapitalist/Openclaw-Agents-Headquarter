@@ -10,3 +10,10 @@ raw OpenClaw responses.
 Optional projection corruption is degraded explicitly through `available` and
 `warnings`; canonical task discovery continues. The endpoint does not repair or
 mutate runtime data.
+
+## Rollback
+
+Revert the PR. `GET /api/hq/operations` disappears; the dashboard panel that
+reads it degrades to its unavailable state rather than erroring. The endpoint is
+read-only and derives everything from files other capabilities write, so no
+state has to be repaired.

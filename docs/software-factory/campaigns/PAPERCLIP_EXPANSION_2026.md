@@ -1,5 +1,10 @@
 # Paperclip Native Capability Expansion
 
+> **Closed.** The final source-level comparison of the pinned Paperclip tree
+> against HQ is `docs/software-factory/PAPERCLIP_FINAL_COMPARISON.md`. It records
+> what was adopted, what was excluded and why, what still needs a founder
+> Decision Card, and the four remaining capabilities worth their own issues.
+
 - Authorization: explicit founder direction on 2026-09-09
 - Upstream source: `paperclipai/paperclip` at
   `6abeb67334348dcb6fde2d591a27ffc7efc7118d` (MIT)

@@ -13,3 +13,10 @@ without replacing the existing dashboard cost API. Compatibility wiring happens
 after its campaign dependencies merge.
 
 Central provenance registration is required during pre-merge refresh after #79.
+
+## Rollback
+
+Revert the PR. `.openclaw-factory/telemetry/cost-events.ndjson` becomes inert
+data that nothing reads. The ledger is append-only and derived from dispatch
+records, so no canonical state depends on it and nothing has to be rebuilt.
+Cost views that read it degrade to unavailable rather than to zero.

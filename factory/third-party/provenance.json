@@ -495,32 +495,11 @@
       "notes": "Documents the pinned sources, the retention classes, and the confirmed-count deletion protocol."
     },
     {
-      "localPath": "factory/lib/hq/interactions.mjs",
+      "localPath": "docs/software-factory/PAPERCLIP_FINAL_COMPARISON.md",
       "sourceId": "paperclip",
-      "sourcePath": "server/src/services/issue-thread-interactions.ts",
-      "classification": "adapted",
-      "notes": "Adapts Paperclip thread interactions and mention routing into an append-only HQ record whose text is untrusted data and can only ever produce an identifier-only wakeup."
-    },
-    {
-      "localPath": "dashboard/backend/public/lib/interactionsView.mjs",
-      "sourceId": "paperclip",
-      "sourcePath": "ui/src/components/IssueComments.tsx",
-      "classification": "inspired",
-      "notes": "Adapts Paperclip comment presentation into an escaped, non-linkifying founder thread that states the instruction boundary."
-    },
-    {
-      "localPath": "factory/test/interactions.test.mjs",
-      "sourceId": "paperclip",
-      "sourcePath": "server/src/services/issue-thread-interactions.test.ts",
-      "classification": "inspired",
-      "notes": "Tests the injection boundary, unknown-mention routing, redaction, idempotency, replay identity, and read validation."
-    },
-    {
-      "localPath": "factory/test/interactions-view.test.mjs",
-      "sourceId": "paperclip",
-      "sourcePath": "ui/src/components/IssueComments.tsx",
-      "classification": "inspired",
-      "notes": "Tests escaping of attacker-controlled text, absence of links, disclosure of truncation and redaction, and server re-read after posting."
+      "sourcePath": ".",
+      "classification": "reference",
+      "notes": "Final source-level comparison of the pinned Paperclip tree against HQ: what was adopted, what was excluded and why, what needs a founder decision, and what remains."
     },
     {
       "localPath": "factory/lib/packages/agent-company-import.mjs",
@@ -549,6 +528,34 @@
       "sourcePath": "docs/companies/companies-spec.md",
       "classification": "reference",
       "notes": "Documents the pinned source and why application stays a reviewed pull request."
+    },
+    {
+      "localPath": "factory/lib/hq/interactions.mjs",
+      "sourceId": "paperclip",
+      "sourcePath": "server/src/services/issue-thread-interactions.ts",
+      "classification": "adapted",
+      "notes": "Adapts Paperclip thread interactions and mention routing into an append-only HQ record whose text is untrusted data and can only ever produce an identifier-only wakeup."
+    },
+    {
+      "localPath": "dashboard/backend/public/lib/interactionsView.mjs",
+      "sourceId": "paperclip",
+      "sourcePath": "ui/src/components/IssueComments.tsx",
+      "classification": "inspired",
+      "notes": "Adapts Paperclip comment presentation into an escaped, non-linkifying founder thread that states the instruction boundary."
+    },
+    {
+      "localPath": "factory/test/interactions.test.mjs",
+      "sourceId": "paperclip",
+      "sourcePath": "server/src/services/issue-thread-interactions.test.ts",
+      "classification": "inspired",
+      "notes": "Tests the injection boundary, unknown-mention routing, redaction, idempotency, replay identity, and read validation."
+    },
+    {
+      "localPath": "factory/test/interactions-view.test.mjs",
+      "sourceId": "paperclip",
+      "sourcePath": "ui/src/components/IssueComments.tsx",
+      "classification": "inspired",
+      "notes": "Tests escaping of attacker-controlled text, absence of links, disclosure of truncation and redaction, and server re-read after posting."
     },
     {
       "localPath": "factory/lib/integrations/connector-outbox.mjs",
