@@ -117,6 +117,7 @@ import { runObjective } from "../../factory/lib/objective/orchestrator.mjs";
 import { founderApprovalSetupBlocker } from "../../factory/lib/hq/blocker-class.mjs";
 import { defaultStateRoot } from "../../factory/lib/natural-language-intake.mjs";
 import { readDeploymentStatus } from "../../factory/lib/deploy/status.mjs";
+import { buildDeploymentsSnapshot } from "../../factory/lib/hq/deployments.mjs";
 import { addOvernightItem, readOvernightQueue, removeOvernightItem, startOvernight, stopOvernight, overnightLimit } from "./lib/overnightQueue.mjs";
 import { buildOperationsSnapshot } from "../../factory/lib/hq/operations.mjs";
 import { appendInteraction, buildInteractionThread, createInteraction, interactionsPath, mentionWakeups } from "../../factory/lib/hq/interactions.mjs";
@@ -1236,6 +1237,14 @@ app.get("/api/hq/projects/:id", (req, res) => {
   } catch (e) {
     res.status(400).json({ error: String(e.message || e) });
   }
+});
+
+// The whole estate in one read. The per-project route below answers for one
+// project and needs the caller to know which; the Today view needs the opposite.
+// Read-only: deploying is a gated factory action, and nothing here can start one.
+app.get("/api/hq/deployments", (_req, res) => {
+  try { res.json(buildDeploymentsSnapshot({ hqRoot: ROOT })); }
+  catch (e) { res.status(500).json({ version: 1, available: false, readOnly: true, deployments: [], error: String(e.message || e) }); }
 });
 
 app.get("/api/hq/projects/:id/deployment", (req, res) => {

@@ -1557,3 +1557,16 @@ ul.timeline time { color: var(--muted); margin-right: 6px; }
 .blast-bar span.is-over{background:linear-gradient(90deg,#f3c969,#fb7185)}
 .blast-actor{margin:.3rem 0 0;color:#67748a;font-size:.68rem}
 @media(max-width:800px){.blast-summary{grid-template-columns:1fr}}
+
+/* Deployments — read-only estate view. Ordered so the actionable end is on top. */
+.deploy-list{margin:0;padding:0;list-style:none;display:grid;gap:.2rem}
+.deploy-row{padding:.85rem 0;border-top:1px solid #202938}
+.deploy-row:first-child{border-top:0;padding-top:0}
+.deploy-head{display:flex;justify-content:space-between;gap:.9rem;align-items:baseline}
+.deploy-head strong{display:block;font-size:.92rem;font-weight:650}
+.deploy-head span{display:block;margin-top:.14rem;color:#7d8a9e;font-size:.68rem;text-transform:uppercase;letter-spacing:.07em}
+.deploy-head em{flex:0 0 auto;font-style:normal}
+.deploy-url{margin:.45rem 0 .2rem;overflow:hidden;font-size:.78rem;text-overflow:ellipsis;white-space:nowrap}
+.deploy-url a{color:var(--accent);text-decoration:none}
+.deploy-url a:hover{text-decoration:underline}
+.deploy-meta{margin:.25rem 0 0;color:#8290a6;font-size:.72rem}

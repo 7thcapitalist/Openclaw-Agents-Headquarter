@@ -114,7 +114,7 @@ const NO_FRONTEND_CALLER = new Map([
   ["/api/hq/command-center", "legacy, predates the founder UI rebuild (#63)"],
   // Genuine gaps — real capability the operator currently cannot see.
   // These are the entries to delete; each deletion is a feature becoming visible.
-  ["/api/hq/projects/:id/deployment", "GAP: the factory can deploy, and deployment status has no panel"],
+  ["/api/hq/projects/:id/deployment", "superseded by /api/hq/deployments, which the Today panel reads for every project at once"],
 ]);
 
 test("every /api/hq route is reachable from the frontend, or explicitly excused", () => {
