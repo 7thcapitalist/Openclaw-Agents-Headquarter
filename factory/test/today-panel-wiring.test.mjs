@@ -151,3 +151,52 @@ test("every excused route carries a reason", () => {
     assert.ok(reason && reason.trim().length > 12, `${route} is excused without a real reason`);
   }
 });
+
+// ── the data has to arrive, not just the panel ────────────────────────────
+//
+// A panel can be fetched, bound and rendered and still take the whole page
+// down. renderToday() binds the fetched values, but the markup lives in
+// renderFounderHome(), which receives an explicit destructured object — so a
+// panel rendered there from a value nobody passed through is a ReferenceError
+// inside a template literal, and the render guard replaces the entire founder
+// home with "Error loading page: <name> is not defined".
+//
+// That is not hypothetical. #146 added the retention panel, fetched `retention`
+// in renderToday, rendered `${retentionPanel(retention, ...)}` in
+// renderFounderHome, and passed it through at neither the call site nor the
+// parameter list. The founder home was dead on load until #175.
+test("every panel argument in renderFounderHome is actually passed to it", () => {
+  const start = APP.indexOf("function renderFounderHome({");
+  assert.notEqual(start, -1, "renderFounderHome() must exist");
+  const params = APP.slice(start + "function renderFounderHome({".length, APP.indexOf("})", start))
+    .split(",").map((name) => name.trim()).filter(Boolean);
+
+  // The function body: from its signature to the next top-level declaration.
+  const bodyEnd = APP.indexOf("\n  function ", start + 1);
+  const body = APP.slice(start, bodyEnd === -1 ? APP.length : bodyEnd);
+
+  const missing = [];
+  for (const [, panel, argument] of body.matchAll(/\$\{(\w*[Pp]anel)\((\w+)[,)]/g)) {
+    // A literal or a local is fine; an identifier that is neither a parameter
+    // nor declared in the body is the failure mode above.
+    if (params.includes(argument)) continue;
+    if (new RegExp(`(const|let|var)\\s+${argument}\\b`).test(body)) continue;
+    missing.push(`${panel}(${argument}) — "${argument}" is not a parameter of renderFounderHome`);
+  }
+  assert.deepEqual(missing, [], `these panels render from a value nobody passes in:\n  ${missing.join("\n  ")}`);
+});
+
+// The other half of the same wire: a value renderToday fetches, and
+// renderFounderHome declares, must actually be handed over at the call site.
+test("every renderFounderHome parameter is supplied at its call site", () => {
+  const start = APP.indexOf("function renderFounderHome({");
+  const params = APP.slice(start + "function renderFounderHome({".length, APP.indexOf("})", start))
+    .split(",").map((n) => n.trim()).filter(Boolean);
+  const call = /renderFounderHome\(\{([^}]+)\}\)/.exec(APP);
+  assert.ok(call, "renderFounderHome must be called with an object literal");
+  const supplied = call[1].split(",").map((n) => n.trim().split(":")[0].trim()).filter(Boolean);
+
+  const undelivered = params.filter((name) => !supplied.includes(name));
+  assert.deepEqual(undelivered, [],
+    `renderFounderHome declares these but the call site omits them, so they are undefined inside it:\n  ${undelivered.join("\n  ")}`);
+});
