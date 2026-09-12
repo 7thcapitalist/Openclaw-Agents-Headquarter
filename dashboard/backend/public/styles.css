@@ -1517,3 +1517,26 @@ ul.timeline time { color: var(--muted); margin-right: 6px; }
 .search-row em{color:var(--muted);font-size:.7rem;font-style:normal;text-align:right;white-space:nowrap}
 .search-scope{margin:.8rem 0 0;color:var(--muted);font-size:.68rem}
 @media(max-width:500px){.search-row{grid-template-columns:auto minmax(0,1fr)}.search-row em{grid-column:2;text-align:left;white-space:normal}}
+
+/* Proposed work — ranked, report-only. Reuses the founder-section shell; the
+   only new vocabulary is the rank marker and the three-segment evidence bar,
+   which is drawn to the same scale the ranking used. */
+.proposer-lede{margin:0 0 .9rem;color:#8b97ab;font-size:.78rem}
+.proposer-list{margin:0;padding:0;list-style:none;display:grid;gap:.2rem}
+.proposer-item{padding:.95rem 0;border-top:1px solid #202938}
+.proposer-item:first-child{border-top:0;padding-top:0}
+.proposer-head{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:.7rem;align-items:baseline}
+.proposer-rank{display:grid;place-items:center;width:22px;height:22px;border-radius:50%;background:#202938;color:#9fb0c8;font-size:.72rem;font-weight:700;font-variant-numeric:tabular-nums}
+.proposer-title{min-width:0}
+.proposer-title strong{display:block;font-size:.95rem;font-weight:650;line-height:1.35}
+.proposer-title span{display:block;margin-top:.14rem;color:#7d8a9e;font-size:.68rem;text-transform:uppercase;letter-spacing:.08em}
+.proposer-why{margin:.55rem 0 .6rem;color:#a3aec0;font-size:.83rem}
+.proposer-bar{display:flex;height:5px;overflow:hidden;border-radius:9px;background:#202a38}
+.proposer-bar span{display:block;height:100%}
+.proposer-bar .seg-complete{background:var(--green)}
+.proposer-bar .seg-blocked{background:var(--amber)}
+.proposer-bar .seg-active{background:var(--blue)}
+.proposer-counts{margin:.4rem 0 0;color:#8290a6;font-size:.72rem;font-variant-numeric:tabular-nums}
+.proposer-counts strong{color:var(--amber);font-weight:600}
+.proposer-source{margin:.35rem 0 0;color:#67748a;font-size:.66rem}
+@media(max-width:800px){.proposer-head{grid-template-columns:auto minmax(0,1fr);row-gap:.3rem}.proposer-head .objective-status{grid-column:2}}

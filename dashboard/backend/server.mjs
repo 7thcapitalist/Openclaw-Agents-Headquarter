@@ -128,6 +128,7 @@ import { buildAgentScorecards } from "../../factory/lib/hq/agent-scorecards.mjs"
 import { buildPermissionsSnapshot } from "../../factory/lib/hq/permissions-snapshot.mjs";
 import { buildBlastRadiusReport } from "../../factory/lib/hq/blast-radius.mjs";
 import { buildGoalsSnapshot } from "../../factory/lib/hq/goals.mjs";
+import { buildWorkProposals } from "../../factory/lib/hq/proposer.mjs";
 import { parseLayers, searchHq } from "../../factory/lib/hq/search.mjs";
 import { buildBudgetSnapshot } from "../../factory/lib/hq/budget-snapshot.mjs";
 
@@ -1106,6 +1107,14 @@ app.get("/api/hq/goals", (_req, res) => {
 // Read-only and alert-only. Policies are tracked in factory/budgets.json and
 // change by pull request; nothing here can raise a limit, and crossing one
 // reports rather than stopping any work.
+// Report-only. Ranks work that already exists in canonical state; it proposes
+// and never promotes, so there is deliberately no write route here — queueing a
+// proposal stays the founder's action through the overnight queue.
+app.get("/api/hq/proposals", (_req, res) => {
+  try { res.json(buildWorkProposals({ hqRoot: ROOT })); }
+  catch (e) { res.status(500).json({ version: 1, available: false, reportOnly: true, proposals: [], error: String(e.message || e) }); }
+});
+
 app.get("/api/hq/budgets", (_req, res) => {
   try { res.json(buildBudgetSnapshot({ hqRoot: ROOT })); }
   catch (e) { res.status(500).json({ version: 1, available: false, enforcement: "alert-only", error: String(e.message || e) }); }
