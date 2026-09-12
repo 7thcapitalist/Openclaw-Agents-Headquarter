@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "_comment": "Copy to factory/rewake-throttle.json to switch the no-progress re-wake throttle on. Modes: 'report' (the default when the file exists) computes and surfaces every verdict but never holds a wake back — use it to see the threshold against real traffic first; 'enforce' actually defers a wake until its cooldown elapses. Deleting the file returns to 'off'. A deferred wake is NOT a failure: it keeps its retry budget and is reconsidered after the cooldown. 'manual' and 'recovery' wakes are never throttled, so a founder action and crash recovery stay immediate. See docs/software-factory/PAPERCLIP_REWAKE_THROTTLE.md.",
+  "mode": "report",
+  "threshold": 2,
+  "baseCooldownMs": 600000,
+  "bypassSources": ["manual", "recovery"]
+}

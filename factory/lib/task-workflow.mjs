@@ -30,6 +30,12 @@ export const FOUNDER_APPROVAL_VERSION = 2;
 export const FOUNDER_APPROVAL_TTL_SECONDS = Number(process.env.FACTORY_APPROVAL_TTL_SECONDS || 24 * 60 * 60);
 const FOUNDER_APPROVAL_SKEW_MS = 2 * 60 * 1000;
 
+// Opt-in only, and never the default: a high-risk build should not be
+// authorizable by a key nothing outside the task file vouches for.
+function allowUnanchoredApproval() {
+  return process.env.FACTORY_ALLOW_UNANCHORED_APPROVAL === "1";
+}
+
 export function validateTaskContract(task) {
   if (!task || typeof task !== "object" || Array.isArray(task)) {
     throw new Error("Task contract must be a JSON object.");
@@ -217,10 +223,55 @@ export function resumeState(state, now = new Date().toISOString(), options = {})
 
 const REVIEW_STAGES = new Set(["reviewer", "qa", "security", "release"]);
 
-export function routeStageFailure(state, { failedStage, targetStage, maxAttemptsPerStage = 3, now = new Date().toISOString() }) {
+// Infrastructure gets a longer rope than rejection: a flaky seat is worth
+// retrying more often than a stage that keeps saying no, and neither is free.
+export const DEFAULT_MAX_INFRA_ATTEMPTS = 6;
+
+
+// A stage attempt only means "this stage rejected the work" when the stage
+// actually returned a verdict. A dispatch that produced none — the agent could
+// not be reached, the runner was orphaned, the route ran and wrote nothing —
+// says nothing about the work, but was counted the same way.
+//
+// That is how lifemaxing obj-c58897c0 reached "builder has already used 7 of 3
+// stage attempts" off a single genuine rejection: attempts 1-6 were an
+// actor/agent-id mismatch, an orphaned runner and a provider quota failure.
+// The budget meant for "this stage keeps rejecting the work" was spent on the
+// factory failing to run it, and the task escalated to the founder.
+//
+// Both kinds still have to be bounded — an unreachable route must not retry
+// forever — so they are counted separately against separate allowances rather
+// than one of them being made free.
+export function countStageAttempts(state, stage) {
+  const dispatches = (state?.dispatches || []).filter(
+    (item) => item.stage === stage && (item.kind === "stage" || !item.kind),
+  );
+  let verdicts = 0;
+  let infra = 0;
+  for (const item of dispatches) {
+    if (item.outcome) verdicts += 1;
+    else infra += 1;
+  }
+  return { verdicts, infra, total: dispatches.length };
+}
+
+// Which budget, if either, this stage has exhausted.
+export function stageBudgetExceeded(state, stage, { maxAttemptsPerStage = 3, maxInfraAttemptsPerStage = DEFAULT_MAX_INFRA_ATTEMPTS } = {}) {
+  const { verdicts, infra } = countStageAttempts(state, stage);
+  if (verdicts >= maxAttemptsPerStage) {
+    return { exceeded: "verdicts", verdicts, infra, limit: maxAttemptsPerStage };
+  }
+  if (infra >= maxInfraAttemptsPerStage) {
+    return { exceeded: "infra", verdicts, infra, limit: maxInfraAttemptsPerStage };
+  }
+  return { exceeded: null, verdicts, infra };
+}
+
+export function routeStageFailure(state, { failedStage, targetStage, maxAttemptsPerStage = 3, maxInfraAttemptsPerStage = DEFAULT_MAX_INFRA_ATTEMPTS, now = new Date().toISOString() }) {
   if (state.blocker?.outcome !== "fail") return state;
-  const attempts = (state.dispatches || []).filter((item) => item.stage === failedStage).length;
-  if (attempts >= maxAttemptsPerStage) return state;
+  const budget = stageBudgetExceeded(state, failedStage, { maxAttemptsPerStage, maxInfraAttemptsPerStage });
+  if (budget.exceeded) return state;
+  const attempts = budget.verdicts + budget.infra;
   // A review-stage FAIL normally routes back to the builder so a real defect
   // gets fixed. But when the failure is infrastructural (the agent could not
   // run, produced no result file, timed out) there is nothing for the builder
@@ -273,7 +324,7 @@ export function startRecovery(state, { failedStage, actor, error, evidence = [],
   return next;
 }
 
-export function recordRecoveryResult(state, { outcome, actor, summary, evidence = [], diagnosis = null, maxAttemptsPerStage = 3, now = new Date().toISOString() }) {
+export function recordRecoveryResult(state, { outcome, actor, summary, evidence = [], diagnosis = null, maxAttemptsPerStage = 3, maxInfraAttemptsPerStage = DEFAULT_MAX_INFRA_ATTEMPTS, now = new Date().toISOString() }) {
   const active = state.recovery?.active;
   if (!active) throw new Error("No recovery attempt is active.");
   const next = structuredClone(state);
@@ -312,12 +363,16 @@ export function recordRecoveryResult(state, { outcome, actor, summary, evidence 
     // a fresh attempt, so a stage could be dispatched indefinitely while
     // `routeStageFailure`'s limit never applied. Counted against the stage we
     // are actually about to re-enter.
-    const attempts = (next.dispatches || []).filter((item) => item.stage === resumeAt && (item.kind === "stage" || !item.kind)).length;
-    if (attempts >= maxAttemptsPerStage) {
+    const budget = stageBudgetExceeded(next, resumeAt, { maxAttemptsPerStage, maxInfraAttemptsPerStage });
+    const attempts = budget.verdicts + budget.infra;
+    if (budget.exceeded) {
+      const spent = budget.exceeded === "verdicts"
+        ? `returned ${budget.verdicts} verdict(s) of ${budget.limit} allowed`
+        : `lost ${budget.infra} dispatch(es) of ${budget.limit} allowed before any verdict — the factory could not run it, rather than it rejecting the work`;
       return escalateRecovery(next, {
         failedStage: resumeAt,
         kind: "FOUNDER_DECISION_REQUIRED",
-        error: `Recovery attempt ${active.attempt} was independently verified, but ${resumeAt} has already used ${attempts} of ${maxAttemptsPerStage} stage attempts. Re-running it would exceed the per-stage budget. Founder direction is required: accept the verified work and advance, raise the budget, or change scope.`,
+        error: `Recovery attempt ${active.attempt} was independently verified, but ${resumeAt} has ${spent}. Re-running it would exceed that budget. Founder direction is required: accept the verified work and advance, raise the budget, or change scope.`,
         now,
       });
     }
@@ -509,6 +564,23 @@ function validateFounderAssertion(state, assertion, evidence, now = new Date().t
   // would happily compare two fields it also controls.
   const authority = authorityForVerification(state, authorityOptions);
   if (!authority?.publicKey) throw new Error("This task has no recorded approval authority.");
+
+  // Fail closed when nothing outside the task state vouches for the key.
+  //
+  // Previously an unresolvable anchor fell back to the task's own record, so
+  // deleting or corrupting one small file silently restored the exact
+  // vulnerability this gate exists to close — and "no anchor" was
+  // indistinguishable from "approved" at the two places that matter. A
+  // high-risk build now requires a real anchor.
+  //
+  // FACTORY_ALLOW_UNANCHORED_APPROVAL=1 is an explicit, deliberately awkward
+  // escape hatch for a deployment that has not enrolled a key yet.
+  if (!authority.anchored && !allowUnanchoredApproval()) {
+    throw new Error(
+      "No trusted founder approval key is configured, so this approval cannot be verified. "
+      + "Enroll a key in Headquarters or set FACTORY_FOUNDER_PUBLIC_KEY.",
+    );
+  }
 
   // The task points at a different key than the one this deployment trusts.
   // That is a tampering signal, not a routine mismatch.

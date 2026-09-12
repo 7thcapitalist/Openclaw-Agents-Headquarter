@@ -610,6 +610,7 @@ export async function handleObjectiveRetry({
       objectivePath: statePath,
       agentIds: cfg.openclawIntegration?.agentIds || {},
       maxAttemptsPerStage: cfg.openclawIntegration?.maxAttemptsPerStage || 3,
+      maxInfraAttemptsPerStage: cfg.openclawIntegration?.maxInfraAttemptsPerStage || 6,
       concurrentGroups: cfg.openclawIntegration?.concurrentGroups,
       stateRoot: defaultStateRoot(hq, obj.repo),
     }))

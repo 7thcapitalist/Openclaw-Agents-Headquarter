@@ -2,6 +2,7 @@
 // (FCT-P0-04). Each test names the finding it locks down.
 
 import test from "node:test";
+import { anchorFounderKey } from "./helpers/anchor.mjs";
 import assert from "node:assert/strict";
 import { generateKeyPairSync, sign } from "node:crypto";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
@@ -48,6 +49,9 @@ function newKeypair() {
 }
 
 function blockedTask(publicKeyPem) {
+  // The gate fails closed without a key vouched for outside task state, so a
+  // test that drives the approval path must configure one, as a deployment does.
+  anchorFounderKey(publicKeyPem);
   const worktree = mkdtempSync(join(tmpdir(), "hq-rev-"));
   mkdirSync(join(worktree, "evidence"), { recursive: true });
   for (const stage of ["product", "architect"]) {

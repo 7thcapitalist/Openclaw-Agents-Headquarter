@@ -1,4 +1,5 @@
 import test from "node:test";
+import { anchorFounderKey } from "./helpers/anchor.mjs";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
@@ -23,6 +24,9 @@ import {
 
 const keys = generateKeyPairSync("ed25519");
 const founderPublicKey = keys.publicKey.export({ type: "spki", format: "pem" });
+// This suite's own key is what the deployment trusts. Without an anchor the
+// high-risk gate fails closed, by design.
+anchorFounderKey(founderPublicKey);
 
 const task = {
   id: "issue-42",

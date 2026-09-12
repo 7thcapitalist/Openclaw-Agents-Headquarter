@@ -579,6 +579,27 @@
       "notes": "Documents the pinned sources and why delivery semantics are built before any connection exists."
     },
     {
+      "localPath": "factory/lib/hq/rewake-throttle.mjs",
+      "sourceId": "paperclip",
+      "sourcePath": "server/src/services/issue-rewake-throttle.ts",
+      "classification": "adapted",
+      "notes": "Adapts Paperclip no-progress re-wake throttling to HQ canonical task state, with off/report/enforce modes and a deferral that never consumes a retry."
+    },
+    {
+      "localPath": "factory/rewake-throttle.example.json",
+      "sourceId": "paperclip",
+      "sourcePath": "server/src/services/issue-rewake-throttle.ts",
+      "classification": "inspired",
+      "notes": "Example throttle configuration showing the report-first enablement path; the real file is operator-supplied."
+    },
+    {
+      "localPath": "factory/test/rewake-throttle.test.mjs",
+      "sourceId": "paperclip",
+      "sourcePath": "server/src/services/issue-rewake-throttle.ts",
+      "classification": "inspired",
+      "notes": "Tests the progress vocabulary, bypass asymmetry between founder and mention wakes, escalating cooldown with a ceiling, and fail-open behaviour."
+    },
+    {
       "localPath": "factory/lib/hq/search.mjs",
       "sourceId": "paperclip",
       "sourcePath": "server/src/services/company-search.ts",

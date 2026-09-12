@@ -5,6 +5,7 @@
 // task past `builder`? The answer must be no, for every variation.
 
 import test from "node:test";
+import { anchorFounderKey } from "./helpers/anchor.mjs";
 import assert from "node:assert/strict";
 import { generateKeyPairSync, sign } from "node:crypto";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
@@ -49,6 +50,9 @@ function completion(stage, actor) {
 
 // Build a high-risk task parked at the gate, with evidence on disk.
 function blockedTask({ publicKeyPem, evidenceText = "Founder approved.\n" } = {}) {
+  // The gate fails closed without a key vouched for outside task state, so a
+  // test that drives the approval path must configure one, as a deployment does.
+  anchorFounderKey(publicKeyPem);
   const worktree = mkdtempSync(join(tmpdir(), "hq-gate-"));
   mkdirSync(join(worktree, "evidence"), { recursive: true });
   for (const stage of ["product", "architect"]) {

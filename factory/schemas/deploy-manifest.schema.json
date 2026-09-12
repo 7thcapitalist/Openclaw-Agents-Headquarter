@@ -48,7 +48,7 @@
       "additionalProperties": false,
       "required": ["path"],
       "properties": {
-        "path": { "type": "string", "pattern": "^/" },
+        "path": { "type": "string", "pattern": "^/(?![/\\\\])" },
         "expectStatus": { "type": "integer", "minimum": 100, "maximum": 599, "default": 200 },
         "timeoutMs": { "type": "integer", "minimum": 1, "default": 10000 }
       }
@@ -58,7 +58,7 @@
       "additionalProperties": false,
       "required": ["path"],
       "properties": {
-        "path": { "type": "string", "pattern": "^/" },
+        "path": { "type": "string", "pattern": "^/(?![/\\\\])" },
         "method": { "enum": ["GET", "POST", "HEAD"], "default": "GET" },
         "expectStatus": { "type": "integer", "minimum": 100, "maximum": 599, "default": 200 },
         "bodyIncludes": { "type": "string" }
