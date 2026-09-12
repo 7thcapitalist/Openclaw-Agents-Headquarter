@@ -175,6 +175,14 @@ runDeployment({
 States: `not_deployed` → `deploying` → (`deployed` | `failed` |
 `needs_founder_action`).
 
+Every run first loads the last persisted record (`readDeploymentState`) and
+carries its durable facts forward — `provider`, `productionUrl`,
+`providerDeploymentId`, `lastDeploymentAt`, last `health`, and a trimmed
+`history` (last 40 entries). Run-scoped fields (`state`, `founderActionRequired`,
+`founderActionReason`, `lastError`) always start clean. A missing or unreadable
+prior record starts from `baseState`. This guarantees a failed or dry run never
+erases the known-good production URL / timestamp / audit trail that HQ serves.
+
 Steps, in order, each recorded to `history`:
 
 1. **validate** — `readDeployManifest` / `validateDeployManifest`; resolve every
@@ -185,20 +193,27 @@ Steps, in order, each recorded to `history`:
 3. **test** — run the project's own test command. Convention: `npm test`
    (sk's if the project declares none via `manifest.build` — a `test` step that
    finds no test script records `skipped`, not `failed`). Non-zero → `failed`.
-4. **migrate hooks** — `hooks.preDeploy`, then `hooks.migrate`. Failure →
-   `failed` (before any deploy).
-5. **deploy** — if `!allowRealDeploy`: skip `provider.deploy()`, land
+4. **dry-run gate** — if `!allowRealDeploy`: stop here, land
    `needs_founder_action` reason `"dry run: real deploy requires founder
-   action"`. Else `provider.deploy(...)`. Adapter `MissingCredentialError` /
+   action"`. A dry run runs validate/build/test only — it never touches an
+   external system.
+5. **migrate hooks** — `hooks.preDeploy`, then `hooks.migrate`. Only reached
+   once the founder has authorised a real deploy (`allowRealDeploy === true`),
+   because these can mutate production (e.g. run migrations against a production
+   `DATABASE_URL`). Failure → `failed` (before any deploy).
+6. **deploy** — `provider.deploy(...)`. Adapter `MissingCredentialError` /
    auth error → `needs_founder_action`. Other adapter throw → `failed`. Success
    → record `productionUrl`, `providerDeploymentId`, set state `deploying`.
-6. **postDeploy hooks** — `hooks.postDeploy`. Failure → `failed` (URL retained).
-7. **smoke** — HTTP GET `healthCheck.path` against `productionUrl`, assert
+7. **postDeploy hooks** — `hooks.postDeploy`. Failure → `failed` (URL retained).
+8. **smoke** — HTTP GET `healthCheck.path` against `productionUrl`, assert
    `expectStatus` within `timeoutMs`; then, if `smokeTest` present, one
    functional request asserting status and optional `bodyIncludes`. Any failure
    → `failed`, `productionUrl` and timestamp retained so the founder can inspect
-   the broken deploy.
-8. all passed → `deployed`, set `lastDeploymentAt = now()`.
+   the broken deploy. `healthCheck.path` / `smokeTest.path` must be a single-`/`
+   absolute path with no authority — `//host` and `/\host` are rejected by the
+   manifest validator so the post-deploy request cannot be redirected to an
+   external host.
+9. all passed → `deployed`, set `lastDeploymentAt = now()`.
 
 Persisted record (`store.mjs`):
 

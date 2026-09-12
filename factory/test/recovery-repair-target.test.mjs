@@ -134,7 +134,9 @@ function makeFixture({ spentReviewerAttempts = 0 } = {}) {
   // puts recovery, rather than another route, next in line.
   if (spentReviewerAttempts) {
     state.dispatches = Array.from({ length: spentReviewerAttempts }, (_, i) => ({
-      id: `${task.id}-reviewer-${i + 1}`, stage: "reviewer", actor: "claude", kind: "stage", status: "failed", attempt: i + 1,
+      // Returned verdicts, not lost dispatches: these are what the rejection
+      // budget is counting.
+      id: `${task.id}-reviewer-${i + 1}`, stage: "reviewer", actor: "claude", kind: "stage", status: "completed", outcome: "fail", attempt: i + 1,
     }));
   }
   writeState(statePath, state);

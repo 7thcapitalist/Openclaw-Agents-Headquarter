@@ -5,6 +5,7 @@ import { readCostEvents, summarizeCostLedger } from "./cost-ledger.mjs";
 import { readWakeupQueue, wakeupQueueHealth } from "../wakeups/queue.mjs";
 import { readLease } from "../leases/task-lease.mjs";
 import { defaultStateRoot } from "./tasks.mjs";
+import { buildRewakeReport } from "./rewake-throttle.mjs";
 
 export function buildOperationsSnapshot({ hqRoot, stateRoot = null, now = new Date().toISOString(), eventLimit = 30 } = {}) {
   const root = resolve(stateRoot || defaultStateRoot(hqRoot));
@@ -19,15 +20,21 @@ export function buildOperationsSnapshot({ hqRoot, stateRoot = null, now = new Da
   try { costs = summarizeCostLedger(readCostEvents(costPath)); }
   catch (error) { warnings.push(`cost ledger unavailable: ${error.message}`); costs = { ...costs, available: false }; }
   const objectives = objectiveHealth(root, warnings);
+  // Which tasks are paying for runs that change nothing. Read-only; the
+  // throttle itself is consulted by the wakeup worker, not here.
+  let rewake = { version: 1, mode: "off", summary: { stallingTasks: 0, overThreshold: 0, wastedRuns: 0 }, tasks: [] };
+  try { rewake = buildRewakeReport({ hqRoot, states: taskStates(root), now }); }
+  catch (error) { warnings.push(`re-wake report unavailable: ${error.message}`); }
   const audit = tasks.flatMap((task) => task.audit).sort((a, b) => b.occurredAt.localeCompare(a.occurredAt)).slice(0, bounded(eventLimit, 1, 100));
   return { version: 1, asOf: now, available: warnings.length === 0, warnings, summary: {
     tasks: tasks.length, activeRuns: tasks.filter((task) => ["needs-followup", "advanced"].includes(task.liveness?.state)).length,
     blockedRuns: tasks.filter((task) => ["blocked", "failed"].includes(task.liveness?.state)).length,
     leasedTasks: tasks.filter((task) => task.lease).length, queuedWakeups: queue.counts.queued, deadLetters: queue.counts["dead-letter"],
     inputTokens: costs.totals.inputTokens, outputTokens: costs.totals.outputTokens, costMicros: costs.totals.costMicros, unpricedEvents: costs.totals.unpricedEvents,
+    stallingTasks: rewake.summary.overThreshold, wastedRuns: rewake.summary.wastedRuns,
     unhealthyObjectives: objectives.filter((objective) => objective.healthy === false).length,
     strandedNodes: objectives.reduce((sum, objective) => sum + objective.strandedNodeIds.length, 0),
-  }, tasks: tasks.map(({ audit: _audit, ...task }) => task), objectives, queue, audit, costs };
+  }, tasks: tasks.map(({ audit: _audit, ...task }) => task), objectives, rewake, queue, audit, costs };
 }
 
 function taskOperations(statePath, warnings) {
@@ -87,6 +94,16 @@ function healthFiles(root, out = []) {
     const path = join(root, entry.name);
     if (entry.isDirectory()) healthFiles(path, out);
     else if (entry.isFile() && entry.name === "graph-health.json") out.push(path);
+  }
+  return out;
+}
+
+// Raw task states for projections that need the whole record rather than the
+// operations summary of it.
+function taskStates(root) {
+  const out = [];
+  for (const path of stateFiles(root)) {
+    try { out.push(JSON.parse(readFileSync(path, "utf8"))); } catch { /* reported by taskOperations */ }
   }
   return out;
 }

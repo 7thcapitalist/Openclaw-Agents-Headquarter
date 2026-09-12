@@ -44,6 +44,26 @@ export function finishWakeup(path, { wakeupId, actorId, outcome, error = null, n
   });
 }
 
+// Return a claimed wakeup to the queue, to be reconsidered after `notBefore`.
+//
+// Deliberately NOT `finishWakeup(..., "failed")`: a deferral is not a failure.
+// Nothing went wrong, so it must not consume a retry or move the item toward a
+// dead letter — the claim's attempt increment is given back. Used by the
+// re-wake throttle to hold a wake without losing it.
+export function deferWakeup(path, { wakeupId, actorId, notBefore, now = () => new Date().toISOString() }) {
+  return mutate(path, (state) => {
+    const item = state.items.find((row) => row.wakeupId === wakeupId);
+    if (!item) throw new Error(`Unknown wakeup '${wakeupId}'`);
+    if (item.status !== "claimed" || item.claimedBy !== actorId) throw new Error("Wakeup is not claimed by this actor");
+    const at = now();
+    const until = notBefore && Number.isFinite(Date.parse(notBefore)) ? new Date(notBefore).toISOString() : at;
+    item.status = "queued"; item.claimedBy = null; item.claimedAt = null;
+    item.attempt = Math.max(0, item.attempt - 1);
+    item.notBefore = until; item.updatedAt = at; item.deferredAt = at;
+    return { state, result: { ...item } };
+  });
+}
+
 export function readWakeupQueue(path) {
   if (!existsSync(path)) return { version: 1, items: [] };
   const state = JSON.parse(readFileSync(path, "utf8"));

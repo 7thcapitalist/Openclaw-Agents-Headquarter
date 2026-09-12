@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the OpenClaw Factory Learning Cycle every 3 days
+Documentation=https://github.com/7thcapitalist/Openclaw-Agents-Headquarter/blob/main/docs/software-factory/DECISIONS.md
+
+[Timer]
+# Every 3 days, anchored to a fixed epoch so the cadence is stable across reboots.
+OnCalendar=*-*-01/3 03:30:00
+Persistent=true
+RandomizedDelaySec=900
+
+[Install]
+WantedBy=timers.target

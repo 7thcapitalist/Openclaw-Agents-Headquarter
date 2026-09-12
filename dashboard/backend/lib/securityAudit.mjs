@@ -24,15 +24,24 @@ import { dirname, join } from "node:path";
 // mean it.
 const REDACT_PATTERNS = [
   "signature", "assertion", "secret", "password", "passphrase", "passwd",
-  "token", "cookie", "authorization", "credential", "apikey", "privatekey",
-  "privkey", "pem", "sessionid",
+  "token", "cookie", "authorization", "auth", "credential", "apikey",
+  "privatekey", "privkey", "key", "pem", "sessionid", "bearer", "jwt",
+  "dsn", "connectionstring", "databaseurl", "salt",
 ];
 
-// Names that contain a sensitive substring but carry no secret, so redacting
-// them would only destroy useful audit context.
+// Names that contain a sensitive substring but carry no secret. Redacting them
+// destroys the very evidence a founder-approval audit exists to carry — you
+// must still be able to record WHETHER a signature verified and WHICH public
+// key approved. A public key is not a secret.
 const REDACT_EXCEPTIONS = new Set([
   "tokenized", "passwordless", "hastoken", "haspassword", "tokencount",
   "secretcount", "credentialtype", "signaturealgorithm",
+  "signaturevalid", "signatureverified", "signaturepresent",
+  "assertionpresent", "assertionvalid", "assertionversion",
+  "publickey", "publickeypem", "pempath", "keyfingerprint", "fingerprint",
+  "keyid", "keysource", "keyalgorithm", "authority", "authorityfingerprint",
+  "authoritysource", "keyrotated", "keyenrolled", "authenticated",
+  "typemismatch", "typemap", "monkey", "keyboard",
 ]);
 
 function isSensitiveKey(key) {
@@ -71,18 +80,45 @@ export function redact(value, depth = 0) {
   }
 
   if (typeof value === "string") {
-    return value.length > MAX_VALUE_LENGTH ? `${value.slice(0, MAX_VALUE_LENGTH)}…[truncated]` : value;
+    // Scan the VALUE too. Checking only key names meant
+    // {message:"login failed for DASHBOARD_PASSWORD=hunter2"} was written verbatim.
+    return redactText(value);
   }
   return value;
 }
 
 // Strip anything that looks like a credential out of free text.
 export function redactText(text) {
-  return String(text ?? "")
-    .replace(/-----BEGIN[^-]*PRIVATE KEY-----[\s\S]*?-----END[^-]*PRIVATE KEY-----/g, "[redacted:private-key]")
-    .replace(/\b(?:password|passphrase|secret|token|api[_-]?key)\b\s*[:=]\s*\S+/gi, (m) => `${m.split(/[:=]/)[0]}=[redacted]`)
-    .replace(/\beyJ[\w-]{10,}\.[\w-]{10,}\.[\w-]{10,}\b/g, "[redacted:jwt]")
-    .slice(0, MAX_VALUE_LENGTH);
+  let out = String(text ?? "");
+
+  // A PEM block, whether or not the END marker survived the excerpt.
+  out = out.replace(
+    /-----BEGIN[^-]*PRIVATE KEY-----[\s\S]*?(?:-----END[^-]*PRIVATE KEY-----|$)/g,
+    "[redacted:private-key]",
+  );
+  // Credentials embedded in a URL: postgres://user:pw@host
+  out = out.replace(/\b([a-z][a-z0-9+.-]*:\/\/[^\s:@/]+):([^\s@/]+)@/gi, "$1:[redacted]@");
+  // Authorization headers and bearer tokens.
+  out = out.replace(/\b(bearer|basic|token)\s+[A-Za-z0-9._~+/=-]{8,}/gi, "$1 [redacted]");
+  // key=value / key: value, including SCREAMING_SNAKE env names and quoted
+  // values. No \b before the name: "_" is a word character, so \b never
+  // matched at the start of DASHBOARD_PASSWORD.
+  out = out.replace(
+    /([A-Za-z0-9_.-]*(?:password|passphrase|passwd|secret|token|apikey|api[_-]?key|credential|privatekey|priv[_-]?key)[A-Za-z0-9_.-]*)\s*["']?\s*[:=]\s*["']?([^\s"',;}]+)/gi,
+    "$1=[redacted]",
+  );
+  // A sensitive name followed by a QUOTED value, with no : or = between them
+  // ("password 'hunter2'"). Restricted to quoted values on purpose: matching a
+  // bare whitespace-separated word would mangle ordinary prose such as
+  // "password reset requested".
+  out = out.replace(
+    /([A-Za-z0-9_.-]*(?:password|passphrase|passwd|secret|token|apikey|credential|privatekey)[A-Za-z0-9_.-]*)\s+["']([^"']+)["']/gi,
+    "$1 [redacted]",
+  );
+  // A bare JWT anywhere in the text.
+  out = out.replace(/\beyJ[\w-]{6,}\.[\w-]{6,}\.[\w-]{6,}\b/g, "[redacted:jwt]");
+
+  return out.length > MAX_VALUE_LENGTH ? `${out.slice(0, MAX_VALUE_LENGTH)}…[truncated]` : out;
 }
 
 function shortDigest(value) {
