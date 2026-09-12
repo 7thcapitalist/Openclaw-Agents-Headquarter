@@ -4,6 +4,7 @@
 // route that can raise a limit without review.
 
 import { existsSync, readFileSync } from "fs";
+import { assertSupportedVersion } from "../store/durable-version.mjs";
 import { join, resolve } from "path";
 import { evaluateBudgetAlerts } from "./budget-alerts.mjs";
 
@@ -19,6 +20,7 @@ export function readPolicyRegistry(hqRoot, { path = null } = {}) {
   } catch (error) {
     throw new Error(`budget registry at ${file} is not valid JSON: ${error.message}`);
   }
+  assertSupportedVersion(parsed?.version, { format: "budget-registry", path: file });
   if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.policies)) {
     throw new Error(`budget registry at ${file} must be an object with a 'policies' array`);
   }

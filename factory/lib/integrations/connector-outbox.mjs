@@ -21,6 +21,7 @@
 
 import { createHash } from "crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "fs";
+import { assertSupportedVersion, isUnsupportedVersion } from "../store/durable-version.mjs";
 import { dirname, join, resolve } from "path";
 
 export const OUTBOX_STATUSES = Object.freeze(["pending", "in-flight", "delivered", "failed", "dead-letter"]);
@@ -91,6 +92,7 @@ export function readOutbox(path) {
     } catch (error) {
       throw new Error(`Invalid outbox line ${index + 1}: ${error.message}`);
     }
+    assertSupportedVersion(row?.version, { format: "connector-event", path });
     if (!OUTBOX_STATUSES.includes(row.status)) throw new Error(`Invalid outbox line ${index + 1}: unknown status`);
     byId.set(row.eventId, row);
   }
@@ -156,16 +158,20 @@ export function readConnectorState(path) {
   if (!existsSync(path)) return emptyState();
   try {
     const parsed = JSON.parse(readFileSync(path, "utf8"));
+    // A state file from a newer HQ is degraded, not merged: spreading fields we
+    // do not understand over the defaults is how a cursor silently moves.
+    assertSupportedVersion(parsed?.version, { format: "connector-state", path });
     return {
       ...emptyState(),
       ...parsed,
       seenNonces: Array.isArray(parsed.seenNonces) ? parsed.seenNonces.slice(-NONCE_WINDOW) : [],
       cursors: parsed.cursors && typeof parsed.cursors === "object" ? parsed.cursors : {},
     };
-  } catch {
+  } catch (error) {
     // A corrupt state file must not lose the outbox. State is a cache of
-    // circuit and cursor position; the log is the record.
-    return { ...emptyState(), degraded: true };
+    // circuit and cursor position; the log is the record. A file from the
+    // future degrades the same way, but says so.
+    return { ...emptyState(), degraded: true, reason: isUnsupportedVersion(error) ? error.message : null };
   }
 }
 

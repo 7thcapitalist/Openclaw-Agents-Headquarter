@@ -14,6 +14,7 @@
 // runtime write path.
 
 import { existsSync, readFileSync, readdirSync } from "fs";
+import { assertSupportedVersion } from "../store/durable-version.mjs";
 import { join, resolve } from "path";
 import { defaultStateRoot } from "./tasks.mjs";
 
@@ -154,6 +155,7 @@ export function readGoalRegistry(hqRoot, { path = null } = {}) {
   } catch (error) {
     throw new Error(`goal registry at ${file} is not valid JSON: ${error.message}`);
   }
+  assertSupportedVersion(parsed?.version, { format: "goal-registry", path: file });
   if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.goals)) {
     throw new Error(`goal registry at ${file} must be an object with a 'goals' array`);
   }

@@ -598,6 +598,20 @@
       "sourcePath": "server/src/services/issue-rewake-throttle.ts",
       "classification": "inspired",
       "notes": "Tests the progress vocabulary, bypass asymmetry between founder and mention wakes, escalating cooldown with a ceiling, and fail-open behaviour."
+    },
+    {
+      "localPath": "factory/lib/store/durable-version.mjs",
+      "sourceId": "paperclip",
+      "sourcePath": "packages/db/src/check-migration-safety.ts",
+      "classification": "inspired",
+      "notes": "Takes the discipline underneath Paperclip migration safety \u2014 never operate on a durable format you do not understand \u2014 and applies it to HQ version-tagged JSON and NDJSON artifacts rather than to SQL migrations."
+    },
+    {
+      "localPath": "factory/test/durable-versions.test.mjs",
+      "sourceId": "paperclip",
+      "sourcePath": "packages/db/src/migration-snapshot-drift.test.ts",
+      "classification": "inspired",
+      "notes": "Enumerates every durable format and asserts each has a reader that refuses a file from the future, so a new format cannot skip the check."
     }
   ]
 }
