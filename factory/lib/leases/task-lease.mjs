@@ -2,6 +2,7 @@
 // 6abeb67334348dcb6fde2d591a27ffc7efc7118d (MIT). See attribution doc.
 import { randomUUID } from "crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
+import { assertSupportedVersion } from "../store/durable-version.mjs";
 import { basename, dirname, join, resolve } from "path";
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -53,7 +54,14 @@ export function forceReleaseTaskLease({ root, taskId, operatorId, reason, audit 
 export function readLease(root, taskId) {
   const path = join(leaseDir(root, taskId), "lease.json");
   if (!existsSync(path)) return null;
-  try { return validateLease(JSON.parse(readFileSync(path, "utf8"))); }
+  let parsed;
+  try { parsed = JSON.parse(readFileSync(path, "utf8")); }
+  catch (error) { throw new Error(`Invalid task lease '${taskId}': ${error.message}`); }
+  // Outside the wrap on purpose: a lease written by a newer HQ must reach the
+  // caller as an UnsupportedVersionError, not as an indistinguishable "invalid
+  // lease" that reads like corruption.
+  assertSupportedVersion(parsed?.version, { format: "task-lease", path });
+  try { return validateLease(parsed); }
   catch (error) { throw new Error(`Invalid task lease '${taskId}': ${error.message}`); }
 }
 

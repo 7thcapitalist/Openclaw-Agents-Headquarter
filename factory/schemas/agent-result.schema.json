@@ -3,30 +3,172 @@
   "$id": "agent-result.schema.json",
   "title": "Factory Agent Result",
   "type": "object",
-  "required": ["version", "dispatchId", "stage", "actor", "outcome", "summary", "evidence"],
+  "required": [
+    "version",
+    "dispatchId",
+    "stage",
+    "actor",
+    "outcome",
+    "summary",
+    "evidence"
+  ],
   "properties": {
-    "version": { "const": 1 },
-    "dispatchId": { "type": "string", "minLength": 1 },
-    "stage": { "enum": ["product", "architect", "builder", "reviewer", "qa", "security", "release"] },
-    "actor": { "type": "string", "minLength": 1 },
-    "outcome": { "enum": ["pass", "fail", "decision-required", "decision-deferred"] },
-    "summary": { "type": "string", "minLength": 1 },
-    "diagnosis": { "type": "object" },
+    "version": {
+      "const": 1
+    },
+    "dispatchId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "stage": {
+      "enum": [
+        "product",
+        "architect",
+        "builder",
+        "reviewer",
+        "qa",
+        "security",
+        "release"
+      ]
+    },
+    "actor": {
+      "type": "string",
+      "minLength": 1
+    },
+    "outcome": {
+      "enum": [
+        "pass",
+        "fail",
+        "decision-required",
+        "decision-deferred"
+      ]
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "diagnosis": {
+      "type": "object"
+    },
     "decision": {
       "type": "object",
-      "required": ["question", "options"],
+      "required": [
+        "question",
+        "options"
+      ],
       "properties": {
-        "question": { "type": "string", "minLength": 1 },
-        "why": { "type": "string" },
-        "options": { "type": "array", "minItems": 2, "maxItems": 3, "items": { "type": "string", "minLength": 1 } },
-        "recommendation": { "type": "string" }
+        "question": {
+          "type": "string",
+          "minLength": 1
+        },
+        "why": {
+          "type": "string"
+        },
+        "options": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 3,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "recommendation": {
+          "type": "string"
+        }
       },
       "additionalProperties": false
     },
     "evidence": {
       "type": "array",
       "minItems": 1,
-      "items": { "type": "string", "minLength": 1 }
+      "items": {
+        "oneOf": [
+          {
+            "type": "string",
+            "minLength": 1
+          },
+          {
+            "type": "object",
+            "required": [
+              "path"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "type": {
+                "enum": [
+                  "command-output",
+                  "manual-scenario",
+                  "screenshot",
+                  "diff",
+                  "report",
+                  "file"
+                ]
+              },
+              "command": {
+                "type": "string"
+              },
+              "scenario": {
+                "type": "string"
+              },
+              "startedAt": {
+                "type": "string"
+              },
+              "endedAt": {
+                "type": "string"
+              },
+              "exitStatus": {
+                "type": "integer"
+              }
+            },
+            "additionalProperties": false
+          }
+        ]
+      }
+    },
+    "criteria": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "status"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "status": {
+            "enum": [
+              "proven",
+              "blocked",
+              "not-applicable"
+            ]
+          },
+          "artifacts": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "note": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "limitations": {
+      "type": "string"
     }
   },
   "additionalProperties": false

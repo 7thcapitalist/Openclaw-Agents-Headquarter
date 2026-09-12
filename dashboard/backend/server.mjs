@@ -128,6 +128,7 @@ import { buildAgentScorecards } from "../../factory/lib/hq/agent-scorecards.mjs"
 import { buildPermissionsSnapshot } from "../../factory/lib/hq/permissions-snapshot.mjs";
 import { buildBlastRadiusReport } from "../../factory/lib/hq/blast-radius.mjs";
 import { buildGoalsSnapshot } from "../../factory/lib/hq/goals.mjs";
+import { parseLayers, searchHq } from "../../factory/lib/hq/search.mjs";
 import { buildBudgetSnapshot } from "../../factory/lib/hq/budget-snapshot.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -1073,6 +1074,28 @@ app.get("/api/hq/scorecards", (_req, res) => {
 app.get("/api/hq/retention", (_req, res) => {
   try { res.json(buildRetentionSnapshot({ hqRoot: ROOT, backupDir: process.env.FACTORY_BACKUP_DIR || null })); }
   catch (e) { res.status(500).json({ version: 1, available: false, destructiveActionsRequireOperator: true, error: String(e.message || e) }); }
+});
+
+// Read-only, and a filter rather than a reader: every layer is an existing
+// projection, searched with the same sanitisation the corresponding panel
+// applies. Nothing here can surface a prompt, an agent's raw result, or any
+// file the panels do not already show. A bad query is a 400 with the reason,
+// never a 500 and never a wider read.
+app.get("/api/hq/search", (req, res) => {
+  let layers;
+  try {
+    layers = parseLayers(req.query.layers);
+  } catch (e) {
+    return res.status(400).json({ version: 1, available: false, error: String(e.message || e) });
+  }
+  try {
+    res.json(searchHq({ hqRoot: ROOT, query: req.query.q, layers, limit: req.query.limit }));
+  } catch (e) {
+    // A rejected query is the caller's problem to fix, so say which.
+    const message = String(e.message || e);
+    const badQuery = /query (must be|has no)/.test(message);
+    res.status(badQuery ? 400 : 500).json({ version: 1, available: false, error: message });
+  }
 });
 
 app.get("/api/hq/goals", (_req, res) => {

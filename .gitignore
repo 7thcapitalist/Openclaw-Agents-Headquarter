@@ -11,7 +11,14 @@ dashboard/backend/data/
 # Factory process artifacts — gate evidence, agent scratch, synthetic
 # infra-failure notes. These belong to a task's run, never to the product,
 # and must not be swept into a task branch by `git add -A` at publish time.
-evidence/
+#
+# Anchored to the worktree root, which is the only place a run writes them:
+# openclaw-runner.mjs and objective/orchestrator.mjs both resolve
+# <worktree>/evidence. Unanchored, this pattern also matched product source in
+# any directory named evidence/ — `git add -A` then dropped it with no error,
+# which is how the FCT-P0-05 modules were written, tested and left
+# uncommittable. See factory/test/evidence-gitignore-scope.test.mjs.
+/evidence/
 /*-qa.test.log
 /*-qa.exitcode
 /*-qa.summary.md

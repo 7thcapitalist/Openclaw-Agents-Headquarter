@@ -41,6 +41,7 @@
 // append-only audit log.
 
 import { existsSync, readFileSync } from "fs";
+import { assertSupportedVersion } from "../store/durable-version.mjs";
 import { join, resolve } from "path";
 import { appendAuditEvent, createAuditEvent } from "../audit/envelope.mjs";
 import { observeSubject } from "./blast-radius.mjs";
@@ -90,6 +91,7 @@ export function readPermissionRegistry(hqRoot, { path = null } = {}) {
   } catch (error) {
     throw new Error(`permission registry at ${file} is not valid JSON: ${error.message}`);
   }
+  assertSupportedVersion(parsed?.version, { format: "permission-registry", path: file });
   if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.grants)) {
     throw new Error(`permission registry at ${file} must be an object with a 'grants' array`);
   }
