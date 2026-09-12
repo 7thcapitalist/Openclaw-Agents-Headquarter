@@ -99,6 +99,7 @@ async function start(args) {
     maxConcurrent: Number(args["max-concurrent"]) || Number(process.env.FACTORY_MAX_CONCURRENT) || 3,
     agentIds: cfg.openclawIntegration?.agentIds || {},
     maxAttemptsPerStage: cfg.openclawIntegration?.maxAttemptsPerStage || 3,
+    maxInfraAttemptsPerStage: cfg.openclawIntegration?.maxInfraAttemptsPerStage || 6,
     concurrentGroups: cfg.openclawIntegration?.concurrentGroups,
     stateRoot: defaultStateRoot(HQ_ROOT, repo),
   });

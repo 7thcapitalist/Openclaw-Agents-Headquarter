@@ -33,6 +33,8 @@
   "openclawIntegration": {
     "protocolVersion": 1,
     "maxAttemptsPerStage": 3,
+    "_maxInfraAttemptsPerStageDoc": "Dispatches that produced no verdict at all (agent unreachable, runner orphaned, route ran and wrote nothing) are bounded separately from stage rejections. A flaky seat is worth retrying more often than a stage that keeps saying no, and counting them together let infrastructure spend the rejection budget and escalate to the founder.",
+    "maxInfraAttemptsPerStage": 6,
     "maxRecoveryAttempts": 3,
     "_concurrentGroupsDoc": "Each inner array is a set of pipeline stages the runner dispatches concurrently once the branch is frozen (builder done). The engine still applies results one at a time and all gates are unchanged. Set to [] to force fully sequential.",
     "concurrentGroups": [["reviewer", "qa", "security"]],

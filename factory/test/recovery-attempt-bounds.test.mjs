@@ -37,7 +37,10 @@ test("a verified recovery will not re-enter a stage that has spent its attempt b
   // spends the third, so the post-recovery re-entry would be a fourth.
   state.dispatches = [1, 2].map((attempt) => ({
     id: `issue-bounds-builder-${attempt}`, stage: "builder", actor: "codex",
-    kind: "stage", status: "failed", attempt,
+    // A returned FAIL verdict: the stage ran and rejected the work. Only these
+    // spend the rejection budget — a dispatch that produced no verdict counts
+    // against the separate infrastructure allowance instead.
+    kind: "stage", status: "completed", outcome: "fail", attempt,
   }));
   writeState(statePath, state);
 
@@ -61,7 +64,8 @@ test("a verified recovery will not re-enter a stage that has spent its attempt b
   assert.equal(final.status, "blocked");
   assert.equal(final.recovery.attempts.at(-1).status, "verified");
   assert.equal(final.blocker.stage, "builder");
-  assert.match(final.blocker.why || final.blocker.summary || "", /stage attempts/);
+  // The message now names which budget was spent, and on what.
+  assert.match(final.blocker.why || final.blocker.summary || "", /returned 3 verdict\(s\) of 3 allowed/);
   // The budget held: no fourth builder stage dispatch was ever created.
   assert.equal(final.dispatches.filter((d) => d.stage === "builder" && (d.kind === "stage" || !d.kind)).length, 3);
 });
@@ -97,7 +101,7 @@ test("the configured per-stage budget is the one recovery re-entry respects", as
   assert.equal(final.status, "blocked");
   // With a budget of 1 the single stage attempt is spent immediately, so the
   // verified repair cannot re-enter and the founder is asked at 1, not 3.
-  assert.match(final.blocker.why || final.blocker.summary || "", /1 of 1 stage attempts/);
+  assert.match(final.blocker.why || final.blocker.summary || "", /returned 1 verdict\(s\) of 1 allowed/);
   assert.equal(final.dispatches.filter((d) => d.stage === "builder" && (d.kind === "stage" || !d.kind)).length, 1);
 });
 
@@ -126,4 +130,28 @@ test("worktree initialization makes the evidence directory ignored", () => {
 
   // Idempotent: a project that already ignores evidence/ is left untouched.
   assert.equal(ensureEvidenceIgnored({ worktree: repo, branch: "factory/x", git: runGit }), false);
+});
+
+// The counterpart to the test above: the same stage, the same number of
+// dispatches, but none of them returned a verdict. Those are the factory
+// failing to run the stage, not the stage rejecting the work, so they must not
+// consume the rejection budget — that conflation is what escalated lifemaxing
+// obj-c58897c0 to the founder as "builder has already used 7 of 3 attempts".
+test("lost dispatches do not exhaust the budget meant for rejections", async () => {
+  const { statePath } = scaffold("factory-infra-not-rejection");
+  const state = readState(statePath);
+  state.currentStage = "builder";
+  state.stages.product = { status: "pass", actor: "openclaw", summary: "ok", evidence: [{ path: "evidence/p.md" }] };
+  state.stages.architect = { status: "pass", actor: "claude", summary: "ok", evidence: [{ path: "evidence/a.md" }] };
+  state.dispatches = [1, 2].map((attempt) => ({
+    id: `issue-bounds-builder-${attempt}`, stage: "builder", actor: "codex",
+    kind: "stage", status: "failed", attempt, error: "dispatch wrote no result file",
+  }));
+  writeState(statePath, state);
+
+  const { countStageAttempts, stageBudgetExceeded } = await import("../lib/task-workflow.mjs");
+  const counted = countStageAttempts(readState(statePath), "builder");
+  assert.equal(counted.verdicts, 0);
+  assert.equal(counted.infra, 2);
+  assert.equal(stageBudgetExceeded(readState(statePath), "builder", { maxAttemptsPerStage: 3 }).exceeded, null);
 });
