@@ -68,7 +68,7 @@ export function ensureEvidenceIgnored({ worktree, branch, git = runGit }) {
     const current = existsSync(gitignore) ? readFileSync(gitignore, "utf8") : "";
     if (/^\s*\/?evidence\/?\s*$/m.test(current)) return false;
     const prefix = current && !current.endsWith("\n") ? "\n" : "";
-    appendFileSync(gitignore, `${prefix}\n# Factory gate evidence (per-task proof artifacts, never product files)\nevidence/\n`, "utf8");
+    appendFileSync(gitignore, `${prefix}\n# Factory gate evidence (per-task proof artifacts, never product files).\n# Anchored: a run writes evidence to the worktree root, and an unanchored\n# pattern would also swallow product source in any nested directory of that\n# name — which is how factory/lib/evidence/ was silently dropped from every\n# \`git add -A\` in this repository until #167.\n/evidence/\n`, "utf8");
     const paths = [".gitignore", ...ensureEvidenceLintIgnored(worktree)];
     const staged = git(worktree, ["add", ...paths], { allowFailure: true });
     if (!staged?.ok) return false;

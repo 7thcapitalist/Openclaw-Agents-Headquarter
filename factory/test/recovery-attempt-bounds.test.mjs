@@ -121,12 +121,23 @@ test("worktree initialization makes the evidence directory ignored", () => {
     catch (error) { if (options.allowFailure) return { ok: false, stdout: "" }; throw error; }
   } };
   assert.equal(ensureEvidenceIgnored({ worktree: repo, branch: "factory/x", git: runGit }), true);
-  assert.match(readFileSync(join(repo, ".gitignore"), "utf8"), /^evidence\/$/m);
+  // Anchored to the worktree root. Asserted as behaviour rather than as the
+  // literal line, so the rule is what is pinned and not its spelling.
+  assert.match(readFileSync(join(repo, ".gitignore"), "utf8"), /^\/evidence\/$/m);
 
   // Evidence written by an agent no longer dirties the tree or reaches linters.
   mkdirSync(join(repo, "evidence"), { recursive: true });
   writeFileSync(join(repo, "evidence", "qa.md"), "unformatted   proof\n");
   assert.equal(git(["status", "--porcelain"]).trim(), "");
+
+  // ...and product source in a nested directory of that name is NOT ignored.
+  // An unanchored `evidence/` matches at any depth, which is how this repo's
+  // own factory/lib/evidence/ was dropped from every `git add -A` until #167.
+  // A generated project would have inherited exactly the same trap.
+  mkdirSync(join(repo, "src", "evidence"), { recursive: true });
+  writeFileSync(join(repo, "src", "evidence", "manifest.js"), "export const x = 1;\n");
+  assert.match(git(["status", "--porcelain", "-uall"]), /src\/evidence\/manifest\.js/,
+    "product source under a nested evidence/ directory must stay trackable");
 
   // Idempotent: a project that already ignores evidence/ is left untouched.
   assert.equal(ensureEvidenceIgnored({ worktree: repo, branch: "factory/x", git: runGit }), false);
