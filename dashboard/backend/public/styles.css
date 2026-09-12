@@ -1540,3 +1540,20 @@ ul.timeline time { color: var(--muted); margin-right: 6px; }
 .proposer-counts strong{color:var(--amber);font-weight:600}
 .proposer-source{margin:.35rem 0 0;color:#67748a;font-size:.66rem}
 @media(max-width:800px){.proposer-head{grid-template-columns:auto minmax(0,1fr);row-gap:.3rem}.proposer-head .objective-status{grid-column:2}}
+
+/* Blast radius — alert-only reach per run. One scale across every bar so rows
+   are comparable to each other and to the threshold. */
+.blast-summary{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;margin-bottom:.85rem;overflow:hidden;border:1px solid #232c3b;border-radius:10px;background:#232c3b}
+.blast-summary>div{padding:.7rem .8rem;background:#10151f}
+.blast-summary b{display:block;font-size:1.35rem;font-weight:600;font-variant-numeric:tabular-nums}
+.blast-summary span{color:#7f8da3;font-size:.68rem}
+.blast-note{margin:0 0 .9rem;color:#8b97ab;font-size:.75rem}
+.blast-list{margin:0;padding:0;list-style:none;display:grid;gap:.75rem}
+.blast-run-head{display:flex;justify-content:space-between;gap:.8rem;align-items:baseline}
+.blast-run-head strong{overflow:hidden;font-size:.82rem;font-weight:600;text-overflow:ellipsis;white-space:nowrap}
+.blast-run-head em{flex:0 0 auto;color:#8ea0ba;font-size:.72rem;font-style:normal;font-variant-numeric:tabular-nums}
+.blast-bar{height:5px;margin-top:.35rem;overflow:hidden;border-radius:9px;background:#202a38}
+.blast-bar span{display:block;height:100%;border-radius:inherit;background:linear-gradient(90deg,#6d8dff,#54d5ba)}
+.blast-bar span.is-over{background:linear-gradient(90deg,#f3c969,#fb7185)}
+.blast-actor{margin:.3rem 0 0;color:#67748a;font-size:.68rem}
+@media(max-width:800px){.blast-summary{grid-template-columns:1fr}}
