@@ -84,6 +84,58 @@ test("dry run and credential failures require founder action", async () => {
   assert.match(missing.founderActionReason, /VERCEL_TOKEN/);
 });
 
+test("a later run (including the default dry run) preserves the persisted production URL, timestamp and audit history", async () => {
+  const input = fixture();
+  const first = await runDeployment({
+    ...input, projectKey: "app", env: { VERCEL_TOKEN: "x" }, now: clock(), allowRealDeploy: true,
+    provider: { id: "mock", async deploy() { return { url: "https://app-PROD.example", providerDeploymentId: "dpl_99" }; } },
+    exec: async () => ({ code: 0 }),
+    fetchFn: async () => ({ status: 200, async text() { return "ok"; } }),
+  });
+  assert.equal(first.state, "deployed");
+  const historyLenAfterDeploy = readDeploymentState({ hqRoot: input.hqRoot, projectKey: "app" }).history.length;
+  assert.ok(historyLenAfterDeploy > 0);
+
+  // The DEFAULT safe dry run a founder uses just to check a build.
+  const dry = await runDeployment({
+    ...input, projectKey: "app", env: { VERCEL_TOKEN: "x" },
+    provider: { id: "mock", async deploy() { throw new Error("dry run must not deploy"); } },
+    exec: async () => ({ code: 0 }),
+  });
+  assert.equal(dry.state, "needs_founder_action");
+  assert.equal(dry.productionUrl, "https://app-PROD.example");
+  assert.equal(dry.providerDeploymentId, "dpl_99");
+  assert.ok(dry.lastDeploymentAt);
+  assert.equal(dry.provider, "mock");
+  const afterDry = readDeploymentState({ hqRoot: input.hqRoot, projectKey: "app" });
+  assert.equal(afterDry.productionUrl, "https://app-PROD.example");
+  assert.equal(afterDry.providerDeploymentId, "dpl_99");
+  assert.ok(afterDry.lastDeploymentAt);
+  assert.ok(afterDry.history.length > historyLenAfterDeploy, "audit history carries forward, not reset");
+
+  // A subsequent validation failure must not erase the known-good record either.
+  const failed = await runDeployment({
+    ...input, projectKey: "app",
+    manifest: { ...input.manifest, env: [{ key: "NOW_REQUIRED", required: true, scope: "runtime", source: "env" }] },
+    env: {}, exec: async () => ({ code: 0 }),
+  });
+  assert.equal(failed.state, "failed");
+  assert.equal(failed.productionUrl, "https://app-PROD.example");
+  assert.equal(readDeploymentState({ hqRoot: input.hqRoot, projectKey: "app" }).productionUrl, "https://app-PROD.example");
+});
+
+test("a dry run never executes preDeploy or migrate hooks", async () => {
+  const input = fixture();
+  const commands = [];
+  const dry = await runDeployment({
+    ...input, projectKey: "app", env: { VERCEL_TOKEN: "x" },
+    provider: { id: "mock", async deploy() { throw new Error("dry run must not deploy"); } },
+    exec: async (command) => { commands.push(command); return { code: 0 }; },
+  });
+  assert.equal(dry.state, "needs_founder_action");
+  assert.deepEqual(commands, ["npm run build", "npm test"]);
+});
+
 test("failed smoke retains the production URL and records unhealthy state", async () => {
   const input = fixture();
   const state = await runDeployment({

@@ -26,6 +26,17 @@ function validateCommand(value, name) {
   if (!nonEmpty(value)) throw new Error(`deploy manifest: ${name} must be a non-empty string.`);
 }
 
+// Health/smoke paths are resolved with `new URL(path, productionUrl)`. A value
+// like "//attacker.example/x" (or "/\\attacker.example/x", which WHATWG URL
+// normalises the same way) is protocol-relative and would send the post-deploy
+// request to a host chosen by whoever controls deploy.config.json. Require a
+// single leading "/" and no authority.
+function validateRequestPath(value, name) {
+  if (!nonEmpty(value) || !value.startsWith("/") || /^\/[/\\]/.test(value)) {
+    throw new Error(`deploy manifest: ${name} must start with a single '/' and carry no host.`);
+  }
+}
+
 function validateCommandList(value, name) {
   if (!Array.isArray(value) || value.some((command) => !nonEmpty(command))) {
     throw new Error(`deploy manifest: ${name} must be an array of non-empty strings.`);
@@ -86,9 +97,7 @@ export function validateDeployManifest(value) {
   }
   if (!object(value.healthCheck)) throw new Error("deploy manifest: healthCheck must be an object.");
   rejectUnknown(value.healthCheck, ["path", "expectStatus", "timeoutMs"], "healthCheck");
-  if (!nonEmpty(value.healthCheck.path) || !value.healthCheck.path.startsWith("/")) {
-    throw new Error("deploy manifest: healthCheck.path must start with '/'.");
-  }
+  validateRequestPath(value.healthCheck.path, "healthCheck.path");
   if (value.healthCheck.expectStatus !== undefined && (!Number.isInteger(value.healthCheck.expectStatus) || value.healthCheck.expectStatus < 100 || value.healthCheck.expectStatus > 599)) {
     throw new Error("deploy manifest: healthCheck.expectStatus must be an HTTP status code.");
   }
@@ -98,9 +107,7 @@ export function validateDeployManifest(value) {
   if (value.smokeTest !== undefined) {
     if (!object(value.smokeTest)) throw new Error("deploy manifest: smokeTest must be an object.");
     rejectUnknown(value.smokeTest, ["path", "method", "expectStatus", "bodyIncludes"], "smokeTest");
-    if (!nonEmpty(value.smokeTest.path) || !value.smokeTest.path.startsWith("/")) {
-      throw new Error("deploy manifest: smokeTest.path must start with '/'.");
-    }
+    validateRequestPath(value.smokeTest.path, "smokeTest.path");
     if (value.smokeTest.method !== undefined && !SMOKE_METHODS.has(value.smokeTest.method)) {
       throw new Error("deploy manifest: smokeTest.method must be GET, POST, or HEAD.");
     }
