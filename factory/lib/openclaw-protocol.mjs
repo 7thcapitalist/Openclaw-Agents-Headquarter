@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync } from "fs";
 import { basename, dirname, join } from "path";
 import { randomUUID } from "crypto";
-import { completeStage, recordRecoveryResult, recordVerifiedCommit, routeStageFailure, startRecovery, verifyEvidence } from "./task-workflow.mjs";
+import { DEFAULT_MAX_INFRA_ATTEMPTS, completeStage, recordRecoveryResult, recordVerifiedCommit, routeStageFailure, startRecovery, verifyEvidence } from "./task-workflow.mjs";
 import { execFileSync } from "node:child_process";
 import { mutateTransactionalState } from "./store/transactional-json.mjs";
 import { writeHandoff } from "./handoff.mjs";
@@ -206,7 +206,7 @@ function headCommitOf(worktree) {
   }
 }
 
-export function ingestResult({ statePath, result, agentMeta = null, maxAttemptsPerStage = 3, now = new Date().toISOString() }) {
+export function ingestResult({ statePath, result, agentMeta = null, maxAttemptsPerStage = 3, maxInfraAttemptsPerStage = DEFAULT_MAX_INFRA_ATTEMPTS, now = new Date().toISOString() }) {
   validateAgentResult(result);
   // Stable per dispatch: two processes (or a retried delivery) ingesting the
   // same result must apply exactly once and both observe the same outcome,
@@ -232,7 +232,7 @@ export function ingestResult({ statePath, result, agentMeta = null, maxAttemptsP
         const recovered = recordRecoveryResult(state, {
           outcome: result.outcome === "decision-deferred" ? "pass" : result.outcome,
           actor, summary: result.summary, evidence, diagnosis: result.diagnosis || null,
-          maxAttemptsPerStage, now,
+          maxAttemptsPerStage, maxInfraAttemptsPerStage, now,
         });
         recovered.dispatches = [...(state.dispatches || []), { ...dispatch, status: "completed", outcome: result.outcome, summary: result.summary, completedAt: now, ...(agentMeta ? { usage: sanitizeUsage(agentMeta) } : {}) }];
         delete recovered.currentDispatch;
@@ -284,7 +284,7 @@ export function ingestResult({ statePath, result, agentMeta = null, maxAttemptsP
         // the loop: once the stage has spent its attempts, recovery takes over and,
         // failing that, escalates to the founder.
         const routed = ROUTABLE_STAGES.has(result.stage)
-          ? routeStageFailure(completed, { failedStage: result.stage, maxAttemptsPerStage, now })
+          ? routeStageFailure(completed, { failedStage: result.stage, maxAttemptsPerStage, maxInfraAttemptsPerStage, now })
           : completed;
         completed = routed !== completed
           ? routed
@@ -296,7 +296,7 @@ export function ingestResult({ statePath, result, agentMeta = null, maxAttemptsP
   return terminalResponse(next);
 }
 
-export function failDispatch({ statePath, dispatchId, error, maxAttemptsPerStage = 3, now = new Date().toISOString() }) {
+export function failDispatch({ statePath, dispatchId, error, maxAttemptsPerStage = 3, maxInfraAttemptsPerStage = DEFAULT_MAX_INFRA_ATTEMPTS, now = new Date().toISOString() }) {
   const next = mutateTransactionalState(statePath, {
     commandId: `fail:${dispatchId}`,
     now,
@@ -304,7 +304,7 @@ export function failDispatch({ statePath, dispatchId, error, maxAttemptsPerStage
       assertCurrentDispatch(state, dispatchId);
       const dispatch = state.currentDispatch;
       if (dispatch.kind?.startsWith("recovery-")) {
-        const recovered = recordRecoveryResult(state, { outcome: "fail", actor: dispatch.actor, summary: String(error), evidence: [], maxAttemptsPerStage, now });
+        const recovered = recordRecoveryResult(state, { outcome: "fail", actor: dispatch.actor, summary: String(error), evidence: [], maxAttemptsPerStage, maxInfraAttemptsPerStage, now });
         recovered.dispatches = [...(state.dispatches || []), { ...dispatch, status: "failed", error: String(error), completedAt: now }];
         delete recovered.currentDispatch;
         return recovered;
@@ -322,7 +322,7 @@ export function failDispatch({ statePath, dispatchId, error, maxAttemptsPerStage
       // place rather than rebuilding the world — but it has to be reached
       // first, before recovery gets a chance to intercept every `fail`.
       const routedFirst = ROUTABLE_STAGES.has(dispatch.stage)
-        ? routeStageFailure(blocked, { failedStage: dispatch.stage, targetStage: dispatch.stage, maxAttemptsPerStage, now })
+        ? routeStageFailure(blocked, { failedStage: dispatch.stage, targetStage: dispatch.stage, maxAttemptsPerStage, maxInfraAttemptsPerStage, now })
         : blocked;
       return routedFirst !== blocked
         ? routedFirst

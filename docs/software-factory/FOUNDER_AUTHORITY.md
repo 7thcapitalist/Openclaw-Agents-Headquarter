@@ -87,24 +87,36 @@ Verification additionally enforces:
 
 ### 3.1 Where the trusted key comes from
 
-A signature check is only as good as the key it trusts. Verification resolves
-the approval authority in this order, and the first hit **overrides whatever the
-task state claims**:
+A signature check is only as good as the key it trusts, so the key is resolved
+from **outside** the task state. Resolution order — first hit wins, and it
+**overrides whatever the task state claims**:
 
-1. an authority injected by the caller (the dashboard hands down its HQ root);
-2. the enrolled browser key, `dashboard/backend/data/factory/founder-approval-key.pem` (mode `0600`);
-3. `FACTORY_FOUNDER_PUBLIC_KEY`, a path from the deployment environment.
+1. an authority injected by the caller;
+2. a root set once at startup via `configureTrustedAuthority({ hqRoot })`;
+3. `AGENT_LAB_ROOT`;
+4. the repository root derived from this module's own location;
+5. `FACTORY_FOUNDER_PUBLIC_KEY`.
+
+Steps 3 and 4 exist because threading an `hqRoot` option through every gate
+**did not work**. A second independent review proved that exactly one production
+call site passed it, so the builder gate, the release gate, every resume path and
+all six CLI scripts silently fell back to the task's own key — the original
+vulnerability, intact, with the security posture depending on which process
+happened to run the stage. Resolution has to work by default, so it does.
+
+**Fail closed.** If no anchor resolves, a high-risk approval is **refused**, not
+downgraded. Previously an unreadable anchor fell back to the task's own record,
+so deleting one small file was a complete and silent bypass. The escape hatch
+`FACTORY_ALLOW_UNANCHORED_APPROVAL=1` is opt-in and deliberately awkward.
+
+**Symlinks are refused.** `lstat` is checked before reading: an actor able to
+write the data directory could otherwise point the anchor at a key it controls
+while the result still reported `source: "enrolled"` — tampering invisible in
+the field meant to reveal it.
 
 If the task's recorded `founderApprovalAuthority` disagrees with the anchor, the
-approval is refused as tampering — not treated as a routine mismatch.
-
-This closes the attack an independent review demonstrated by execution: rewrite
-`founderApprovalAuthority` in the task-state file to a key you hold, restate the
-v2 fingerprint (which previously compared two fields in that same file), sign
-with your own private key, and the gate agreed. It no longer does.
-
-Only Ed25519 may anchor the gate; a malformed or wrong-type anchor file is
-ignored rather than crashing every gate that consults it.
+approval is refused as tampering. Only Ed25519 may anchor the gate; a malformed
+or wrong-type anchor is ignored (and therefore fails closed).
 
 ## 4. Assertion versions and migration
 
@@ -157,12 +169,13 @@ re-keyed, which re-issues a v1 request. No approval is ever silently downgraded.
 
 ### Residual risk (stated, not solved here)
 
-- **An unanchored deployment still trusts the task's own record.** When no
-  enrolled key file and no `FACTORY_FOUNDER_PUBLIC_KEY` are configured, there is
-  nothing outside the task state to verify against, so the gate falls back to the
-  key the task names. This is reported rather than hidden:
-  `founderApprovalStatus()` returns `anchored: false` with the authority source.
-  Configure an anchor — a real deployment already does.
+- **The anchor file shares the agents' uid.** The threat model is "an actor who
+  can write task state", and factory agents are not filesystem-sandboxed: they
+  run as the uid that owns `dashboard/backend/data/factory/founder-approval-key.pem`.
+  Such an actor can overwrite the anchor itself. Symlink redirection is refused
+  and the mismatch check still fires, but co-located ownership means the anchor
+  raises the bar rather than being an absolute boundary. Storing it under a
+  different uid, or outside the repo tree, is the real fix.
 
 - **Trust-on-first-use enrollment.** The first browser key is still accepted on
   the strength of an authenticated session alone. Rotation afterwards requires a
@@ -296,3 +309,24 @@ It did confirm eight defects, all of which are fixed here and locked down by
 | `x-forwarded-host` trusted regardless of proxy config | MEDIUM | Honoured only when `DASHBOARD_TRUST_PROXY=1` |
 | A link title containing `rel=` suppressed link hardening | LOW | Fallback tests emitted attribute names |
 | Agent markdown could beacon the founder via remote images | LOW | `img-src 'self' data:` |
+
+## 11. Second independent review (of #162)
+
+The follow-up PR was itself independently reviewed. That review **found the
+anchor did not work in production** — it was wired into one call path — and
+demonstrated a high-risk task releasing on an attacker-supplied key with
+`assertReleaseReady` passing. It also found that an unreadable anchor silently
+downgraded the gate, that a symlink was followed, and that the audit refactor had
+**regressed**: the field literally named `key` was no longer redacted.
+
+All of it is fixed here and covered by
+`factory/test/anchor-review-regressions.test.mjs`, whose central test calls the
+gate with **no options argument at all** — the exact shape production uses.
+
+It confirmed clean: the sanitizer's `renderer.link` fix (18 payloads, no raw HTML
+via `parseInline`), the `rel`/`target` fallback, the TTL semantics in both
+directions, the type-confusion guards, `injected` unreachability from task state,
+and that the anchor tests fail correctly when the fix is reverted.
+
+Still open, recorded rather than hidden: per-task revocation entries remain plain
+task state and can be removed by the same write primitive.

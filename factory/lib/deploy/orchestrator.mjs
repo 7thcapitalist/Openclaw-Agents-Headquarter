@@ -6,7 +6,9 @@ import { sanitizeExcerpt } from "../common/redact.mjs";
 import { readDeployManifest, validateDeployManifest } from "./manifest.mjs";
 import { selectProvider, defaultAdapters } from "./provider.mjs";
 import { MissingCredentialError } from "./adapters/vercel.mjs";
-import { writeDeploymentState } from "./store.mjs";
+import { readDeploymentState, writeDeploymentState } from "./store.mjs";
+
+const HISTORY_LIMIT = 40;
 
 const execFileAsync = promisify(execFile);
 
@@ -51,6 +53,25 @@ function baseState(projectKey) {
   };
 }
 
+// Seed a run from the last persisted record so a new attempt (including the
+// default dry run) never erases the known-good production URL, deployment
+// timestamp, provider id, last health, or the step/outcome audit trail that HQ
+// serves. Only the durable facts carry forward; run-scoped fields
+// (state/founderAction*/lastError) always start clean.
+function seedState(projectKey, prior) {
+  const fresh = baseState(projectKey);
+  if (!prior || prior.projectKey !== projectKey) return fresh;
+  return {
+    ...fresh,
+    provider: prior.provider ?? null,
+    productionUrl: prior.productionUrl ?? null,
+    providerDeploymentId: prior.providerDeploymentId ?? null,
+    lastDeploymentAt: prior.lastDeploymentAt ?? null,
+    health: prior.health ?? null,
+    history: Array.isArray(prior.history) ? prior.history.slice(-HISTORY_LIMIT) : [],
+  };
+}
+
 function projectTestCommand(repoPath, rootDirectory) {
   const packagePath = join(resolve(repoPath, rootDirectory || "."), "package.json");
   if (!existsSync(packagePath)) return null;
@@ -85,7 +106,14 @@ export async function runDeployment({
   logger = () => {},
   allowRealDeploy = false,
 }) {
-  let state = baseState(projectKey);
+  let prior = null;
+  try {
+    prior = readDeploymentState({ hqRoot, projectKey });
+  } catch {
+    // An unreadable/invalid prior record must not brick a deploy; start clean.
+    prior = null;
+  }
+  let state = seedState(projectKey, prior);
   const persist = () => writeDeploymentState({ hqRoot, projectKey, state });
   const record = (step, outcome, detail = null) => {
     const item = { at: at(now), step, outcome };
@@ -137,8 +165,6 @@ export async function runDeployment({
     const testCommand = projectTestCommand(repoPath, manifest.build.rootDirectory);
     if (testCommand) await runCommand("test", testCommand, cwd);
     else record("test", "skipped", "no project test script");
-    for (const command of manifest.hooks?.preDeploy || []) await runCommand("preDeploy", command, cwd);
-    if (manifest.hooks?.migrate) await runCommand("migrate", manifest.hooks.migrate, cwd);
   } catch (error) {
     return finish("failed", { error });
   }
@@ -146,6 +172,16 @@ export async function runDeployment({
   if (!allowRealDeploy) {
     record("deploy", "skipped", "dry run: real deploy requires founder action");
     return finish("needs_founder_action", { founderReason: "dry run: real deploy requires founder action" });
+  }
+
+  // preDeploy and migrate hooks can mutate external systems (e.g. run
+  // migrations against a production DATABASE_URL), so they only run once the
+  // founder has explicitly authorised a real deploy — never on a dry run.
+  try {
+    for (const command of manifest.hooks?.preDeploy || []) await runCommand("preDeploy", command, cwd);
+    if (manifest.hooks?.migrate) await runCommand("migrate", manifest.hooks.migrate, cwd);
+  } catch (error) {
+    return finish("failed", { error });
   }
 
   let deployment;

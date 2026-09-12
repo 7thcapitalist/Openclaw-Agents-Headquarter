@@ -28,6 +28,8 @@ test("deployment manifest rejects unsafe and malformed fields", () => {
   assert.throws(() => validateDeployManifest(manifest({ env: [{ key: "DATABASE_URL", required: true, scope: "runtime", source: "env", value: "secret" }] })), /property "value" is not allowed/);
   assert.throws(() => validateDeployManifest(manifest({ env: [{ key: "bad-key", required: true, scope: "runtime", source: "env" }] })), /SCREAMING_SNAKE_CASE/);
   assert.throws(() => validateDeployManifest(manifest({ healthCheck: { path: "api/health" } })), /must start with/);
+  assert.throws(() => validateDeployManifest(manifest({ healthCheck: { path: "//attacker.example/x" } })), /carry no host/);
+  assert.throws(() => validateDeployManifest(manifest({ smokeTest: { path: "/\\attacker.example/x" } })), /carry no host/);
 });
 
 test("reference schema documents the runtime-required shape and closes env declarations", () => {
@@ -36,5 +38,6 @@ test("reference schema documents the runtime-required shape and closes env decla
   assert.equal(schema.additionalProperties, false);
   assert.equal(schema.properties.env.items.additionalProperties, false);
   assert.deepEqual(schema.properties.provider.enum, ["vercel", "none"]);
-  assert.equal(schema.properties.healthCheck.properties.path.pattern, "^/");
+  assert.equal(schema.properties.healthCheck.properties.path.pattern, "^/(?![/\\\\])");
+  assert.equal(schema.properties.smokeTest.properties.path.pattern, "^/(?![/\\\\])");
 });
