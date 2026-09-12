@@ -22,8 +22,9 @@
 // `anchored: false` so the weaker position is visible rather than assumed.
 
 import { createHash, createPublicKey } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, lstatSync, readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 export function fingerprintOf(publicKeyPem) {
   return createHash("sha256").update(String(publicKeyPem)).digest("hex");
@@ -48,10 +49,54 @@ function readEd25519Pem(text) {
 function fromFile(path) {
   try {
     if (!path || !existsSync(path)) return null;
+    // Refuse a symlink. An attacker who can write the data directory could
+    // otherwise point the anchor at a key it controls while the result still
+    // reported `source: "enrolled"` — tampering invisible in the very field
+    // meant to surface it.
+    if (lstatSync(path).isSymbolicLink()) {
+      process.stderr.write(`[founder-authority] refusing symlinked approval key at ${path}\n`);
+      return null;
+    }
     return readEd25519Pem(readFileSync(path, "utf8"));
   } catch {
     return null;
   }
+}
+
+// The HQ root this process should look in, without every caller having to say so.
+//
+// Threading an `hqRoot` option through every gate did not work: exactly one
+// production call site passed it, so every other gate — the builder gate, the
+// release gate, resume paths, and all the CLI scripts — silently fell back to
+// the task's own key. Resolution therefore has to work by default.
+let configuredRoot = null;
+
+// Called once at startup by an entrypoint that knows its root (the dashboard
+// server, the factory CLIs). Optional: the defaults below already find the
+// standard layout.
+export function configureTrustedAuthority({ hqRoot } = {}) {
+  configuredRoot = hqRoot ? resolve(hqRoot) : null;
+  return configuredRoot;
+}
+
+// This file lives at <hq>/factory/lib/founder-authority.mjs, so the repository
+// root — and therefore the enrolled key under dashboard/backend/data — is two
+// directories up. Derived rather than configured so a CLI that never calls
+// configureTrustedAuthority() is still anchored.
+function moduleDerivedRoot() {
+  try {
+    return resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+  } catch {
+    return null;
+  }
+}
+
+function candidateRoots(env) {
+  return [
+    configuredRoot,
+    env?.AGENT_LAB_ROOT ? resolve(env.AGENT_LAB_ROOT) : null,
+    moduleDerivedRoot(),
+  ].filter(Boolean);
 }
 
 export function enrolledKeyPath(hqRoot) {
@@ -69,8 +114,11 @@ export function resolveTrustedFounderAuthority({ hqRoot = null, injected = null,
     if (pem) return { publicKey: pem, fingerprint: fingerprintOf(pem), source: "injected" };
   }
 
-  if (hqRoot) {
-    const pem = fromFile(enrolledKeyPath(hqRoot));
+  // An explicit hqRoot first, then the roots this process can work out for
+  // itself. Without these defaults the anchor was unreachable from every gate
+  // except one dashboard endpoint.
+  for (const root of [hqRoot ? resolve(hqRoot) : null, ...candidateRoots(env)].filter(Boolean)) {
+    const pem = fromFile(enrolledKeyPath(root));
     if (pem) return { publicKey: pem, fingerprint: fingerprintOf(pem), source: "enrolled" };
   }
 

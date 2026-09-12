@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, unlinkSync, writeFileSync, readFileSync } from "
 import { basename, dirname, join } from "path";
 import { PROTOCOL_VERSION, computeDispatchPaths, failDispatch, ingestResult, markDispatchRunning, prepareDispatch, readResultFile, recordDispatchAgentId } from "./openclaw-protocol.mjs";
 import { describeAgentCompletion, parseAgentMeta } from "./hq/agent-meta.mjs";
-import { readState } from "./task-workflow.mjs";
+import { DEFAULT_MAX_INFRA_ATTEMPTS, readState } from "./task-workflow.mjs";
 import { mutateTransactionalState } from "./store/transactional-json.mjs";
 import { writeHandoff } from "./handoff.mjs";
 import { publishMergeReadyTask } from "./hq/github-publish.mjs";
@@ -63,7 +63,7 @@ export async function waitForYieldedResult({ resultPath, wait = delay, now = Dat
   return true;
 }
 
-export async function runOneStage({ hqRoot, statePath, agentIds = {}, maxAttemptsPerStage = 3, execute = executeOpenClaw, publish = publishMergeReadyTask, agentMetaByDispatchId = null, waitForResult = waitForYieldedResult }) {
+export async function runOneStage({ hqRoot, statePath, agentIds = {}, maxAttemptsPerStage = 3, maxInfraAttemptsPerStage = DEFAULT_MAX_INFRA_ATTEMPTS, execute = executeOpenClaw, publish = publishMergeReadyTask, agentMetaByDispatchId = null, waitForResult = waitForYieldedResult }) {
   const initial = readState(statePath);
   if (initial.yieldedGroup) return { version: PROTOCOL_VERSION, status: "dispatch", taskId: initial.task.id, waiting: true };
   const prepared = prepareDispatch({ hqRoot, statePath });
@@ -78,7 +78,7 @@ export async function runOneStage({ hqRoot, statePath, agentIds = {}, maxAttempt
   // orphaned dispatch after its stale-work threshold.
   if (owned?.status === "running" && !owned.yieldedAt) {
     if (existsSync(prepared.resultPath)) {
-      const resumed = ingestResult({ statePath, result: readResultFile(prepared.resultPath), maxAttemptsPerStage });
+      const resumed = ingestResult({ statePath, result: readResultFile(prepared.resultPath), maxAttemptsPerStage, maxInfraAttemptsPerStage });
       if (resumed.status === "merge-ready") resumed.githubPublish = publishAndRecord({ hqRoot, statePath, publish });
       if (["merge-ready", "blocked"].includes(resumed.status)) writeCompletionReport({ statePath });
       return resumed;
@@ -87,7 +87,7 @@ export async function runOneStage({ hqRoot, statePath, agentIds = {}, maxAttempt
   }
   if (owned?.status === "running" && owned.yieldedAt) {
     if (!existsSync(prepared.resultPath)) return { ...prepared, waiting: true };
-    const resumed = ingestResult({ statePath, result: readResultFile(prepared.resultPath), maxAttemptsPerStage });
+    const resumed = ingestResult({ statePath, result: readResultFile(prepared.resultPath), maxAttemptsPerStage, maxInfraAttemptsPerStage });
     if (resumed.status === "merge-ready") resumed.githubPublish = publishAndRecord({ hqRoot, statePath, publish });
     if (["merge-ready", "blocked"].includes(resumed.status)) writeCompletionReport({ statePath });
     return resumed;
@@ -100,7 +100,7 @@ export async function runOneStage({ hqRoot, statePath, agentIds = {}, maxAttempt
     agentId = selectAgentId(prepared, routes, { strict: Object.keys(routes).some((key) => key === `${prepared.stage}:${prepared.actor}` || key.startsWith(`${prepared.stage}:`)) });
   } catch (error) {
     const diagnostic = `Factory routing error: ${error.message || error}`;
-    const response = failDispatch({ statePath, dispatchId: prepared.dispatchId, error: diagnostic, maxAttemptsPerStage });
+    const response = failDispatch({ statePath, dispatchId: prepared.dispatchId, error: diagnostic, maxAttemptsPerStage, maxInfraAttemptsPerStage });
     observeDispatchState({ hqRoot, statePath, phase: "failed", dispatchId: prepared.dispatchId, error: diagnostic });
     if (["merge-ready", "blocked"].includes(response.status)) writeCompletionReport({ statePath });
     return response;
@@ -139,10 +139,10 @@ export async function runOneStage({ hqRoot, statePath, agentIds = {}, maxAttempt
         stdout: executed?.stdout,
         stderr: executed?.stderr,
       });
-      response = failDispatch({ statePath, dispatchId: prepared.dispatchId, error: diagnostic.summary, maxAttemptsPerStage });
+      response = failDispatch({ statePath, dispatchId: prepared.dispatchId, error: diagnostic.summary, maxAttemptsPerStage, maxInfraAttemptsPerStage });
       observeDispatchState({ hqRoot, statePath, phase: "failed", dispatchId: prepared.dispatchId, agentMeta, error: diagnostic.summary });
     } else {
-      response = ingestResult({ statePath, result: readResultFile(prepared.resultPath), agentMeta, maxAttemptsPerStage });
+      response = ingestResult({ statePath, result: readResultFile(prepared.resultPath), agentMeta, maxAttemptsPerStage, maxInfraAttemptsPerStage });
       observeDispatchState({ hqRoot, statePath, phase: "completed", dispatchId: prepared.dispatchId, agentMeta });
       if (response.status === "merge-ready") {
         response.githubPublish = publishAndRecord({ hqRoot, statePath, publish });
@@ -172,14 +172,14 @@ export async function runOneStage({ hqRoot, statePath, agentIds = {}, maxAttempt
       }).summary;
     if (existsSync(prepared.resultPath)) {
       try {
-        response = ingestResult({ statePath, result: readResultFile(prepared.resultPath), agentMeta, maxAttemptsPerStage });
+        response = ingestResult({ statePath, result: readResultFile(prepared.resultPath), agentMeta, maxAttemptsPerStage, maxInfraAttemptsPerStage });
         observeDispatchState({ hqRoot, statePath, phase: "completed", dispatchId: prepared.dispatchId, agentMeta });
       } catch (ingestError) {
-        response = failDispatch({ statePath, dispatchId: prepared.dispatchId, error: summarizeError(ingestError), maxAttemptsPerStage });
+        response = failDispatch({ statePath, dispatchId: prepared.dispatchId, error: summarizeError(ingestError), maxAttemptsPerStage, maxInfraAttemptsPerStage });
         observeDispatchState({ hqRoot, statePath, phase: "failed", dispatchId: prepared.dispatchId, agentMeta, error: summarizeError(ingestError) });
       }
     } else {
-      response = failDispatch({ statePath, dispatchId: prepared.dispatchId, error: failure, maxAttemptsPerStage });
+      response = failDispatch({ statePath, dispatchId: prepared.dispatchId, error: failure, maxAttemptsPerStage, maxInfraAttemptsPerStage });
       observeDispatchState({ hqRoot, statePath, phase: "failed", dispatchId: prepared.dispatchId, agentMeta, error: failure });
     }
   }
@@ -262,7 +262,7 @@ export async function runToTerminal(options) {
 // slow part), then feed each result back through the UNCHANGED engine one stage
 // at a time. Returns the engine response, or null when no fan-out applies (the
 // caller then does a normal sequential `runOneStage`).
-export async function runConcurrentGroupIfReady({ hqRoot, statePath, agentIds = {}, maxAttemptsPerStage = 3, execute = executeOpenClaw, publish = publishMergeReadyTask, groups = DEFAULT_CONCURRENT_GROUPS, waitForResult = waitForYieldedResult }) {
+export async function runConcurrentGroupIfReady({ hqRoot, statePath, agentIds = {}, maxAttemptsPerStage = 3, maxInfraAttemptsPerStage = DEFAULT_MAX_INFRA_ATTEMPTS, execute = executeOpenClaw, publish = publishMergeReadyTask, groups = DEFAULT_CONCURRENT_GROUPS, waitForResult = waitForYieldedResult }) {
   const state = readState(statePath);
   if (state.status !== "active" || state.currentDispatch || state.recovery?.active) return null;
   if (state.yieldedGroup) {

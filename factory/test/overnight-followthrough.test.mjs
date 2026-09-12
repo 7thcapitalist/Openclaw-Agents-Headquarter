@@ -69,7 +69,7 @@ test("release conflicts go to builder, preserving earlier gates and invalidating
   const f = fixture();
   f.state.currentStage = "release"; f.state.status = "blocked";
   for (const stage of Object.keys(f.state.stages)) f.state.stages[stage] = { status: "pass", evidence: ["old"] };
-  f.state.dispatches = [{ stage: "release" }];
+  f.state.dispatches = [{ stage: "release", outcome: "fail" }];
   f.state.blocker = { outcome: "fail", summary: "Provider routing tests pass but PR is CONFLICTING/DIRTY; builder must merge main" };
   const next = routeStageFailure(f.state, { failedStage: "release" });
   assert.equal(next.currentStage, "builder");
@@ -79,7 +79,7 @@ test("release conflicts go to builder, preserving earlier gates and invalidating
   assert.equal(routeStageFailure(f.state, { failedStage: "release" }), f.state);
   f.state.blocker = { outcome: "fail", summary: "provider temporarily unavailable" };
   assert.equal(routeStageFailure(f.state, { failedStage: "release" }).currentStage, "release");
-  f.state.dispatches = [{ stage: "release" }, { stage: "release" }, { stage: "release" }];
+  f.state.dispatches = [{ stage: "release", outcome: "fail" }, { stage: "release", outcome: "fail" }, { stage: "release", outcome: "fail" }];
   assert.equal(routeStageFailure(f.state, { failedStage: "release" }).status, "blocked");
 });
 

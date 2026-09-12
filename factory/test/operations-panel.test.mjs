@@ -34,3 +34,32 @@ test("objective identifiers and finding codes are escaped", () => {
   assert.doesNotMatch(html, /<img src=x>/);
   assert.doesNotMatch(html, /<script>/);
 });
+
+test("tasks paying for runs that change nothing are named, with the mode that governs them", () => {
+  const html = operationsPanel({
+    available: true, summary: { stallingTasks: 1, wastedRuns: 8 }, tasks: [], audit: [],
+    rewake: { mode: "report", threshold: 2, tasks: [
+      { taskId: "obj-abc-stuck", streak: 8, lastProgressEvent: "stage-pass", atOrOverThreshold: true },
+      { taskId: "obj-abc-fine", streak: 1, lastProgressEvent: "stage-pass", atOrOverThreshold: false },
+    ] },
+  });
+  assert.match(html, /Runs that changed nothing/);
+  assert.match(html, /obj-abc-stuck/);
+  assert.match(html, /8 runs since stage-pass/);
+  assert.match(html, /not held back/, "report mode must say plainly that nothing is being stopped");
+  assert.doesNotMatch(html, /obj-abc-fine/, "a task below the threshold is not an alert");
+});
+
+test("no stalling tasks means no section, rather than an empty one", () => {
+  const html = operationsPanel({ available: true, summary: {}, tasks: [], audit: [], rewake: { mode: "report", tasks: [] } });
+  assert.doesNotMatch(html, /Runs that changed nothing/);
+});
+
+test("task identifiers in the stalling list are escaped", () => {
+  const html = operationsPanel({
+    available: true, summary: {}, tasks: [], audit: [],
+    rewake: { mode: "enforce", tasks: [{ taskId: "<script>x</script>", streak: 3, lastProgressEvent: "<img src=y>", atOrOverThreshold: true }] },
+  });
+  assert.doesNotMatch(html, /<script>x<\/script>/);
+  assert.doesNotMatch(html, /<img src=y>/);
+});
