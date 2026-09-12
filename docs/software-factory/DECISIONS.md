@@ -236,3 +236,33 @@ entries. When a decision changes, add a new entry and mark the old one
   Web research stays read-only, source-cited, redacted, allowlist + per-run
   budget. Reverting the whole change: set `learning.autonomy.enabled: false`,
   disable the systemd timer, and (optionally) `git revert` the feature commit.
+
+## SFD-2026-012 — Headquarters is reachable through Vercel; the mini-PC is outbound-only
+
+- Date: 2026-09-12
+- Status: Accepted (founder decision on `decision-cards/DC-2026-003-hq-on-vercel.md`)
+- Decision: The Headquarters control plane is published to a Vercel deployment.
+  Vercel holds the state projection the dashboard renders and a queue of founder
+  intents; the factory machine **polls** that queue outbound and pushes state
+  back, and never accepts an inbound connection from the internet. The
+  Cloudflare tunnel is retired. The local dashboard stays bound to localhost for
+  on-machine use. Published data is the full dashboard projection; repository
+  source, file contents, secrets, credentials, evidence bodies and host
+  absolute paths are never published, enforced by test rather than by care.
+- Rationale: HQ cannot run on Vercel — it spawns `openclaw` and `pm2`, drives
+  git worktrees and reads a local SQLite database, and Vercel is serverless. The
+  factory needs a machine regardless. What the tunnel actually provided was
+  reachability, at the price of a standing public inbound path into a home
+  network. Moving the control plane to Vercel gives better reachability and
+  removes that path entirely: after this, every connection the machine makes is
+  outbound.
+- Consequences: Founder actions become eventually consistent, bounded by the
+  poll interval, rather than instant. One write credential is held by the
+  machine, scoped to publishing and claiming, rotatable without redeploying.
+  The published projection is a mirror and is disposable — the canonical record
+  stays on the machine and in GitHub, so deleting the Vercel project loses
+  nothing. `connector-outbox.mjs`'s requirement for a founder decision covering
+  host, exposure, credentials, data scope, retention, backup and rollback is
+  satisfied by DC-2026-003. Bounded by SFD-2026-003 (V1 human-merge) and
+  SFD-2026-008 (every change lands via a PR), both unchanged: nothing here
+  grants an agent new authority, and `prohibitedAutonomousActions` is untouched.
