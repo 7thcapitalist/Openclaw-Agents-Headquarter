@@ -7,6 +7,7 @@ import { renderFounderInboxCard, renderFounderInboxEmpty } from "/lib/founderInb
 import { goalsPanel } from "/lib/goalsView.mjs";
 import { proposerPanel } from "/lib/proposerView.mjs";
 import { blastRadiusPanel } from "/lib/blastRadiusView.mjs";
+import { deploymentsPanel } from "/lib/deploymentsView.mjs";
 import { interactionsSection } from "/lib/interactionsView.mjs";
 import { retentionPanel } from "/lib/retentionView.mjs";
 import { runTimelineSection } from "/lib/timelineView.mjs";
@@ -274,7 +275,7 @@ import { permissionsPanel } from "/lib/permissionsView.mjs";
   // ── Today: the founder observability surface ───────────────────
 
   async function renderToday() {
-    const [state, fc, learning, objectivesResp, autonomy, costs, planLimits, overnight, operations, goals, proposals, decisions, scorecards, budgets, permissions, blastRadius, retention] = await Promise.all([
+    const [state, fc, learning, objectivesResp, autonomy, costs, planLimits, overnight, operations, goals, proposals, decisions, scorecards, budgets, permissions, blastRadius, deployments, retention] = await Promise.all([
       loadCompany(),
       apiJson("/api/founder/overview").catch(() => ({ jobs: [] })),
       loadLearning().catch(() => null),
@@ -291,6 +292,7 @@ import { permissionsPanel } from "/lib/permissionsView.mjs";
       apiJson("/api/hq/budgets").catch(() => null),
       apiJson("/api/hq/permissions").catch(() => null),
       apiJson("/api/hq/blast-radius").catch(() => null),
+      apiJson("/api/hq/deployments").catch(() => null),
       apiJson("/api/hq/retention").catch(() => null),
     ]);
     const objectives = objectivesResp.objectives || [];
@@ -311,7 +313,7 @@ import { permissionsPanel } from "/lib/permissionsView.mjs";
     // "your request was received, agents are on it" confirmation.
     const liveJobs = jobs.filter((j) => j.status === "starting" || j.status === "running" || j.status === "decomposing");
 
-    app.innerHTML = renderFounderHome({ state, projects, agents, inbox, dismissedInbox, objectives, allTasks, runningRows, liveJobs, autoRecovering, finishedTasks, inboxActionable, overnight, operations, goals, proposals, decisions, scorecards, budgets, permissions, blastRadius, retention });
+    app.innerHTML = renderFounderHome({ state, projects, agents, inbox, dismissedInbox, objectives, allTasks, runningRows, liveJobs, autoRecovering, finishedTasks, inboxActionable, overnight, operations, goals, proposals, decisions, scorecards, budgets, permissions, blastRadius, deployments, retention });
     bindFounderControls();
     return;
 
@@ -444,7 +446,7 @@ import { permissionsPanel } from "/lib/permissionsView.mjs";
     </section>`;
   }
 
-  function renderFounderHome({ state, projects, agents, inbox, dismissedInbox, objectives, allTasks, runningRows, liveJobs, autoRecovering, finishedTasks, inboxActionable, overnight, operations, goals, proposals, decisions, scorecards, budgets, permissions, blastRadius, retention }) {
+  function renderFounderHome({ state, projects, agents, inbox, dismissedInbox, objectives, allTasks, runningRows, liveJobs, autoRecovering, finishedTasks, inboxActionable, overnight, operations, goals, proposals, decisions, scorecards, budgets, permissions, blastRadius, deployments, retention }) {
     const groups = objectiveView.groupObjectives(objectives);
     const active = [...groups.running, ...groups.waiting, ...groups.blocked];
     const workingAgents = runningRows.filter((row) => row.status === "working");
@@ -470,6 +472,7 @@ import { permissionsPanel } from "/lib/permissionsView.mjs";
         ${budgetPanel(budgets, { esc })}
         ${permissionsPanel(permissions, { esc, fmtTime })}
         ${blastRadiusPanel(blastRadius, { esc })}
+        ${deploymentsPanel(deployments, { esc, fmtTime })}
         ${scorecardsPanel(scorecards, { esc })}
       </aside></div>
     </div>`;
