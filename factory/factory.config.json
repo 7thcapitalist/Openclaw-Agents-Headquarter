@@ -37,7 +37,13 @@
     "maxInfraAttemptsPerStage": 6,
     "maxRecoveryAttempts": 3,
     "_concurrentGroupsDoc": "Each inner array is a set of pipeline stages the runner dispatches concurrently once the branch is frozen (builder done). The engine still applies results one at a time and all gates are unchanged. Set to [] to force fully sequential.",
-    "concurrentGroups": [["reviewer", "qa", "security"]],
+    "concurrentGroups": [
+      [
+        "reviewer",
+        "qa",
+        "security"
+      ]
+    ],
     "agentIds": {
       "_doc": "Keys are stages or '<stage>:<harness-token>' routing tokens; values are OpenClaw runtime agent ids. decompose and intake use the proven architect route while defaulting safely to main in code if these optional keys are absent. builder:frontend maps the dedicated Codex-backed frontend-builder agent. qa:claude and qa:codex point at the Claude-backed qa agent; builder/reviewer/QA independence is enforced by task-workflow.mjs.",
       "decompose": "architect",
@@ -62,16 +68,59 @@
   "learning": {
     "injectIntoHandoff": false,
     "evidenceRetentionDays": 90,
-    "patternThreshold": 2
+    "patternThreshold": 2,
+    "autonomy": {
+      "_doc": "Governs `factory-learn.mjs cycle`, the scheduled 3-day retrospective + mastery pass. Autonomous merge is PROPOSED, not accepted: see DECISIONS.md SFD-2026-011 and decision-cards/DC-2026-002. `enabled` ships false; turning it on is a founder decision that supersedes SFD-2026-003 and SFD-2026-008 for the whitelisted class.",
+      "enabled": false,
+      "cadenceDays": 3,
+      "lookbackDays": 30,
+      "whitelist": [
+        "knowledge-append"
+      ],
+      "maxAutoMergesPerRun": 2,
+      "research": {
+        "allowlist": [
+          "docs.openclaw.ai",
+          "github.com/openclaw",
+          "modelcontextprotocol.io",
+          "www.anthropic.com",
+          "platform.openai.com"
+        ],
+        "maxCallsPerRun": 10
+      },
+      "mastery": {
+        "rotation": [
+          "product",
+          "architect",
+          "backend-builder",
+          "frontend-builder",
+          "reviewer",
+          "qa",
+          "security",
+          "release"
+        ],
+        "deepDiveRolesPerCycle": 1,
+        "dossierDir": "factory/knowledge/agents"
+      }
+    }
   },
   "deploy": {
     "defaultProvider": "vercel",
-    "providers": ["vercel", "none"]
+    "providers": [
+      "vercel",
+      "none"
+    ]
   },
   "founderInteraction": {
     "default": "chief-of-staff-decides",
     "maxQuestionsAtIntake": 1,
-    "askOnlyWhen": ["material product direction", "privacy or security posture", "meaningful spend", "destructive production action", "no safe progress"],
+    "askOnlyWhen": [
+      "material product direction",
+      "privacy or security posture",
+      "meaningful spend",
+      "destructive production action",
+      "no safe progress"
+    ],
     "deferNonBlockingDecisionsUntil": "merge-ready"
   },
   "pipeline": [
@@ -140,9 +189,18 @@
     "qa-backend": "codex-or-claude"
   },
   "risk": {
-    "low": { "founderApprovalBeforeBuild": false, "founderMergeRequired": true },
-    "medium": { "founderApprovalBeforeBuild": false, "founderMergeRequired": true },
-    "high": { "founderApprovalBeforeBuild": true, "founderMergeRequired": true }
+    "low": {
+      "founderApprovalBeforeBuild": false,
+      "founderMergeRequired": true
+    },
+    "medium": {
+      "founderApprovalBeforeBuild": false,
+      "founderMergeRequired": true
+    },
+    "high": {
+      "founderApprovalBeforeBuild": true,
+      "founderMergeRequired": true
+    }
   },
   "prohibitedAutonomousActions": [
     "push-to-main",
