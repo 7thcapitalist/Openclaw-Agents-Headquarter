@@ -9,7 +9,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "fs";
+import { readFileSync, readdirSync } from "fs";
 
 const APP = readFileSync(new URL("../../dashboard/backend/public/app.js", import.meta.url), "utf8");
 
@@ -81,4 +81,73 @@ test("no two panels are rendered from the same value", () => {
     used.set(argument, panel);
   }
   assert.ok(used.size >= 4, "the Today view should render several fetched panels");
+});
+
+// ── Coverage, not just correctness ────────────────────────────────────────
+//
+// Everything above asserts that a panel which IS wired is wired *correctly*.
+// None of it notices a panel that was never wired at all, and that is the
+// failure that actually keeps happening: `/api/hq/blast-radius` shipped green
+// in #172 with no panel, no fetch and no reference anywhere in the frontend.
+// The endpoint works, the tests pass, and the operator cannot see the feature.
+//
+// So: every GET /api/hq/* route must either be fetched by the frontend, or be
+// named below with a reason. The allowlist is the point — it converts "nobody
+// noticed" into "somebody decided", and a new route gets neither for free.
+const SERVER = readFileSync(new URL("../../dashboard/backend/server.mjs", import.meta.url), "utf8");
+const FRONTEND = ["app.js", "cost-limits.mjs"]
+  .map((f) => readFileSync(new URL(`../../dashboard/backend/public/${f}`, import.meta.url), "utf8"))
+  .concat(
+    readdirSync(new URL("../../dashboard/backend/public/lib/", import.meta.url))
+      .filter((f) => f.endsWith(".mjs"))
+      .map((f) => readFileSync(new URL(`../../dashboard/backend/public/lib/${f}`, import.meta.url), "utf8")),
+  )
+  .join("\n");
+
+// Routes with no frontend caller, each with the reason it is absent.
+// Removing an entry is how a gap gets closed; adding one should need an argument.
+const NO_FRONTEND_CALLER = new Map([
+  ["/api/hq/agents", "superseded by /api/hq/company, which the Today view already reads"],
+  ["/api/hq/projects", "superseded by /api/hq/company"],
+  ["/api/hq/projects/:id", "superseded by /api/hq/company"],
+  ["/api/hq/projects/:id/profile", "superseded by /api/hq/company"],
+  ["/api/hq/command-center", "legacy, predates the founder UI rebuild (#63)"],
+  // Genuine gaps — real capability the operator currently cannot see.
+  // These are the entries to delete; each deletion is a feature becoming visible.
+  ["/api/hq/blast-radius", "GAP: shipped in #172 with no panel — how far one run reached is uninspectable"],
+  ["/api/hq/projects/:id/deployment", "GAP: the factory can deploy, and deployment status has no panel"],
+]);
+
+test("every /api/hq route is reachable from the frontend, or explicitly excused", () => {
+  const routes = [...SERVER.matchAll(/app\.get\("(\/api\/hq\/[^"]*)"/g)].map((m) => m[1]);
+  assert.ok(routes.length >= 15, "expected the HQ API surface to be present");
+
+  const unreachable = routes.filter((route) => {
+    if (NO_FRONTEND_CALLER.has(route)) return false;
+    // A parameterised route is called as a template literal, so match on the
+    // literal prefix and suffix either side of the parameter.
+    const [head, ...rest] = route.split(/\/:[^/]+/);
+    return !(FRONTEND.includes(head) && rest.every((tail) => !tail || FRONTEND.includes(tail)));
+  });
+
+  assert.deepEqual(unreachable, [],
+    `built but invisible — these routes have no frontend caller:\n  ${unreachable.join("\n  ")}\n`
+    + "Wire a panel, or add the route to NO_FRONTEND_CALLER with the reason.");
+});
+
+// An excuse that is no longer true is worse than no excuse: it hides a gap that
+// has since been closed, and it makes the list above untrustworthy.
+test("nothing on the excused list is actually wired", () => {
+  const stale = [...NO_FRONTEND_CALLER.keys()].filter((route) => FRONTEND.includes(route.split(/\/:[^/]+/)[0]));
+  assert.deepEqual(stale, [],
+    `these routes are excused as having no caller, but the frontend calls them:\n  ${stale.join("\n  ")}\n`
+    + "Remove them from NO_FRONTEND_CALLER.");
+});
+
+// Every route on the list must say why. A bare entry is how "temporarily
+// excused" becomes permanent.
+test("every excused route carries a reason", () => {
+  for (const [route, reason] of NO_FRONTEND_CALLER) {
+    assert.ok(reason && reason.trim().length > 12, `${route} is excused without a real reason`);
+  }
 });
