@@ -1,7 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync } from "fs";
 import { basename, dirname, join } from "path";
 import { randomUUID } from "crypto";
-import { DEFAULT_MAX_INFRA_ATTEMPTS, completeStage, recordRecoveryResult, routeStageFailure, startRecovery, verifyEvidence } from "./task-workflow.mjs";
+import { DEFAULT_MAX_INFRA_ATTEMPTS, completeStage, recordRecoveryResult, recordVerifiedCommit, routeStageFailure, startRecovery, verifyEvidence } from "./task-workflow.mjs";
+import { execFileSync } from "node:child_process";
 import { mutateTransactionalState } from "./store/transactional-json.mjs";
 import { writeHandoff } from "./handoff.mjs";
 
@@ -186,6 +187,25 @@ export function markDispatchRunning({ statePath, dispatchId, now = new Date().to
   return dispatchResponse(nextState.currentDispatch, nextState);
 }
 
+// The commit at the worktree's HEAD, or null when the worktree is not a git
+// checkout. Fixed argv, never a shell. Failure is non-fatal: an unreadable HEAD
+// leaves the tree unfrozen and the release gate reports that, rather than
+// breaking a stage transition over it.
+function headCommitOf(worktree) {
+  try {
+    const out = execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: worktree,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 10_000,
+    });
+    const sha = String(out).trim();
+    return /^[0-9a-f]{40}$/i.test(sha) ? sha : null;
+  } catch {
+    return null;
+  }
+}
+
 export function ingestResult({ statePath, result, agentMeta = null, maxAttemptsPerStage = 3, maxInfraAttemptsPerStage = DEFAULT_MAX_INFRA_ATTEMPTS, now = new Date().toISOString() }) {
   validateAgentResult(result);
   // Stable per dispatch: two processes (or a retried delivery) ingesting the
@@ -208,7 +228,7 @@ export function ingestResult({ statePath, result, agentMeta = null, maxAttemptsP
       // downstream.
       const actor = dispatch.actor;
       if (dispatch.kind?.startsWith("recovery-")) {
-        const evidence = verifyEvidence(result.evidence, state.worktree);
+        const evidence = verifyEvidence(evidencePathsOf(result.evidence), state.worktree);
         const recovered = recordRecoveryResult(state, {
           outcome: result.outcome === "decision-deferred" ? "pass" : result.outcome,
           actor, summary: result.summary, evidence, diagnosis: result.diagnosis || null,
@@ -218,17 +238,38 @@ export function ingestResult({ statePath, result, agentMeta = null, maxAttemptsP
         delete recovered.currentDispatch;
         return recovered;
       }
-      const evidence = verifyEvidence(result.evidence, state.worktree);
+      const evidence = verifyEvidence(evidencePathsOf(result.evidence), state.worktree);
       const deferredDecision = result.outcome === "decision-deferred" ? result.decision : null;
+      // The agent's own description of its artifacts and which criteria they
+      // settle. `observed:false` is not negotiable here — the factory did not
+      // run these commands, so nothing in this result can be treated as an
+      // observed exit status (FCT-P0-05 security requirement: all agent-provided
+      // metadata is untrusted).
+      const claimed = manifestInputsFromResult(result, { observed: false });
+
       let completed = completeStage(state, {
         stage: result.stage,
         actor,
         outcome: result.outcome === "decision-deferred" ? "pass" : result.outcome,
         summary: result.summary,
         evidence,
+        agentEvidence: claimed,
+        dispatchId: dispatch.id || dispatch.dispatchId || null,
         deferredDecision,
         now,
       });
+      // Freeze the tree the review stages will judge (FCT-P0-05, requirement 7).
+      //
+      // Reviewer, QA and security run concurrently once the builder is done, so
+      // they must all be judging the same commit. Recording it here — as the
+      // builder's work settles, before the group is dispatched — is what lets
+      // every downstream manifest bind to it, and what makes a later source
+      // change detectable instead of passing unnoticed.
+      if (result.stage === "builder" && completed.status === "active") {
+        const head = headCommitOf(state.worktree);
+        if (head) completed = recordVerifiedCommit(completed, { sha: head, actor: "system", now });
+      }
+
       const finished = { ...dispatch, status: "completed", outcome: result.outcome, summary: result.summary, completedAt: now };
       if (agentMeta) finished.usage = sanitizeUsage(agentMeta);
       completed.dispatches = [...(state.dispatches || []), finished];
@@ -304,9 +345,73 @@ export function validateAgentResult(result) {
   if (!new Set(["pass", "fail", "decision-required", "decision-deferred"]).has(result.outcome)) throw new Error("Invalid agent result outcome.");
   if (result.outcome === "decision-deferred" && (!result.decision || typeof result.decision !== "object")) throw new Error("A deferred decision requires a decision object.");
   if (result.outcome === "decision-deferred" && (!Array.isArray(result.decision.options) || result.decision.options.length < 2)) throw new Error("A deferred decision requires at least two options.");
-  if (!Array.isArray(result.evidence) || result.evidence.length === 0 || !result.evidence.every((x) => typeof x === "string" && x.trim())) {
+  // Evidence may be a plain path (what every agent emits today) or an object
+  // describing how the artifact was produced. Both are accepted; neither is
+  // trusted beyond the path itself.
+  if (!Array.isArray(result.evidence) || result.evidence.length === 0) {
     throw new Error("Agent result requires one or more evidence paths.");
   }
+  for (const item of result.evidence) {
+    const path = typeof item === "string" ? item : item?.path;
+    if (typeof path !== "string" || !path.trim()) {
+      throw new Error("Agent result requires one or more evidence paths.");
+    }
+    if (item && typeof item === "object" && item.exitStatus !== undefined && !Number.isInteger(item.exitStatus)) {
+      throw new Error("Evidence exitStatus must be an integer.");
+    }
+  }
+  if (result.criteria !== undefined) {
+    if (!Array.isArray(result.criteria)) throw new Error("Agent result criteria must be an array.");
+    for (const entry of result.criteria) {
+      if (!entry || typeof entry !== "object") throw new Error("Each criterion entry must be an object.");
+      if (typeof entry.id !== "string" || !entry.id.trim()) throw new Error("Each criterion entry needs an id.");
+      if (!["proven", "blocked", "not-applicable"].includes(entry.status)) {
+        throw new Error(`Invalid criterion status: ${entry.status}`);
+      }
+    }
+  }
+}
+
+// Evidence paths, for the containment/existence check. Object form is reduced to
+// its path; the descriptive fields are handled separately when the manifest is
+// built, and are never allowed to stand in for a path.
+export function evidencePathsOf(evidence) {
+  return (Array.isArray(evidence) ? evidence : []).map((x) => (typeof x === "string" ? x : x?.path));
+}
+
+// Turn an agent's evidence + criteria claims into manifest inputs.
+//
+// SECURITY: `kind` is decided here, not by the agent. An agent describing its
+// own work is `asserted` — recorded, never accepted as proof. Only a check the
+// FACTORY ran and whose exit status it observed can be `observed`, and
+// verifyManifest() refuses to let an assertion prove a criterion. That is what
+// stops "the agent says the tests passed" from clearing the gate.
+export function manifestInputsFromResult(result, { observed = false } = {}) {
+  const artifacts = (Array.isArray(result.evidence) ? result.evidence : []).map((item) => {
+    if (typeof item === "string") return { path: item, id: item };
+    return {
+      path: item.path,
+      id: item.id || item.path,
+      type: item.type,
+      command: item.command,
+      scenario: item.scenario,
+      startedAt: item.startedAt,
+      endedAt: item.endedAt,
+      exitStatus: item.exitStatus,
+      // Never taken from the agent.
+      observed: Boolean(observed),
+    };
+  });
+
+  const criteriaProofs = (Array.isArray(result.criteria) ? result.criteria : []).map((entry) => ({
+    id: entry.id,
+    status: entry.status,
+    artifacts: Array.isArray(entry.artifacts) ? entry.artifacts : [],
+    note: entry.note,
+    kind: observed ? "observed" : "asserted",
+  }));
+
+  return { artifacts, criteriaProofs, limitations: result.limitations || null };
 }
 
 function assertCurrentDispatch(state, dispatchId) {
