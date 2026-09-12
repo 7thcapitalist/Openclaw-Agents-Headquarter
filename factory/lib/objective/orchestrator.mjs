@@ -61,7 +61,7 @@ const firstLine = (text) => String(text || "").split("\n").map((s) => s.trim()).
 // other. readObjState() keeps its old signature/behaviour (a plain read of
 // the always-current JSON export) so every existing caller is unaffected.
 
-export function readObjState(path) { return readTransactionalState(path); }
+export function readObjState(path) { return readTransactionalState(path, { format: "objective-state" }); }
 
 // The one write primitive every node/integration step in this file uses,
 // converted here so every call site is concurrency-safe without changing any

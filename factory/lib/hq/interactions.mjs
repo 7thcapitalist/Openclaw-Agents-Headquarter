@@ -23,6 +23,7 @@
 
 import { createHash } from "crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "fs";
+import { assertSupportedVersion } from "../store/durable-version.mjs";
 import { dirname, join, resolve } from "path";
 import { scrubText } from "../common/redact.mjs";
 
@@ -106,8 +107,15 @@ export function appendInteraction(path, interaction) {
 export function readInteractions(path) {
   if (!existsSync(path)) return [];
   return readFileSync(path, "utf8").split("\n").filter(Boolean).map((line, index) => {
+    let parsed;
     try {
-      return validateInteraction(JSON.parse(line));
+      parsed = JSON.parse(line);
+    } catch (error) {
+      throw new Error(`Invalid interaction line ${index + 1}: ${error.message}`);
+    }
+    assertSupportedVersion(parsed?.version, { format: "interaction", path });
+    try {
+      return validateInteraction(parsed);
     } catch (error) {
       throw new Error(`Invalid interaction line ${index + 1}: ${error.message}`);
     }

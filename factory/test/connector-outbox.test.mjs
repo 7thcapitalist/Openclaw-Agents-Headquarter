@@ -26,9 +26,15 @@ test("the module has no network capability at all", () => {
   for (const forbidden of ["fetch(", "node:http", '"http"', '"https"', '"net"', '"tls"', "child_process", "XMLHttpRequest", "WebSocket"]) {
     assert.equal(code.includes(forbidden), false, `${forbidden} must not appear: this module is bookkeeping, not a client`);
   }
-  // Imports are exactly the three it needs.
+  // Imports are exactly what it needs and nothing more.
   const imports = [...code.matchAll(/from "([^"]+)"/g)].map((match) => match[1]).sort();
-  assert.deepEqual([...new Set(imports)], ["crypto", "fs", "path"]);
+  assert.deepEqual([...new Set(imports)], ["../store/durable-version.mjs", "crypto", "fs", "path"]);
+
+  // The one local import must not be a way in. It is a pure version check with
+  // no dependencies of its own, so allowing it here widens nothing.
+  const guard = readFileSync(new URL("../lib/store/durable-version.mjs", import.meta.url), "utf8");
+  const guardCode = guard.split("\n").filter((line) => !line.trim().startsWith("//")).join("\n");
+  assert.deepEqual([...guardCode.matchAll(/from "([^"]+)"/g)].map((match) => match[1]), [], "the version guard must stay dependency-free");
 });
 
 test("health states plainly that nothing is enabled or connected", () => {

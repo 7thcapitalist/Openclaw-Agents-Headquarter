@@ -3,6 +3,7 @@
 // see docs/software-factory/PAPERCLIP_AUDIT_ATTRIBUTION.md.
 import { randomUUID } from "crypto";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync } from "fs";
+import { assertSupportedVersion } from "../store/durable-version.mjs";
 import { dirname, resolve } from "path";
 import { sanitizeExcerpt } from "../common/redact.mjs";
 
@@ -56,7 +57,11 @@ export function appendAuditEvent(path, event) {
 export function readAuditEvents(path) {
   if (!existsSync(path)) return [];
   return readFileSync(path, "utf8").split("\n").filter(Boolean).map((line, index) => {
-    try { return validateAuditEvent(JSON.parse(line)); }
+    let parsed;
+    try { parsed = JSON.parse(line); }
+    catch (error) { throw new Error(`Invalid audit ledger line ${index + 1}: ${error.message}`); }
+    assertSupportedVersion(parsed?.version, { format: "audit-event", path });
+    try { return validateAuditEvent(parsed); }
     catch (error) { throw new Error(`Invalid audit ledger line ${index + 1}: ${error.message}`); }
   });
 }

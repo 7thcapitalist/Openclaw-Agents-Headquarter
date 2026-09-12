@@ -2,6 +2,7 @@
 // 6abeb67334348dcb6fde2d591a27ffc7efc7118d (MIT).
 import { randomUUID } from "crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "fs";
+import { assertSupportedVersion } from "../store/durable-version.mjs";
 import { dirname, resolve } from "path";
 
 const TYPES = new Set(["usage", "correction", "reversal"]);
@@ -28,7 +29,12 @@ export function appendCostEvent(path, event) {
 
 export function readCostEvents(path) {
   if (!existsSync(path)) return [];
-  return readFileSync(path, "utf8").split("\n").filter(Boolean).map((line, index) => { try { return validateCostEvent(JSON.parse(line)); } catch (error) { throw new Error(`Invalid cost ledger line ${index + 1}: ${error.message}`); } });
+  return readFileSync(path, "utf8").split("\n").filter(Boolean).map((line, index) => {
+    let parsed;
+    try { parsed = JSON.parse(line); } catch (error) { throw new Error(`Invalid cost ledger line ${index + 1}: ${error.message}`); }
+    assertSupportedVersion(parsed?.version, { format: "cost-event", path });
+    try { return validateCostEvent(parsed); } catch (error) { throw new Error(`Invalid cost ledger line ${index + 1}: ${error.message}`); }
+  });
 }
 
 export function summarizeCostLedger(events) {
