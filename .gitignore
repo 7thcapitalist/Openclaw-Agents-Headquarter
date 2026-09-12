@@ -1,4 +1,9 @@
-node_modules/
+# Without the trailing slash this also matches a *symlink* named
+# node_modules. The slash form matches directories only, which is how an
+# absolute, machine-specific symlink reached main in #173: agents and test
+# runs routinely link node_modules into a scratch worktree, and `git add -A`
+# then picks the link up because nothing ignores it.
+node_modules
 .env
 .env.*
 !.env.example
