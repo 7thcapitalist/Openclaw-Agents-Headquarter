@@ -44,6 +44,7 @@ import { existsSync, readFileSync } from "fs";
 import { assertSupportedVersion } from "../store/durable-version.mjs";
 import { join, resolve } from "path";
 import { appendAuditEvent, createAuditEvent } from "../audit/envelope.mjs";
+import { observeSubject } from "./blast-radius.mjs";
 
 // The complete capability vocabulary. Adding to this list is a deliberate,
 // reviewed act. Note what is absent and must stay absent: anything that merges,
@@ -198,9 +199,15 @@ export class PermissionDeniedError extends Error {
   }
 }
 
-export function enforce({ registry, auditPath = null, correlation = {}, ...request }) {
+// `blastRadius` is an optional per-run tracker (#160). It counts how many
+// distinct subjects one run has been allowed to act on and alerts when that
+// crosses a threshold. It is ALERT-ONLY and cannot refuse anything: scope says
+// which work an agent may touch, blast radius says how much, and the second has
+// to be observed against real runs before it can stop any of them.
+export function enforce({ registry, auditPath = null, correlation = {}, blastRadius = null, ...request }) {
   const decision = authorize({ registry, ...request });
   if (auditPath) recordPermissionDecision(auditPath, decision, { correlation });
+  if (blastRadius) observeSubject({ tracker: blastRadius, decision, auditPath, correlation });
   if (!decision.allowed) throw new PermissionDeniedError(decision);
   return decision;
 }

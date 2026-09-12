@@ -633,6 +633,20 @@
       "sourcePath": "server/src/services/company-search.ts",
       "classification": "inspired",
       "notes": "Canary test proving a prompt is unreachable through search, plus query validation, bounds and degradation."
+    },
+    {
+      "localPath": "factory/lib/hq/blast-radius.mjs",
+      "sourceId": "paperclip",
+      "sourcePath": "server/src/services/cross-issue-influence-limit.ts",
+      "classification": "adapted",
+      "notes": "Adapts Paperclip cross-issue influence cap to HQ as an alert-only per-run count of distinct subjects a run was allowed to act on, derived from the existing permission audit ledger; the founder is never counted and nothing is refused."
+    },
+    {
+      "localPath": "factory/test/blast-radius.test.mjs",
+      "sourceId": "paperclip",
+      "sourcePath": "server/src/services/cross-issue-influence-limit.ts",
+      "classification": "inspired",
+      "notes": "Pins the four properties that make the bound real: per run rather than per agent lifetime, the founder exemption and its limit, one alert per crossing, and that nothing is ever refused."
     }
   ]
 }
