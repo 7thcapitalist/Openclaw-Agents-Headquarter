@@ -1,0 +1,138 @@
+/* Tokens mirror dashboard/backend/public/styles.css so the hosted view and the
+   local dashboard read as one product. They are copied rather than imported on
+   purpose: this tree is deployable and must not reach into dashboard/. */
+:root {
+  --bg: #07080b;
+  --surface: #111318;
+  --border: #2a303b;
+  --border-soft: #202631;
+  --text: #eef1f6;
+  --muted: #8d96a8;
+  --blue: #38bdf8;
+  --amber: #f3c969;
+  font-family: Inter, "Segoe UI", system-ui, -apple-system, sans-serif;
+  line-height: 1.45;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.9rem 1.2rem;
+  border-bottom: 1px solid var(--border-soft);
+  background: #0a0c11;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+}
+
+.brand-mark {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--blue);
+  box-shadow: 0 0 12px rgba(56, 189, 248, 0.5);
+}
+
+.brand-title {
+  font-size: 0.92rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.brand-sub {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.page {
+  max-width: 780px;
+  margin: 0 auto;
+  padding: clamp(1.2rem, 5vw, 3.5rem) 1.2rem;
+}
+
+.shell-state {
+  padding: clamp(1.4rem, 4vw, 2.4rem);
+  border: 1px solid #27344a;
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at 85% 0, rgba(56, 189, 248, 0.13), transparent 35%),
+    linear-gradient(145deg, #111722, #0d1017);
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.22);
+}
+
+.eyebrow {
+  color: var(--blue);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
+
+.shell-state h1 {
+  margin: 0.5rem 0 0.6rem;
+  font-size: clamp(1.35rem, 3vw, 2rem);
+  letter-spacing: -0.03em;
+}
+
+.shell-state p {
+  color: #aab5c7;
+  margin: 0;
+  font-size: 0.92rem;
+}
+
+.shell-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 1px;
+  margin: 1.6rem 0 1.2rem;
+  overflow: hidden;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--border-soft);
+}
+
+.shell-facts > div {
+  padding: 0.8rem 1rem;
+  background: #0e1117;
+}
+
+.shell-facts dt {
+  color: #687386;
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.shell-facts dd {
+  margin: 0.25rem 0 0;
+  font-size: 0.8rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.shell-note {
+  padding-top: 1rem;
+  border-top: 1px solid var(--border-soft);
+  color: var(--muted) !important;
+  font-size: 0.78rem !important;
+}
+
+.is-stale dd,
+.is-stale .eyebrow {
+  color: var(--amber);
+}

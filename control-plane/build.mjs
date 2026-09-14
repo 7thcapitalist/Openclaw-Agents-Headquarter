@@ -1,0 +1,76 @@
+#!/usr/bin/env node
+// The build that refuses to ship nothing.
+//
+// This campaign exists because a deployment of this repository reported success
+// while serving no files at all:
+//
+//     Running "vercel build"
+//     Build Completed in /vercel/output [329ms]
+//     Skipping cache upload because no files were prepared
+//
+// Nothing failed. Vercel found no framework and no entry point, produced zero
+// files, deployed them, and every path returned 404 while the dashboard showed
+// a green "Ready". A build that cannot fail is not a check.
+//
+// A static app has nothing to compile, so this does not generate the output —
+// it verifies it. Every file the deployment needs must exist and be non-empty,
+// and the entry point must actually reference the assets it depends on. If any
+// of that is untrue the exit code is non-zero and the deploy stops.
+
+import { readFileSync, statSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const root = dirname(fileURLToPath(import.meta.url));
+const publicDir = join(root, "public");
+
+// Every file that must reach the deployment. Adding an asset means adding it
+// here; an asset absent from this list is not protected by the check.
+const REQUIRED = ["index.html", "styles.css", "app.js"];
+
+// An asset can exist, be non-empty, and still be unreachable because nothing
+// links to it. These are the references index.html must carry.
+const REQUIRED_REFERENCES = ["/styles.css", "/app.js"];
+
+const failures = [];
+
+for (const name of REQUIRED) {
+  const path = join(publicDir, name);
+  let stat;
+  try {
+    stat = statSync(path);
+  } catch {
+    failures.push(`missing: public/${name}`);
+    continue;
+  }
+  if (!stat.isFile()) {
+    failures.push(`not a file: public/${name}`);
+    continue;
+  }
+  if (stat.size === 0) {
+    failures.push(`empty: public/${name}`);
+  }
+}
+
+if (!failures.length) {
+  const html = readFileSync(join(publicDir, "index.html"), "utf8");
+  for (const reference of REQUIRED_REFERENCES) {
+    if (!html.includes(reference)) {
+      failures.push(`index.html does not reference ${reference}`);
+    }
+  }
+}
+
+if (failures.length) {
+  console.error("control-plane build failed; refusing to deploy an empty app:");
+  for (const failure of failures) console.error(`  - ${failure}`);
+  process.exit(1);
+}
+
+const total = REQUIRED.reduce(
+  (sum, name) => sum + statSync(join(publicDir, name)).size,
+  0,
+);
+console.log(
+  `control-plane build ok: ${REQUIRED.length} files, ${total} bytes, serving from ${resolve(publicDir)}`,
+);
