@@ -37,11 +37,14 @@ export async function createContractFromObjective({ objective, repo, issue, proj
   }
   let advisory;
   if (SURFACED_OUTCOMES.has(classification.outcome)) {
+    const advisoryOnly = isAdvisoryOnly(classification, contract, decisionProtocol);
     advisory = {
       decisionClassification: {
-        advisory: true,
-        blocksDispatch: false,
-        label: "ADVISORY — no founder action required at intake; does not block dispatch.",
+        advisory: advisoryOnly,
+        blocksDispatch: !advisoryOnly,
+        label: advisoryOnly
+          ? "ADVISORY — low-risk work whose matched rule opted out of blocking; does not block dispatch."
+          : "BLOCKING — the founder is asked before this task dispatches.",
         outcome: classification.outcome,
         surfacedAs: classification.outcome === "block" ? "decision-request" : classification.outcome,
         trigger: classification.trigger,
@@ -70,6 +73,36 @@ function normalizeQuestions(value) {
     why: String(item?.why || "").trim(),
     options: Array.isArray(item?.options) ? item.options.map((x) => String(x).trim()).filter(Boolean).slice(0, 3) : [],
   })).filter((item) => item.question && item.options.length >= 2);
+}
+
+// Whether a surfaced decision may be downgraded to advisory — i.e. recorded but
+// NOT allowed to stop the task.
+//
+// The default is blocking, and deliberately so. The costs are not symmetric: a
+// decision wrongly marked blocking costs the founder ten seconds of reading, and
+// a decision wrongly marked advisory cost five days, a product that shipped
+// without them knowing, and a 447 GB file. Fail loud, not silent.
+//
+// Previously every surfaced classification was hardcoded `advisory: true,
+// blocksDispatch: false` with no condition at all, so
+// `[decision-advisory] task-ca3c3cdf: decision-request / risk:high — advisory
+// only, not blocking` was the system working as written.
+//
+// Two conditions, both required, to opt out:
+//   1. The task is LOW risk. Medium and high never qualify.
+//   2. The matched protocol rule explicitly set `advisory: true`. Silence is
+//      not consent — an unset flag means blocking.
+//
+// A `risk:high` classification comes from riskBinding, not from a trigger rule,
+// so it can never satisfy (2) and can never be advisory. That is checked
+// explicitly below rather than left to fall out of the rule lookup, because it
+// is the guarantee that matters most.
+function isAdvisoryOnly(classification, contract, protocol) {
+  if (contract.risk === "high") return false;
+  if (classification.trigger === "risk:high") return false;
+  if (contract.risk !== "low") return false;
+  const rule = (protocol.triggers || []).find((t) => t.id === classification.trigger);
+  return rule?.advisory === true;
 }
 
 function findMatchedRule(classification, protocol) {
