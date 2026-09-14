@@ -126,11 +126,21 @@ test("the deployable tree imports nothing from dashboard/ or factory/", () => {
   assert.deepEqual(offenders, [], "the deployable tree must be self-contained");
 });
 
-test("the deployable tree carries no dependencies and no lockfile", () => {
+test("every dependency is pinned exactly and the lockfile is committed", () => {
   const manifest = JSON.parse(readFileSync(join(controlPlane, "package.json"), "utf8"));
-  assert.equal(manifest.dependencies, undefined);
-  assert.equal(manifest.devDependencies, undefined);
-  assert.throws(() => statSync(join(controlPlane, "package-lock.json")));
+  const declared = { ...manifest.dependencies, ...manifest.devDependencies };
+
+  // A range in a deployable tree means the artifact that ships is not the one
+  // that was reviewed. Pin exactly, and commit the lockfile so the transitive
+  // set is pinned too.
+  for (const [name, range] of Object.entries(declared)) {
+    assert.match(range, /^\d+\.\d+\.\d+$/, `${name} must be pinned to an exact version, got ${range}`);
+  }
+  assert.ok(statSync(join(controlPlane, "package-lock.json")).isFile(), "package-lock.json must be committed");
+
+  // The publish boundary is the reason to care who is in here at all. Keep the
+  // list short enough to read, and first-party.
+  assert.deepEqual(Object.keys(declared).sort(), ["@vercel/blob"]);
 });
 
 test("the deployable tree contains no credential and no .env", () => {

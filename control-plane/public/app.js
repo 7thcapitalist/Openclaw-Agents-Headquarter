@@ -1,20 +1,19 @@
-// The control plane's empty state, and the seam the renderer fills.
+// The control plane's client. Two views: sign in, and the mirror's state.
 //
-// Campaign HQ_CONTROL_PLANE_2026 node 1. There is no store yet (node #187) and
-// no renderer yet (node #189), so the only honest thing this page can do is ask
-// whether a snapshot exists and say plainly what came back.
-//
-// It asks rather than hardcoding "nothing published", because a page that
-// asserts a state it never checked is how the 404 that started this campaign
-// went unnoticed: the deployment reported success while serving nothing.
+// The server is the authority on both. Nothing here decides whether a viewer is
+// allowed in — it asks /api/session and draws what it is told. A client that
+// could grant itself the view would be a gate in the wrong place (DC-2026-004
+// puts the check at one boundary, and that boundary is on the server).
 
-const MIRROR_URL = "/api/mirror";
-
-// Long enough that a slow cold start is not reported as an outage, short enough
-// that the page never sits blank.
 const TIMEOUT_MS = 8000;
 
 const els = {
+  signin: document.getElementById("signin"),
+  signinForm: document.getElementById("signin-form"),
+  signinError: document.getElementById("signin-error"),
+  signinSubmit: document.getElementById("signin-submit"),
+  password: document.getElementById("password"),
+  signOut: document.getElementById("sign-out"),
   state: document.getElementById("state"),
   eyebrow: document.getElementById("state-eyebrow"),
   title: document.getElementById("state-title"),
@@ -23,7 +22,29 @@ const els = {
   publisher: document.getElementById("fact-publisher"),
 };
 
-function render({ eyebrow, title, body, mirror, publisher, stale = false }) {
+async function request(url, options = {}) {
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...options, signal: abort.signal, cache: "no-store" });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function showSignIn(message) {
+  els.signin.hidden = false;
+  els.state.hidden = true;
+  els.signOut.hidden = true;
+  els.signinError.hidden = !message;
+  if (message) els.signinError.textContent = message;
+  els.password.focus();
+}
+
+function renderState({ eyebrow, title, body, mirror, publisher, stale = false }) {
+  els.signin.hidden = true;
+  els.state.hidden = false;
+  els.signOut.hidden = false;
   els.eyebrow.textContent = eyebrow;
   els.title.textContent = title;
   els.body.textContent = body;
@@ -41,40 +62,31 @@ function age(publishedAt) {
   return `${Math.round(seconds / 3600)}h ago`;
 }
 
-async function fetchSnapshot() {
-  const abort = new AbortController();
-  const timer = setTimeout(() => abort.abort(), TIMEOUT_MS);
-  try {
-    return await fetch(MIRROR_URL, { signal: abort.signal, cache: "no-store" });
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-async function main() {
+async function loadMirror() {
   let response;
   try {
-    response = await fetchSnapshot();
+    response = await request("/api/mirror");
   } catch {
-    // Offline, aborted, or the endpoint does not exist yet. Until node #187
-    // lands there is nothing to reach, and that is the expected state — not a
-    // failure worth alarming about.
-    render({
-      eyebrow: "Waiting for first publish",
-      title: "No snapshot has been published yet.",
+    renderState({
+      eyebrow: "Offline",
+      title: "The control plane could not be reached.",
       body:
-        "This is the control plane for OpenClaw Headquarters. It renders a " +
-        "projection that the factory machine publishes outbound. Nothing has " +
-        "arrived yet, so there is nothing to show — this page is not broken, " +
-        "and it is not hiding an error.",
-      mirror: "none published",
-      publisher: "not connected",
+        "Headquarters itself is unaffected — it runs on the factory machine " +
+        "and this view is a mirror of it.",
+      mirror: "unreachable",
+      publisher: "unknown",
+      stale: true,
     });
     return;
   }
 
+  if (response.status === 401) {
+    showSignIn("That session has expired. Sign in again.");
+    return;
+  }
+
   if (response.status === 404) {
-    render({
+    renderState({
       eyebrow: "Waiting for first publish",
       title: "No snapshot has been published yet.",
       body:
@@ -87,12 +99,10 @@ async function main() {
   }
 
   if (!response.ok) {
-    render({
+    renderState({
       eyebrow: "Store unreachable",
       title: "The snapshot store did not answer.",
-      body:
-        `The store responded with ${response.status}. Headquarters itself is ` +
-        "unaffected — it runs on the factory machine and this view is a mirror.",
+      body: `The store responded with ${response.status}. This view is a mirror; the factory is unaffected.`,
       mirror: `error ${response.status}`,
       publisher: "unknown",
       stale: true,
@@ -104,12 +114,10 @@ async function main() {
   try {
     snapshot = await response.json();
   } catch {
-    render({
+    renderState({
       eyebrow: "Store unreachable",
       title: "The snapshot store returned something unreadable.",
-      body:
-        "The response was not JSON. Treat this view as stale until the next " +
-        "publish succeeds.",
+      body: "Treat this view as stale until the next publish succeeds.",
       mirror: "unreadable",
       publisher: "unknown",
       stale: true,
@@ -117,9 +125,8 @@ async function main() {
     return;
   }
 
-  // A snapshot exists but nothing renders it until node #189. Saying so beats
-  // rendering a blank page that looks like the empty state above.
-  render({
+  // A snapshot exists but nothing renders it until node #189.
+  renderState({
     eyebrow: "Snapshot received",
     title: "A projection is published, and this view cannot render it yet.",
     body:
@@ -128,6 +135,57 @@ async function main() {
     mirror: snapshot?.publishedAt ? age(snapshot.publishedAt) : "published",
     publisher: snapshot?.publisher ? String(snapshot.publisher) : "unnamed",
   });
+}
+
+els.signinForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  els.signinSubmit.disabled = true;
+  els.signinError.hidden = true;
+  try {
+    const response = await request("/api/session", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ password: els.password.value }),
+    });
+    if (response.ok) {
+      els.password.value = "";
+      await loadMirror();
+      return;
+    }
+    showSignIn(
+      response.status === 429
+        ? "Too many attempts. Wait a minute and try again."
+        : "That password was not accepted.",
+    );
+  } catch {
+    showSignIn("Could not reach the control plane.");
+  } finally {
+    els.signinSubmit.disabled = false;
+  }
+});
+
+els.signOut.addEventListener("click", async () => {
+  try {
+    await request("/api/session", { method: "DELETE" });
+  } catch {
+    // Clearing the cookie server-side is best effort; the view resets either
+    // way, and an expired or orphaned cookie grants nothing on its own.
+  }
+  showSignIn();
+});
+
+async function main() {
+  try {
+    const response = await request("/api/session");
+    const { authenticated } = await response.json();
+    if (authenticated) {
+      await loadMirror();
+      return;
+    }
+  } catch {
+    // Fall through to the sign-in view: unknown is never treated as allowed.
+  }
+  showSignIn();
 }
 
 main();
