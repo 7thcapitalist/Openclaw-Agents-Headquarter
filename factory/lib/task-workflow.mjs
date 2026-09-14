@@ -139,7 +139,7 @@ export function createState({ task, repo, branch, worktree, founderPublicKey = n
     assignments,
     stages: Object.fromEntries(STAGES.map((stage) => [stage, { status: "pending" }])),
     failures: [],
-    recovery: { maxAttempts: Number(maxRecoveryAttempts) || 3, attempts: [], active: null },
+    recovery: normalizeRecovery({ maxAttempts: Number(maxRecoveryAttempts) || 3 }),
     events: [{ at: now, type: "task-created", stage: STAGES[0] }],
     createdAt: now,
     updatedAt: now,
@@ -314,7 +314,10 @@ export function resumeState(state, now = new Date().toISOString(), options = {})
   if (state.blocker?.stage === "builder" && state.task.risk === "high" && !hasValidFounderApproval(state, options)) {
     throw new Error("High-risk build cannot resume without recorded founder approval.");
   }
-  const next = structuredClone(state);
+  // Resuming means the blocker that spent the budget has been dealt with.
+  // Carrying its attempts forward is what made a crashed gateway escalate on
+  // its first occurrence, reported as three strategies that never ran.
+  const next = closeRecoveryIncident(state, { reason: "founder-resumed", now });
   next.status = "active";
   next.stages[next.currentStage] = { status: "pending" };
   delete next.blocker;
@@ -395,6 +398,76 @@ export function routeStageFailure(state, { failedStage, targetStage, maxAttempts
   return next;
 }
 
+// ── recovery incidents ───────────────────────────────────────────────────────
+//
+// `maxAttempts` bounds ONE incident — one failure the factory is currently
+// trying to repair — not the life of the task.
+//
+// It used to bound the life of the task, because nothing ever reset the count.
+// Two consequences, both seen in production on obj-c58897c0:
+//
+//   * A repair that WORKED still spent budget forever. `recordRecoveryResult`
+//     cleared `active` on a verified repair but left the attempt on the list,
+//     so a task could only ever be recovered three times however well each one
+//     went.
+//   * A later, unrelated failure inherited an exhausted budget and escalated on
+//     its FIRST occurrence. The reviewer stage died on a crashed OpenClaw
+//     Gateway and went straight to the founder, never once retried, because
+//     three attempts had been spent days earlier on a merge conflict that was
+//     resolved long before.
+//
+// The second one also lied to the founder: `escalateRecovery` renders
+// `whatFactoryTried` from the attempt list, so the blocker read "retry-recover:
+// failed; deeper-diagnosis: failed; independent-review: failed" about a failure
+// nothing had ever touched. Those three strings described the merge conflict.
+//
+// The fix scopes the BUDGET without touching the RECORD. Every attempt carries
+// the incident it belongs to and stays on `attempts` forever — the dashboard,
+// the learning evidence exporter and `recovery.attempts.at(-1)` all keep
+// working, and no audit history is lost. Only the count that gates a new
+// attempt is filtered to the open incident.
+//
+// An incident closes when the failure it was about stops being the task's
+// problem: a verified repair, or a founder resuming past the blocker.
+// `attempts.length` keeps growing across incidents and is bounded by
+// `maxTotalAttempts`, so "budget per incident" can never mean "unbounded".
+export function normalizeRecovery(recovery = {}) {
+  const maxAttempts = Number(recovery.maxAttempts) || 3;
+  return {
+    ...recovery,
+    maxAttempts,
+    // A ceiling on automated recovery for the whole task, whatever the shape of
+    // the incidents. Three full incidents by default.
+    maxTotalAttempts: Number(recovery.maxTotalAttempts) || maxAttempts * 3,
+    // Legacy state has attempts but no incident tag. They predate the split and
+    // belong to whatever was open when they were written: incident 1.
+    incident: Number(recovery.incident) || 1,
+    attempts: Array.isArray(recovery.attempts) ? recovery.attempts : [],
+    active: recovery.active ?? null,
+  };
+}
+
+// The attempts that count against `maxAttempts` right now.
+export function openIncidentAttempts(recovery = {}) {
+  const incident = Number(recovery.incident) || 1;
+  return (recovery.attempts || []).filter((a) => (Number(a.incident) || 1) === incident);
+}
+
+// Retire the open incident and return the budget. Pure; safe to call when no
+// incident is open. Nothing is deleted — the attempts stay on the record under
+// their old incident number.
+export function closeRecoveryIncident(state, { reason, now = new Date().toISOString() } = {}) {
+  const next = structuredClone(state);
+  next.recovery = normalizeRecovery(next.recovery || {});
+  const open = openIncidentAttempts(next.recovery);
+  if (open.length) {
+    next.recovery.incident += 1;
+    next.events.push({ at: now, type: "recovery-incident-closed", stage: open[0]?.failedStage || null, actor: "system", reason: String(reason || "closed"), attempts: open.length });
+  }
+  next.recovery.active = null;
+  return next;
+}
+
 // Start a recovery cycle on the same task. The original dispatch/failure is
 // retained; recovery is only an additional sub-state of this state machine.
 export function startRecovery(state, { failedStage, actor, error, evidence = [], source = "execution", maxRecoveryAttempts = 3, now = new Date().toISOString() }) {
@@ -404,11 +477,27 @@ export function startRecovery(state, { failedStage, actor, error, evidence = [],
     at: now, stage: failedStage, agent: actor, error: String(error || "unknown failure"),
     classification: kind, evidence: structuredClone(evidence), disposition: "recovery-started",
   }];
-  next.recovery = { ...(next.recovery || {}), maxAttempts: Number(maxRecoveryAttempts) || 3, attempts: next.recovery?.attempts || [], active: null };
+  next.recovery = normalizeRecovery({ ...(next.recovery || {}), maxAttempts: Number(maxRecoveryAttempts) || Number(next.recovery?.maxAttempts) || 3, active: null });
   if (!isRecoverableFailure(kind)) return next;
-  const used = next.recovery.attempts.length;
+  const used = openIncidentAttempts(next.recovery).length;
   if (used >= next.recovery.maxAttempts) return escalateRecovery(next, { failedStage, kind, error, now });
+  // The task-wide ceiling. Reaching it is its own kind of founder decision: the
+  // open incident is still in budget, but this task has consumed more automated
+  // repair than any task should, so say that rather than reporting it as one
+  // more exhausted incident.
+  if (next.recovery.attempts.length >= next.recovery.maxTotalAttempts) {
+    return escalateRecovery(next, {
+      failedStage,
+      kind: "FOUNDER_DECISION_REQUIRED",
+      error: `This task has spent ${next.recovery.attempts.length} recovery attempt(s) across ${next.recovery.incident} incident(s), reaching its task-wide ceiling of ${next.recovery.maxTotalAttempts}. The latest failure was: ${String(error || "unknown failure")}`,
+      now,
+    });
+  }
   const attempt = {
+    // Numbered WITHIN the incident, so `recoveryStrategy` still walks
+    // retry-recover -> deeper-diagnosis -> independent-review for every
+    // incident rather than falling off the end of the list on the second one.
+    incident: next.recovery.incident,
     number: used + 1, strategy: recoveryStrategy(used + 1), originalObjective: next.task.outcome,
     failedStage, agent: actor, error: String(error || "unknown failure"), classification: kind,
     repairTarget: repairTargetFor(kind), relevantEvidence: structuredClone(evidence),
@@ -478,6 +567,10 @@ export function recordRecoveryResult(state, { outcome, actor, summary, evidence 
         now,
       });
     }
+    // The failure this incident was about is repaired and independently
+    // verified. Retire it so the NEXT failure, whatever it turns out to be,
+    // gets its own attempts instead of inheriting a spent budget.
+    Object.assign(next, closeRecoveryIncident(next, { reason: "recovery-verified", now }));
     for (const stage of STAGES.slice(STAGES.indexOf(resumeAt))) next.stages[stage] = { status: "pending" };
     next.status = "active";
     next.currentStage = resumeAt;
@@ -498,10 +591,11 @@ function finishRecoveryFailure(state, { summary, actor, outcome, now }) {
   if (outcome === "decision-required") {
     return escalateRecovery(next, { failedStage: active.failedStage, kind: "FOUNDER_DECISION_REQUIRED", error, now });
   }
-  if (next.recovery.attempts.length < next.recovery.maxAttempts && isRecoverableFailure(kind)) {
-    next.recovery.active = { phase: "diagnose", failedStage: active.failedStage, attempt: next.recovery.attempts.length + 1 };
-    next.recovery.attempts.push({ number: next.recovery.attempts.length + 1, strategy: recoveryStrategy(next.recovery.attempts.length + 1), originalObjective: next.task.outcome, failedStage: active.failedStage, agent: "recovery", error, classification: kind, repairTarget: repairTargetFor(kind), relevantEvidence: [], attemptedActions: [], currentState: next.status, diagnosis: null, repair: null, verification: null, status: "diagnosing", startedAt: now });
-    next.events.push({ at: now, type: "recovery-diagnosing", stage: active.failedStage, actor: "recovery", attempt: next.recovery.attempts.length, classification: kind });
+  const openCount = openIncidentAttempts(next.recovery).length;
+  if (openCount < next.recovery.maxAttempts && next.recovery.attempts.length < next.recovery.maxTotalAttempts && isRecoverableFailure(kind)) {
+    next.recovery.active = { phase: "diagnose", failedStage: active.failedStage, attempt: openCount + 1 };
+    next.recovery.attempts.push({ incident: next.recovery.incident, number: openCount + 1, strategy: recoveryStrategy(openCount + 1), originalObjective: next.task.outcome, failedStage: active.failedStage, agent: "recovery", error, classification: kind, repairTarget: repairTargetFor(kind), relevantEvidence: [], attemptedActions: [], currentState: next.status, diagnosis: null, repair: null, verification: null, status: "diagnosing", startedAt: now });
+    next.events.push({ at: now, type: "recovery-diagnosing", stage: active.failedStage, actor: "recovery", attempt: openCount + 1, classification: kind });
     return next;
   }
   return escalateRecovery(next, { failedStage: active.failedStage, kind, error, now });
@@ -515,10 +609,13 @@ function escalateRecovery(state, { failedStage, kind, error, now }) {
     stage: failedStage, outcome: "decision-required", founderAction: true, classification: kind,
     whatFailed: `${failedStage} failed for the original task.`,
     why: String(error || "Recovery budget exhausted or failure is unsafe to automate."),
-    whatFactoryTried: (next.recovery.attempts || []).map((a) => `${a.strategy}: ${a.status}`).join("; ") || "No recovery attempt was available.",
+    // Only this incident. Rendering every attempt the task ever made is what
+    // told the founder three strategies had been tried on a reviewer failure
+    // that was never retried once.
+    whatFactoryTried: openIncidentAttempts(next.recovery).map((a) => `${a.strategy}: ${a.status}`).join("; ") || "No recovery attempt was available.",
     whatItNeedsFromFounder: "Review the recorded failure and decide whether to repair the project, factory, or environment, or change the task scope.",
     whatHappensAfterApproval: "The original task will resume from the failed stage after the blocker is resolved.",
-    summary: `Recovery could not continue after ${(next.recovery.attempts || []).length} bounded attempt(s): ${String(error || "unknown failure")}`,
+    summary: `Recovery could not continue after ${openIncidentAttempts(next.recovery).length} bounded attempt(s): ${String(error || "unknown failure")}`,
     at: now,
   };
   next.events.push({ at: now, type: "recovery-escalated", stage: failedStage, actor: "system", classification: kind });
