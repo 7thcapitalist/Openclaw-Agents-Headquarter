@@ -88,11 +88,37 @@ async function startFromObjective(request, dependencies) {
     execute: dependencies.executeChiefOfStaff,
   });
   if (intake.questions?.length) return { version: 1, status: "needs-founder-input", taskId: intake.contract.id, questions: intake.questions };
-  const decisionAdvisory = intake.advisory?.decisionClassification;
-  if (decisionAdvisory) {
-    console.warn(`[decision-advisory] ${intake.contract.id}: ${decisionAdvisory.surfacedAs} / ${decisionAdvisory.trigger} — advisory only, not blocking`);
+  const decisionClassification = intake.advisory?.decisionClassification;
+  if (decisionClassification) {
+    console.warn(
+      `[decision-${decisionClassification.advisory ? "advisory" : "blocking"}] ${intake.contract.id}: `
+      + `${decisionClassification.surfacedAs} / ${decisionClassification.trigger} — `
+      + (decisionClassification.advisory ? "advisory only, not blocking" : "BLOCKING — waiting for the founder before dispatch"),
+    );
   }
+  // The task is created either way, so a blocking decision is a visible,
+  // resumable task rather than a request that evaporates. What a blocking
+  // classification changes is that it does NOT run to terminal: the founder is
+  // asked first. Previously this flag was logged and then ignored, so a
+  // `decision-request / risk:high` dispatched anyway.
   const created = initialize({ ...request, action: "init", contractPath: intake.contractPath, stateRoot }, dependencies.initializeTask || initializeTask);
+  if (decisionClassification?.blocksDispatch) {
+    return {
+      version: 1,
+      status: "needs-founder-decision",
+      taskId: intake.contract.id,
+      statePath: created.statePath,
+      worktree: created.worktree,
+      branch: created.branch,
+      contract: intake.contract,
+      advisory: intake.advisory,
+      decision: {
+        trigger: decisionClassification.trigger,
+        reason: decisionClassification.reason,
+        surfacedAs: decisionClassification.surfacedAs,
+      },
+    };
+  }
   const result = await runToTerminal({
     hqRoot,
     statePath: created.statePath,

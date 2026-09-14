@@ -54,8 +54,10 @@ test("natural-language intake surfaces every keyword trigger family with its mat
   for (const [trigger, objective] of cases) {
     const { contract } = await intake(objective);
     const classification = contract.advisory.decisionClassification;
-    assert.equal(classification.advisory, true);
-    assert.equal(classification.blocksDispatch, false);
+    // Blocking is the default. None of the shipped triggers sets `advisory: true`,
+    // and silence is not consent.
+    assert.equal(classification.advisory, false);
+    assert.equal(classification.blocksDispatch, true);
     assert.equal(classification.outcome, "decision-request");
     assert.equal(classification.surfacedAs, "decision-request");
     assert.equal(classification.trigger, trigger);
@@ -87,7 +89,7 @@ test("scope remains covered by the classifier's structured-field test", () => {
   // and workType. The classifier unit suite exercises this structured signal.
 });
 
-test("ask and block outcomes are attached as non-blocking advisories", async () => {
+test("ask and block outcomes are surfaced as blocking decisions", async () => {
   for (const outcome of ["ask", "block"]) {
     const customProtocol = {
       version: 1,
@@ -98,7 +100,7 @@ test("ask and block outcomes are attached as non-blocking advisories", async () 
     const classification = contract.advisory.decisionClassification;
     assert.equal(classification.outcome, outcome);
     assert.equal(classification.surfacedAs, outcome === "block" ? "decision-request" : "ask");
-    assert.equal(classification.blocksDispatch, false);
+    assert.equal(classification.blocksDispatch, true);
     assert.equal(classification.matchedRule.id, `${outcome}-rule`);
   }
 });
@@ -145,7 +147,7 @@ test("advisory survives state creation and is visibly rendered before the outcom
 
   assert.deepEqual(state.task.advisory, contract.advisory);
   assert.match(handoff, /## Advisory decision classification/);
-  assert.match(handoff, /Blocks dispatch: no/);
+  assert.match(handoff, /Blocks dispatch: yes/);
   assert.ok(handoff.indexOf("## Advisory decision classification") < handoff.indexOf("## Outcome"));
   assert.equal(JSON.stringify(contract.advisory).includes(secretMarker), false);
   assert.equal(handoff.includes(secretMarker), false);

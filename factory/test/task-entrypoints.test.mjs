@@ -63,7 +63,7 @@ test("natural-language start creates a contract and drives every stage", async (
   assert.equal(JSON.parse(readFileSync(contractPath)).workType, "backend");
 });
 
-test("decision advisory is surfaced while natural-language start still dispatches every stage", async () => {
+test("a blocking decision stops natural-language start before any stage dispatches", async () => {
   const root = mkdtempSync(join(tmpdir(), "factory-advisory-start-"));
   const repo = join(root, "project");
   mkdirSync(repo);
@@ -83,11 +83,14 @@ test("decision advisory is surfaced while natural-language start still dispatche
         writeFileSync(dispatch.resultPath, JSON.stringify({ version: 1, dispatchId: dispatch.dispatchId, stage: dispatch.stage, actor: dispatch.actor, outcome: "pass", summary: "passed", evidence: [evidence] }));
       },
     });
-    assert.equal(response.status, "merge-ready");
+    // A privacy trigger is a blocking decision, so `start` must stop and ask
+    // rather than running the task to terminal. Previously the flag was logged
+    // and then ignored, and every stage dispatched anyway.
+    assert.equal(response.status, "needs-founder-decision");
     assert.equal(response.advisory.decisionClassification.trigger, "privacy");
-    assert.equal(response.advisory.decisionClassification.blocksDispatch, false);
-    assert.deepEqual(dispatched, ["product", "architect", "builder", "reviewer", "qa", "security", "release"]);
-    assert.match(warnings.join("\n"), /\[decision-advisory\].*advisory only, not blocking/);
+    assert.equal(response.advisory.decisionClassification.blocksDispatch, true);
+    assert.deepEqual(dispatched, [], "nothing dispatches while the founder has not decided");
+    assert.match(warnings.join("\n"), /\[decision-blocking\].*BLOCKING/);
   } finally {
     console.warn = originalWarn;
   }
