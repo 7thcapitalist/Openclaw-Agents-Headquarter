@@ -20,9 +20,9 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { basename, dirname, extname, join } from "node:path";
 import { assertSupportedVersion } from "./durable-version.mjs";
 import { randomUUID } from "node:crypto";
-import { CorruptStateError, StaleRevisionError, importLegacyState, mutateEntity, openStateDb, peekEntity, quarantineRow } from "./sqlite-state.mjs";
+import { CorruptStateError, StateStoreFullError, StaleRevisionError, importLegacyState, maxStateBytes, mutateEntity, openStateDb, peekEntity, quarantineRow, stateStoreBytes } from "./sqlite-state.mjs";
 
-export { StaleRevisionError, CorruptStateError };
+export { StaleRevisionError, CorruptStateError, StateStoreFullError, maxStateBytes, stateStoreBytes };
 
 function dbPathFor(jsonPath) {
   const stem = basename(jsonPath, extname(jsonPath));

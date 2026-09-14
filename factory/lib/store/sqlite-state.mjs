@@ -31,7 +31,7 @@
 // process killed mid-mutation leaves the last-committed state exactly as it
 // was (SQLite WAL is crash-consistent by construction), never a torn write.
 import { DatabaseSync } from "node:sqlite";
-import { chmodSync, existsSync, mkdirSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
 export const SCHEMA_VERSION = 1;
@@ -39,6 +39,54 @@ export const SCHEMA_VERSION = 1;
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
 const BUSY_RETRIES = 30;
 const BUSY_RETRY_DELAY_MS = 20;
+
+// A hard ceiling on how large one task's state store may grow.
+//
+// On 2026-09-14 a single task's state.sqlite reached 403 GiB — 105,423,722
+// pages of materialised state for a task with 15 dispatches — and took the host
+// to 98% of a 468 GB disk in five and a half hours. Whatever drove that write
+// loop, no one task's bookkeeping should ever be able to fill the disk. A task
+// dying is recoverable; a full disk is not, because it takes every other task,
+// the dashboard and the gateway down with it.
+//
+// This is a backstop, not a diagnosis. It is deliberately far above any
+// legitimate task (the largest healthy store in the fleet is a few hundred KiB)
+// so that hitting it always means something is wrong.
+const DEFAULT_MAX_STATE_BYTES = 1024 * 1024 * 1024;
+
+export class StateStoreFullError extends Error {
+  constructor(path, bytes, ceiling) {
+    super(
+      `task state store exceeded its size ceiling and is refusing further writes: `
+      + `${path} is ${bytes} bytes (${(bytes / 1024 ** 3).toFixed(2)} GiB), ceiling ${ceiling} bytes `
+      + `(${(ceiling / 1024 ** 3).toFixed(2)} GiB). Set FACTORY_MAX_TASK_STATE_BYTES to change it.`,
+    );
+    this.name = "StateStoreFullError";
+    this.path = path;
+    this.bytes = bytes;
+    this.ceiling = ceiling;
+  }
+}
+
+// `0` disables the ceiling entirely; a malformed value falls back to the
+// default rather than disabling the guard, because the failure mode of a typo
+// must not be "no protection".
+export function maxStateBytes(env = process.env) {
+  const raw = env.FACTORY_MAX_TASK_STATE_BYTES;
+  if (raw === undefined || String(raw).trim() === "") return DEFAULT_MAX_STATE_BYTES;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return DEFAULT_MAX_STATE_BYTES;
+  return Math.floor(n);
+}
+
+// The whole store, not just the main file: a runaway write can sit in the WAL.
+export function stateStoreBytes(dbPath) {
+  let total = 0;
+  for (const suffix of ["", "-wal", "-shm"]) {
+    try { total += statSync(`${dbPath}${suffix}`).size; } catch { /* absent is zero */ }
+  }
+  return total;
+}
 
 export class StaleRevisionError extends Error {
   constructor(entityId, expected, actual) {
@@ -294,6 +342,44 @@ export function mutateEntity(handle, { entityId, commandId, expectedRevision = n
         return JSON.parse(existingCommand.response_json);
       }
       const current = readEntityRow(db, entityId);
+      // The size ceiling is checked here, inside the transaction and before the
+      // caller's mutate() runs, so a runaway writer is stopped at the point it
+      // would have grown the file again.
+      const ceiling = maxStateBytes();
+      if (ceiling > 0 && current?.state?.status !== "failed") {
+        const bytes = stateStoreBytes(handle.path);
+        if (bytes > ceiling) {
+          const full = new StateStoreFullError(handle.path, bytes, ceiling);
+          // Fail the task rather than only refusing the write. A refused write
+          // with a live task just becomes a retry loop against the same full
+          // file; a failed task stops, says why, and can be looked at.
+          if (current?.state) {
+            const at = now();
+            const failed = {
+              ...current.state,
+              status: "failed",
+              blocker: {
+                stage: current.state.currentStage || null,
+                outcome: "fail",
+                actor: "system",
+                summary: full.message,
+                at,
+              },
+              events: [
+                ...(current.state.events || []),
+                { at, type: "state-store-full", stage: current.state.currentStage || null, actor: "system", path: handle.path, bytes, ceiling },
+              ],
+              updatedAt: at,
+            };
+            upsertEntity(db, entityId, (current.revision ?? 0) + 1, failed, current.state.createdAt || at, at);
+            db.exec("COMMIT");
+          } else {
+            db.exec("ROLLBACK");
+          }
+          console.error(`[state-store-full] ${entityId}: ${full.message}`);
+          throw full;
+        }
+      }
       if (expectedRevision != null) {
         const actual = current?.revision ?? 0;
         if (actual !== expectedRevision) throw new StaleRevisionError(entityId, expectedRevision, actual);
@@ -324,7 +410,11 @@ export function mutateEntity(handle, { entityId, commandId, expectedRevision = n
       // cleanup rather than rolling it back away. Every other failure (a
       // stale revision, or the caller's mutate() throwing) happened before
       // any write, so ROLLBACK is a safe no-op.
-      try { db.exec(error instanceof CorruptStateError ? "COMMIT" : "ROLLBACK"); } catch { /* best effort */ }
+      // StateStoreFullError already settled its own transaction above (COMMIT to
+      // keep the failed marker, or ROLLBACK when there was nothing to mark).
+      if (!(error instanceof StateStoreFullError)) {
+        try { db.exec(error instanceof CorruptStateError ? "COMMIT" : "ROLLBACK"); } catch { /* best effort */ }
+      }
       throw error;
     }
   });
