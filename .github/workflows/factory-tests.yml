@@ -46,6 +46,14 @@ jobs:
       - name: Install dashboard dependencies
         run: npm ci --prefix dashboard/backend --no-audit --no-fund
 
+      # control-plane/ is the only deployable tree in the repository, so its
+      # lockfile is the one that decides what actually ships. `npm ci` fails if
+      # the lockfile and manifest disagree, which is the check worth having
+      # here — a drifted lockfile would otherwise be discovered by Vercel at
+      # deploy time rather than by CI on the PR.
+      - name: Install control-plane dependencies
+        run: npm ci --prefix control-plane --no-audit --no-fund
+
       - name: Verify third-party provenance
         run: npm run check:provenance
 
