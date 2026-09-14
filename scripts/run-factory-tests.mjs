@@ -25,7 +25,7 @@
 // (1) and (2) are generous relative to the suite's normal ~70-130s: they exist
 // to convert a hang into a documented failure, not to police normal runtime.
 import { spawn } from "node:child_process";
-import { globSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, globSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
@@ -71,6 +71,28 @@ function isRunning(pid) {
   // Signal 0 performs the permission and existence checks without delivering
   // anything. EPERM means the process exists but is not ours — still alive.
   try { process.kill(pid, 0); return true; } catch (error) { return error.code === "EPERM"; }
+}
+
+// Workspaces whose dependencies the suite actually imports.
+//
+// The repository root declares no dependencies, so it is easy to assume there
+// is nothing to install. There is: `control-plane/` declares `@vercel/blob`,
+// and nine tests import the API routes that use it. CI installs both
+// workspaces explicitly (.github/workflows/factory-tests.yml), so this only
+// ever bit developer machines — as nine identical ERR_MODULE_NOT_FOUND stacks
+// that say nothing about the cause. Say it once, plainly, before running
+// anything.
+const WORKSPACES = [
+  ["dashboard/backend", "the dashboard's CSRF, CSP, session and stored-XSS tests"],
+  ["control-plane", "the control-plane API route tests (@vercel/blob)"],
+];
+
+const uninstalled = WORKSPACES.filter(([dir]) => !existsSync(join(dir, "node_modules")));
+if (uninstalled.length) {
+  console.error("Dependencies are missing, so part of the suite cannot run:\n");
+  for (const [dir, what] of uninstalled) console.error(`  ${dir}/node_modules  — needed by ${what}`);
+  console.error("\nRun `npm run setup` from the repository root, then try again.");
+  process.exit(1);
 }
 
 const child = spawn(

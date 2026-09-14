@@ -136,6 +136,14 @@ npm run dev
 
 Open `http://127.0.0.1:3000` and log in with the password from `.env`.
 
+`npm run setup` installs both workspaces that declare dependencies —
+`dashboard/backend` and `control-plane`. The repository root declares none, so
+there is nothing to install there, but the test suite imports from both: without
+`control-plane`'s dependencies nine control-plane API tests cannot resolve
+`@vercel/blob`, and without `dashboard/backend`'s the CSRF, CSP, session and
+stored-XSS tests skip themselves rather than fail. `npm run test:factory` checks
+for both before it runs anything and tells you which is missing.
+
 ## Create A Worker
 
 ```bash
