@@ -7,7 +7,7 @@
 // that an unescalated decision is never a lost one.
 
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -16,6 +16,7 @@ import { buildCompletionReport } from "../lib/hq/completion-report.mjs";
 import { FOUNDER_IMPACTS, escalationVerdict } from "../lib/hq/escalation-gate.mjs";
 import { buildFounderOverview } from "../../dashboard/backend/lib/founderControlPlane.mjs";
 import { completeStage, createState, writeState } from "../lib/task-workflow.mjs";
+import { writeHandoff } from "../lib/handoff.mjs";
 
 const REAL_QUESTION = {
   question: "Should the export include the user's raw health entries?",
@@ -164,4 +165,49 @@ test("the gate changes who is asked, never what is validated", () => {
   assert.throws(() => completeStage(taskState(), pass("product", "openclaw", {
     deferredDecision: { question: "Which?", options: ["A"], impact: "privacy" },
   })), /at least two options/);
+});
+
+// The gate is only as good as the contract that feeds it.
+//
+// `escalationVerdict` escalates nothing unless the stage declares an `impact`,
+// and the only decision contract an agent actually sees is the dispatch prompt
+// `writeHandoff` writes. If that prompt never names the field, no real agent
+// ever sets it, every deferred decision comes back unclassified, and the
+// Founder Inbox goes silent — not quieter, silent. The gate would look correct
+// in every unit test here and be unreachable in production.
+//
+// So: the prompt must carry the field and the whole vocabulary, and it must
+// take them from FOUNDER_IMPACTS rather than from a hand-copied list that can
+// drift away from the gate that reads it.
+test("the dispatch prompt teaches the vocabulary the gate requires", () => {
+  const root = mkdtempSync(join(tmpdir(), "escalation-handoff-"));
+  const worktree = join(root, "worktree");
+  mkdirSync(worktree, { recursive: true });
+  const statePath = join(root, "state.json");
+  const state = taskState();
+  state.currentStage = "architect";
+  writeState(statePath, state);
+
+  const prompt = readFileSync(
+    writeHandoff({ hqRoot: process.cwd(), statePath, state, resultPath: join(root, "result.json"), dispatchId: "d-1" }),
+    "utf8",
+  );
+
+  assert.match(prompt, /"impact"/, "the machine result contract must carry the field the gate reads");
+  for (const impact of FOUNDER_IMPACTS) {
+    assert.ok(prompt.includes(impact), `the prompt must name "${impact}" — a value the agent cannot guess is a value it never sends`);
+  }
+  // And it must say what omitting it means, or an agent reads silence as "not
+  // applicable to me" rather than "this one is mine to decide".
+  assert.match(prompt, /Omit it and the decision is still recorded/);
+});
+
+// The published schema is the other half of that contract, and it is closed
+// (`additionalProperties: false`), so a field it does not list is a field it
+// forbids — it would document the gate's own input as invalid.
+test("the agent result schema admits the impact the gate reads", () => {
+  const schema = JSON.parse(readFileSync(join(process.cwd(), "factory", "schemas", "agent-result.schema.json"), "utf8"));
+  const impact = schema.properties.decision.properties.impact;
+  assert.ok(impact, "a closed schema that omits `impact` forbids the only field that can reach the founder");
+  assert.deepEqual([...impact.enum].sort(), [...FOUNDER_IMPACTS].sort());
 });

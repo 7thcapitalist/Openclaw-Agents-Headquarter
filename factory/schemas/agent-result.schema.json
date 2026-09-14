@@ -61,6 +61,20 @@
           "type": "string",
           "minLength": 1
         },
+        "impact": {
+          "description": "The founder-owned concern this question carries. A decision that declares one of these reaches the Founder Inbox; a decision that omits it is recorded on the task and in the completion report but is the agent's own call to make. See factory/lib/hq/escalation-gate.mjs.",
+          "type": "string",
+          "enum": [
+            "privacy",
+            "spend",
+            "public",
+            "product-direction",
+            "scope",
+            "irreversible",
+            "security-posture",
+            "legal"
+          ]
+        },
         "why": {
           "type": "string"
         },
