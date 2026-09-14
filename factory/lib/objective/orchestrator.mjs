@@ -21,6 +21,7 @@ import { assertAcyclic, buildNodesComplete, descendants, isDeadlocked, readyNode
 import { observeObjectiveGraph } from "./graph-observer.mjs";
 import { classifyBlocker, classifyObjectiveNodeBlocker, founderApprovalSetupBlocker, isFounderApprovalSetupFailure, isRetriableInfraBlocker } from "../hq/blocker-class.mjs";
 import { classifyFailure, isDeterministicProjectFailure } from "../failure-classification.mjs";
+import { checkCapability } from "../hq/capability-check.mjs";
 
 const INTEGRATION_SYNTHETIC_STAGES = new Set(["product", "architect", "builder"]);
 
@@ -458,8 +459,31 @@ function collectMetrics(objectivePath) {
 // Resume safely-retryable objective nodes (infra-failed or restart-orphaned) so
 // runObjective can re-drive them. Never answers founder decisions or approvals.
 // Per-node try/catch: one bad node never aborts the batch.
-export function resumeObjectiveNodes({ objectivePath, nodeIds, now = () => new Date().toISOString(), staleActiveMs = 90 * 60 * 1000 }) {
+// The objective-level capability check.
+//
+// The actor is the factory itself, not a named agent: an objective is scheduled
+// by the orchestrator on the founder's instruction, and no agent is acting yet
+// when the decision is made. `checkCapability` supplies that default.
+function checkObjectiveCapability({ hqRoot, objectivePath, capability, action }) {
+  if (!hqRoot) return;
+  let objective;
+  try { objective = readObjState(objectivePath); } catch { return; }
+  checkCapability({
+    hqRoot,
+    capability,
+    action,
+    scope: { type: "project", id: objective.project || null, projectId: objective.project || null },
+    correlation: { objectiveId: objective.objectiveId || null, ...(objective.project ? { projectId: objective.project } : {}) },
+  });
+}
+
+export function resumeObjectiveNodes({ hqRoot = null, objectivePath, nodeIds, now = () => new Date().toISOString(), staleActiveMs = 90 * 60 * 1000 }) {
   const at = typeof now === "function" ? now() : now;
+  // Resuming blocked nodes restarts real work, so it is checked once for the
+  // whole call rather than per node: the founder asked to recover an objective,
+  // not to recover each node separately, and one decision per node would say
+  // the same thing several times in the audit log.
+  checkObjectiveCapability({ hqRoot, objectivePath, capability: "objective.recover", action: "recover the objective" });
   const resumed = [];
   const skipped = [];
   const ids = [...new Set(nodeIds || [])];
@@ -572,6 +596,11 @@ export function setObjectiveRecoveryInFlight(objectivePath, inFlight) {
 // ── the loop ─────────────────────────────────────────────────────────────────
 
 export async function runObjective({ hqRoot, objectivePath, maxConcurrent = 3, execute = executeOpenClaw, agentIds = {}, maxAttemptsPerStage = 3, concurrentGroups, publish, stateRoot }) {
+  // Scheduling an objective's nodes is checked before anything is read or
+  // written, because everything below it — publishing a stalled node, resuming
+  // descendants, dispatching stages — follows from this one decision.
+  checkObjectiveCapability({ hqRoot, objectivePath, capability: "objective.run", action: "run the objective" });
+
   let obj = readObjState(objectivePath);
   assertAcyclic(obj.nodes);
   const nodeStateRoot = stateRoot || join(dirname(objectivePath), "..", "..");
