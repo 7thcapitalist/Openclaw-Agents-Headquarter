@@ -136,6 +136,21 @@ npm run dev
 
 Open `http://127.0.0.1:3000` and log in with the password from `.env`.
 
+`npm run setup` installs both workspaces that declare dependencies —
+`dashboard/backend` and `control-plane`. The repository root declares none, so
+there is nothing to install there.
+
+Only `dashboard/backend` is required to run the tests, and `npm run
+test:factory` refuses to start without it: its CSRF, CSP, session and stored-XSS
+tests skip themselves rather than fail when their dependencies are absent, so
+the run would report green while 14 security tests never executed. A stop is the
+only way to make a skip visible.
+
+`control-plane`'s dependencies are needed to *serve* the control plane, not to
+test it — its routes load `@vercel/blob` on demand, and a guard test keeps them
+importable in a checkout where nobody has run `npm install` there. So the full
+suite passes in a fresh worktree with `control-plane/node_modules` absent.
+
 ## Create A Worker
 
 ```bash

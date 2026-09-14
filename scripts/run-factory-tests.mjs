@@ -25,7 +25,7 @@
 // (1) and (2) are generous relative to the suite's normal ~70-130s: they exist
 // to convert a hang into a documented failure, not to police normal runtime.
 import { spawn } from "node:child_process";
-import { globSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, globSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
@@ -71,6 +71,37 @@ function isRunning(pid) {
   // Signal 0 performs the permission and existence checks without delivering
   // anything. EPERM means the process exists but is not ours — still alive.
   try { process.kill(pid, 0); return true; } catch (error) { return error.code === "EPERM"; }
+}
+
+// Workspaces whose absence SILENTLY shrinks the suite.
+//
+// Only `dashboard/backend` qualifies, and the distinction is the point. Its
+// CSRF, CSP, session and stored-XSS tests skip themselves when their
+// dependencies are missing rather than failing, so the run reports green while
+// 14 security tests never execute — the exact failure mode the CI workflow's
+// own comment warns about, reproduced locally and unnoticed. A skip is
+// invisible; that is what has to be turned into a stop.
+//
+// `control-plane` is deliberately NOT here. It declares `@vercel/blob`, but no
+// test needs the package installed: its routes load it on demand, inside the
+// function that calls it, and a guard test keeps it that way
+// (factory/test/control-plane-routes-importable.test.mjs). All 55
+// control-plane tests pass with no `control-plane/node_modules` at all. Listing
+// it would refuse to run the suite over a dependency nothing is waiting for,
+// and would take back exactly what that change bought: a factory agent's fresh
+// worktree being able to run the auth tests on the one surface that faces the
+// internet. `npm run setup` still installs it — you need it to serve the
+// control plane, just not to test it.
+const WORKSPACES = [
+  ["dashboard/backend", "the dashboard's CSRF, CSP, session and stored-XSS tests, which SKIP rather than fail without it"],
+];
+
+const uninstalled = WORKSPACES.filter(([dir]) => !existsSync(join(dir, "node_modules")));
+if (uninstalled.length) {
+  console.error("Dependencies are missing, so part of the suite would silently not run:\n");
+  for (const [dir, what] of uninstalled) console.error(`  ${dir}/node_modules  — needed by ${what}`);
+  console.error("\nRun `npm run setup` from the repository root, then try again.");
+  process.exit(1);
 }
 
 const child = spawn(

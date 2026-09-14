@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "setup": "npm install --prefix dashboard/backend",
+    "setup": "npm install --prefix dashboard/backend && npm install --prefix control-plane",
     "seed:hq": "AGENT_LAB_ROOT=$PWD ./scripts/seed-hq.sh",
     "dev": "AGENT_LAB_ROOT=$PWD npm --prefix dashboard/backend run dev",
     "start": "AGENT_LAB_ROOT=$PWD npm --prefix dashboard/backend start",
