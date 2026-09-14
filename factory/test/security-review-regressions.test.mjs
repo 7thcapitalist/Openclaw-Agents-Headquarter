@@ -2,7 +2,7 @@
 // (FCT-P0-04). Each test names the finding it locks down.
 
 import test from "node:test";
-import { anchorFounderKey } from "./helpers/anchor.mjs";
+import { anchorFounderKey, detachAmbientAnchor } from "./helpers/anchor.mjs";
 import assert from "node:assert/strict";
 import { generateKeyPairSync, sign } from "node:crypto";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
@@ -30,6 +30,10 @@ import {
   renderUntrustedMarkdown,
   sanitizeHtml,
 } from "../../dashboard/backend/lib/safeMarkdown.mjs";
+
+// This suite reasons about roots it creates, not about the checkout it happens
+// to run inside — see detachAmbientAnchor's own comment for what that cost.
+detachAmbientAnchor();
 
 const pipelineTest = markdownRenderingAvailable() ? test : test.skip;
 

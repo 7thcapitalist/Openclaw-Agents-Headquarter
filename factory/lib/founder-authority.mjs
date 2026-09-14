@@ -71,11 +71,18 @@ function fromFile(path) {
 // the task's own key. Resolution therefore has to work by default.
 let configuredRoot = null;
 
+// Whether this process may also anchor itself on roots it worked out for
+// itself. True is right for anything running inside an HQ checkout. A process
+// that is NOT one — a harness, a sandbox, a CLI run from elsewhere — can say so
+// once and stop the enclosing deployment's key from answering on its behalf.
+let ambientRootsEnabled = true;
+
 // Called once at startup by an entrypoint that knows its root (the dashboard
 // server, the factory CLIs). Optional: the defaults below already find the
 // standard layout.
-export function configureTrustedAuthority({ hqRoot } = {}) {
+export function configureTrustedAuthority({ hqRoot, ambient = true } = {}) {
   configuredRoot = hqRoot ? resolve(hqRoot) : null;
+  ambientRootsEnabled = ambient !== false;
   return configuredRoot;
 }
 
@@ -91,9 +98,21 @@ function moduleDerivedRoot() {
   }
 }
 
-function candidateRoots(env) {
+// Whether `env` permits anchoring on roots nobody named. The variable exists
+// for processes that cannot call configureTrustedAuthority() before the code
+// under test runs — a spawned CLI inherits its parent's environment but not its
+// module state, so a harness that has detached in-process must also be able to
+// say so across a process boundary.
+function ambientAllowedByEnv(env) {
+  const value = env?.FACTORY_AUTHORITY_AMBIENT;
+  return !(value === "0" || value === "false");
+}
+
+// Roots nobody named — worked out from the environment and from this module's
+// own location. Distinct from `configuredRoot` and from a per-call `hqRoot`,
+// which are statements about which deployment the caller means.
+function ambientRoots(env) {
   return [
-    configuredRoot,
     env?.AGENT_LAB_ROOT ? resolve(env.AGENT_LAB_ROOT) : null,
     moduleDerivedRoot(),
   ].filter(Boolean);
@@ -106,22 +125,46 @@ export function enrolledKeyPath(hqRoot) {
 /**
  * Resolve the approval authority this deployment actually trusts.
  *
+ * `ambient` decides which question is being asked. With it true (the default)
+ * this answers "what authority does this MACHINE trust", searching the
+ * configured root, AGENT_LAB_ROOT, and the root derived from this module's own
+ * location. With it false it answers the narrower "what authority does THIS
+ * deployment trust", and looks only where the caller pointed.
+ *
+ * The distinction is invisible on a machine hosting one HQ and load-bearing
+ * anywhere else: with `ambient` on, a gate asked about one root can be anchored
+ * by a key belonging to another. Callers that must reason about a specific root
+ * in isolation — anything verifying that an unanchored deployment REPORTS
+ * itself unanchored — have to pass `ambient: false`, or the machine's own key
+ * answers for a root that does not have one.
+ *
  * @returns {{publicKey:string, fingerprint:string, source:string}|null}
  */
-export function resolveTrustedFounderAuthority({ hqRoot = null, injected = null, env = process.env } = {}) {
+export function resolveTrustedFounderAuthority({ hqRoot = null, injected = null, env = process.env, ambient } = {}) {
   if (injected) {
     const pem = readEd25519Pem(injected.publicKey || injected.pem || injected);
     if (pem) return { publicKey: pem, fingerprint: fingerprintOf(pem), source: "injected" };
   }
 
-  // An explicit hqRoot first, then the roots this process can work out for
-  // itself. Without these defaults the anchor was unreachable from every gate
-  // except one dashboard endpoint.
-  for (const root of [hqRoot ? resolve(hqRoot) : null, ...candidateRoots(env)].filter(Boolean)) {
+  // Roots the caller named first, then — unless this process has opted out —
+  // the ones it can work out for itself. Without those defaults the anchor was
+  // unreachable from every gate except one dashboard endpoint, so they stay on
+  // by default.
+  const useAmbient = (ambient === undefined ? ambientRootsEnabled : ambient !== false)
+    && ambientAllowedByEnv(env);
+  const roots = [
+    hqRoot ? resolve(hqRoot) : null,
+    configuredRoot,
+    ...(useAmbient ? ambientRoots(env) : []),
+  ].filter(Boolean);
+  for (const root of roots) {
     const pem = fromFile(enrolledKeyPath(root));
     if (pem) return { publicKey: pem, fingerprint: fingerprintOf(pem), source: "enrolled" };
   }
 
+  // The env anchor is a property of the environment, not of a root, so it stays
+  // available either way — a caller that names a root with no enrolled key is
+  // still anchored by an explicitly configured public key.
   const envPath = env?.FACTORY_FOUNDER_PUBLIC_KEY;
   if (envPath) {
     const pem = fromFile(resolve(envPath));
