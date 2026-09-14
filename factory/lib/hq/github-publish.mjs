@@ -208,8 +208,40 @@ export function publishMergeReadyTask({ hqRoot, state, exec = defaultExec, ghAva
     ).trim();
     return { published: true, pushed: true, prUrl: url || null, ...audit };
   } catch (error) {
-    return { published: true, pushed: true, prUrl: null, ...audit, reason: `gh pr create failed: ${String(error.stderr || error.message).trim()}` };
+    // `gh pr create` refuses when a pull request for this branch already
+    // exists — and names it in the refusal. That happens routinely: the
+    // existence check above only looks at OPEN pull requests, so a release
+    // re-run after a merge lands here. Dropping the URL it was just handed
+    // left the task with no way to know which pull request carries its work,
+    // so it could never learn that the work had shipped.
+    const message = String(error.stderr || error.message).trim();
+    const recovered = recoverExistingPrUrl(message, slug);
+    return {
+      published: true,
+      pushed: true,
+      prUrl: recovered,
+      ...audit,
+      reason: recovered ? `pull request already exists: ${recovered}` : `gh pr create failed: ${message}`,
+    };
   }
+}
+
+// The pull request named inside a `gh pr create` "already exists" refusal.
+//
+// Narrow on purpose: it reads a URL out of an error string, so it accepts only
+// the shape gh actually produces, and only a pull request in the repository the
+// publish targeted. Anything else returns null and the raw message is kept.
+//
+// @param {string} message   stderr/message from the failed `gh pr create`
+// @param {string} ownerRepo the repository the publish targeted ("owner/name")
+// @returns {string|null}
+export function recoverExistingPrUrl(message, ownerRepo) {
+  const text = String(message || "");
+  if (!/already exists/i.test(text)) return null;
+  if (!/^[^/\s]+\/[^/\s]+$/.test(String(ownerRepo || ""))) return null;
+  const pattern = new RegExp(`https://github\\.com/${ownerRepo.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/pull/(\\d+)\\b`);
+  const match = text.match(pattern);
+  return match ? match[0] : null;
 }
 
 function truncate(text, n) {

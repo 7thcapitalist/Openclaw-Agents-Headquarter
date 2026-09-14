@@ -107,6 +107,7 @@ import {
 } from "./lib/founderApproval.mjs";
 import { readAutonomy } from "../../factory/lib/hq/autonomy.mjs";
 import { retryStuckTasks } from "../../factory/lib/hq/auto-retry.mjs";
+import { reconcileMergedTasks } from "../../factory/lib/hq/merge-reconciler.mjs";
 import { resumeState as resumeTaskState, readState as readTaskState, writeState as writeTaskState } from "../../factory/lib/task-workflow.mjs";
 import { runToTerminal as runTaskToTerminal } from "../../factory/lib/openclaw-runner.mjs";
 import { buildCompanyState } from "../../factory/lib/hq/company-state.mjs";
@@ -1797,4 +1798,30 @@ if (process.env.HQ_AUTO_RETRY !== "0") {
   setTimeout(sweep, 20_000).unref();
   setInterval(sweep, intervalMs).unref();
   console.log(`[auto-retry] enabled — every ${Math.round(intervalMs / 1000)}s, up to ${maxPerTask} attempts per task`);
+}
+
+// Human-merge mode ends outside the factory: the founder merges the pull
+// request on GitHub. Without this the task never learns, stays `merge-ready`
+// forever, and the founder's view of the company fills up with work that
+// shipped days ago. The sweep only reads GitHub and only settles tasks that
+// are already finished — it merges nothing and advances no stage.
+if (process.env.HQ_MERGE_RECONCILE !== "0") {
+  const FACTORY_STATE_ROOT = join(ROOT, "dashboard", "backend", "data", "factory");
+  const intervalMs = Math.max(60_000, Number(process.env.HQ_MERGE_RECONCILE_INTERVAL_MS) || 300_000);
+  let reconciling = false;
+  const reconcile = async () => {
+    if (reconciling) return;
+    reconciling = true;
+    try {
+      const out = await reconcileMergedTasks({ stateRoot: FACTORY_STATE_ROOT, log: (m) => console.log(m) });
+      if (out.merged.length) console.log(`[merge-reconcile] settled ${out.merged.length} merged task(s) of ${out.scanned} state files`);
+    } catch (error) {
+      console.error("[merge-reconcile] sweep failed:", error?.message || error);
+    } finally {
+      reconciling = false;
+    }
+  };
+  setTimeout(reconcile, 30_000).unref();
+  setInterval(reconcile, intervalMs).unref();
+  console.log(`[merge-reconcile] enabled — every ${Math.round(intervalMs / 1000)}s`);
 }
