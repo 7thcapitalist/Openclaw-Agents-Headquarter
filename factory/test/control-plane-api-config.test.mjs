@@ -25,45 +25,16 @@ function config() {
   return JSON.parse(readFileSync(join(controlPlane, "vercel.json"), "utf8"));
 }
 
-test("vercel.json does not disable the api/ functions", () => {
-  const routes = readdirSync(join(controlPlane, "api")).filter((n) => n.endsWith(".mjs"));
-  assert.ok(routes.length > 0, "this test is meaningless without functions to protect");
 
-  // Both keys take the project out of zero-config, and zero-config is the only
-  // mode that builds api/. Either one produces a deployment that serves the
-  // page perfectly and answers no API route — verified twice against real
-  // deployments before this test existed.
-  assert.equal(
-    config().outputDirectory,
-    undefined,
-    "outputDirectory switches the deployment to static-only and silently drops api/",
-  );
-  assert.equal(
-    config().buildCommand,
-    undefined,
-    "buildCommand switches the deployment to build-output mode and silently drops api/",
-  );
-});
-
-test("the build refuses a configuration that would drop the functions", () => {
-  const scratch = mkdtempSync(join(tmpdir(), "control-plane-api-"));
-  try {
-    cpSync(controlPlane, scratch, { recursive: true });
-    const broken = { ...config(), outputDirectory: "public" };
-    writeFileSync(join(scratch, "vercel.json"), JSON.stringify(broken, null, 2));
-
-    assert.throws(
-      () => execFileSync(process.execPath, ["build.mjs"], { cwd: scratch, encoding: "utf8" }),
-      (error) => {
-        assert.notEqual(error.status, 0);
-        assert.match(String(error.stderr), /disables the \d+ function\(s\) in api\//);
-        return true;
-      },
-    );
-  } finally {
-    rmSync(scratch, { recursive: true, force: true });
-  }
-});
+// NOTE: an earlier version of this file asserted that `outputDirectory` and
+// `buildCommand` in vercel.json suppress the api/ functions. That was wrong.
+// The functions were deployed in every configuration tried; they hung because
+// their handlers used the Web signature instead of Node's. Those assertions are
+// removed rather than kept as harmless extras — a guard that enforces a false
+// belief sends the next reader down the same wrong path.
+//
+// The real contract is tested in control-plane-api-contract.test.mjs, by
+// calling each route and asserting it ends the response.
 
 test("every api route exports a default handler", async () => {
   for (const name of readdirSync(join(controlPlane, "api")).filter((n) => n.endsWith(".mjs"))) {
