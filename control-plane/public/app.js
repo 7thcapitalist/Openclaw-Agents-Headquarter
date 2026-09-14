@@ -10,7 +10,7 @@
 // the part that can actually be wrong is testable without a browser. This file
 // is the DOM and the fetching.
 
-import { freshness, panelsFor, statsFrom } from "/render.mjs";
+import { answerableDecisions, freshness, intentsPanel, panelsFor, statsFrom } from "/render.mjs";
 
 const TIMEOUT_MS = 12_000;
 
@@ -116,6 +116,97 @@ function renderPanels(panels) {
   }
 }
 
+// Asking is not doing. The button reports that the request was QUEUED, because
+// the machine executes it on its next poll — up to one interval later. Saying
+// "done" here would be the one lie this topology makes easy to tell.
+async function submitIntent(kind, args, button) {
+  const original = button.textContent;
+  button.disabled = true;
+  button.textContent = "Queueing…";
+  try {
+    const response = await request("/api/intents", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ kind, args }),
+    });
+    if (response.status === 401) return showSignIn("That session has expired. Sign in again.");
+    button.textContent = response.ok ? "Queued" : "Could not queue";
+    if (response.ok) await loadIntents();
+  } catch {
+    button.textContent = "Could not queue";
+  } finally {
+    setTimeout(() => {
+      button.disabled = false;
+      button.textContent = original;
+    }, 4000);
+  }
+}
+
+function renderDecisions(decisions) {
+  if (!decisions.length) return null;
+  const card = el("section", "panel");
+  card.append(el("h2", null, "Decisions waiting on you"));
+
+  for (const decision of decisions) {
+    const block = el("div", "decision");
+    block.append(el("strong", null, decision.question));
+    if (decision.why) block.append(el("p", "decision-why", decision.why));
+    if (decision.recommendation) {
+      const rec = el("p", "decision-rec");
+      rec.append(el("small", null, "The factory recommends"), document.createTextNode(decision.recommendation));
+      block.append(rec);
+    }
+
+    const actions = el("div", "decision-actions");
+    if (decision.freeText) {
+      const input = el("input", "decision-input");
+      input.type = "text";
+      input.placeholder = "Your answer";
+      const send = el("button", "btn-primary", "Send");
+      send.addEventListener("click", () => {
+        if (input.value.trim()) submitIntent("decision.resolve", { decisionId: decision.id, choice: input.value.trim() }, send);
+      });
+      actions.append(input, send);
+    } else {
+      for (const option of decision.options) {
+        const button = el("button", "btn-option", option);
+        button.addEventListener("click", () => submitIntent("decision.resolve", { decisionId: decision.id, choice: option }, button));
+        actions.append(button);
+      }
+    }
+    block.append(actions);
+    card.append(block);
+  }
+  return card;
+}
+
+async function loadIntents() {
+  try {
+    const response = await request("/api/intents");
+    if (!response.ok) return;
+    const queue = await response.json();
+    const panel = intentsPanel(queue);
+    const existing = document.getElementById("intents-panel");
+    const card = el("section", "panel");
+    card.id = "intents-panel";
+    card.append(el("h2", null, panel.title));
+    if (panel.note) card.append(el("p", "panel-note", panel.note));
+    for (const row of panel.rows) {
+      const line = el("div", `row tone-${row.tone || "muted"}`);
+      const main = el("div", "row-main");
+      main.append(el("strong", null, row.primary));
+      if (row.secondary) main.append(el("span", null, row.secondary));
+      line.append(main, el("em", "row-meta", row.meta));
+      card.append(line);
+    }
+    if (existing) existing.replaceWith(card);
+    else els.panels.prepend(card);
+  } catch {
+    // The mirror is the point of this page; a queue that will not load must not
+    // take the view down with it.
+  }
+}
+
 function renderMirror(snapshot) {
   const age = freshness(snapshot?.publishedAt);
   view("mirror");
@@ -133,6 +224,10 @@ function renderMirror(snapshot) {
 
   renderStats(statsFrom(snapshot?.panels));
   renderPanels(panelsFor(snapshot));
+
+  const decisions = renderDecisions(answerableDecisions(snapshot?.panels || {}));
+  if (decisions) els.panels.prepend(decisions);
+  loadIntents();
 }
 
 async function loadMirror() {

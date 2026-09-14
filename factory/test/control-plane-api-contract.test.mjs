@@ -165,10 +165,25 @@ test("signing in with the wrong password is refused and sets no cookie", async (
 });
 
 test("an unsupported method is answered, not ignored", async () => {
+  // PUT, not PATCH: intents.mjs legitimately uses PATCH for the machine's
+  // result report, and answers 401 to an unauthenticated one — checking the
+  // credential before disclosing which methods exist is the right order. The
+  // property under test is that no method leaves the response open, so the
+  // method has to be one that genuinely no route implements.
   for (const route of routes()) {
-    const res = await call(route, { method: "PATCH" });
-    assert.equal(res.ended, true);
+    const res = await call(route, { method: "PUT" });
+    assert.equal(res.ended, true, `${route} left the response open`);
     assert.equal(res.statusCode, 405, `${route} must answer 405`);
+  }
+});
+
+test("an unauthenticated call to a supported method is refused, never left open", async () => {
+  // The complement of the test above: a method a route DOES implement must
+  // still answer when the caller has no credential.
+  for (const [route, method] of [["intents.mjs", "PATCH"], ["intents.mjs", "POST"], ["mirror.mjs", "POST"]]) {
+    const res = await call(route, { method });
+    assert.equal(res.ended, true, `${route} ${method} left the response open`);
+    assert.equal(res.statusCode, 401, `${route} ${method} must refuse`);
   }
 });
 

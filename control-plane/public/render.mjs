@@ -232,10 +232,17 @@ export function deploymentsPanel(panels) {
 
 export function budgetsPanel(panels) {
   const budgets = panels?.budgets;
-  const reason = unavailable(budgets);
-  if (reason) return { title: "Spend", note: reason, rows: [] };
 
-  const t = budgets.totals || {};
+  // `available: false` on this panel means no budget POLICY is configured — it
+  // does not mean there is no spend. Treating the two as the same hid a real
+  // ledger behind "not configured" while the header showed $0.08 from the very
+  // same numbers. Only an absent totals object means there is nothing to show.
+  const totals = budgets?.totals;
+  if (!totals || typeof totals !== "object" || Array.isArray(totals)) {
+    return { title: "Spend", note: unavailable(budgets) || "no spend recorded", rows: [] };
+  }
+
+  const t = totals;
   const rows = [
     { primary: "Total cost", secondary: "", meta: money(t.costMicros), tone: "muted" },
     { primary: "Input tokens", secondary: "", meta: compact(t.inputTokens), tone: "muted" },
@@ -255,7 +262,10 @@ export function budgetsPanel(panels) {
     });
   }
 
-  return { title: "Spend", note: budgets.enforcement ? `enforcement: ${text(budgets.enforcement)}` : null, rows };
+  const note = budgets?.configured === false
+    ? "no budget policy configured — these are recorded totals"
+    : budgets?.enforcement ? `enforcement: ${text(budgets.enforcement)}` : null;
+  return { title: "Spend", note, rows };
 }
 
 export function goalsPanel(panels) {
@@ -274,8 +284,8 @@ export function goalsPanel(panels) {
 }
 
 const RENDERERS = {
-  company: [projectsPanel, attentionPanel, agentsPanel],
-  operations: [operationsPanel],
+  company: [activityPanel, projectsPanel, attentionPanel, agentsPanel],
+  operations: [tasksPanel, operationsPanel],
   deployments: [deploymentsPanel],
   budgets: [budgetsPanel],
   goals: [goalsPanel],
@@ -316,4 +326,204 @@ export function panelsFor(snapshot) {
   }
 
   return out;
+}
+
+// --- founder intents ---------------------------------------------------------
+
+function describeArgs(args) {
+  if (!args || typeof args !== "object") return "";
+  return Object.entries(args)
+    .map(([key, value]) => `${key}: ${String(value).slice(0, 80)}`)
+    .join("  ");
+}
+
+/**
+ * What the founder has asked for, and what became of it.
+ *
+ * Queued is shown separately from finished because that distinction is the
+ * honest part of this design: an intent is ACCEPTED here and EXECUTED on the
+ * machine, up to one poll interval later. A page that showed a queued action as
+ * done would invent exactly the certainty an outbound-only topology gives up.
+ */
+export function intentsPanel(queue) {
+  const pending = list(queue?.pending);
+  const results = list(queue?.results);
+
+  const rows = [
+    ...pending.map((intent) => ({
+      primary: text(intent?.kind, "intent"),
+      secondary: describeArgs(intent?.args),
+      meta: "queued",
+      tone: "warn",
+    })),
+    ...results.slice(0, 8).map((result) => ({
+      primary: text(result?.id, "intent"),
+      secondary: text(result?.detail, ""),
+      meta: text(result?.status, "done"),
+      tone: result?.status === "done" ? "good" : "bad",
+    })),
+  ];
+
+  return {
+    title: "Your requests",
+    note: rows.length ? null : "nothing requested from here yet",
+    rows,
+  };
+}
+
+/**
+ * The actions offered on one decision.
+ *
+ * Options come from the decision itself, so the page never offers a choice the
+ * factory did not. A decision with no recorded options gets a free-text reply
+ * rather than an invented menu.
+ */
+export function decisionActions(decision) {
+  const options = list(decision?.options).map((option) => String(option)).filter(Boolean);
+  return {
+    id: text(decision?.id, ""),
+    question: text(decision?.question || decision?.summary, "decision"),
+    // Why the factory is stuck, and what it would do. Both are already computed
+    // and were being dropped — a question with no context forces the founder to
+    // open the local dashboard to answer it, which defeats the point of a
+    // control plane they can reach from anywhere.
+    why: text(decision?.why, ""),
+    recommendation: text(decision?.recommendation, ""),
+    project: text(decision?.project, ""),
+    options,
+    freeText: options.length === 0,
+  };
+}
+
+/** Decisions the founder can answer from here, with their ids intact. */
+export function answerableDecisions(panels) {
+  if (unavailable(panels?.company)) return [];
+  return list(panels.company.decisions)
+    .map(decisionActions)
+    .filter((decision) => decision.id !== "");
+}
+
+// --- what the factory is actually doing --------------------------------------
+
+/**
+ * Relative time, for a feed where "when" is most of the meaning.
+ *
+ * Shares `freshness`'s refusal to guess: a value that is not a parseable
+ * timestamp says so rather than rendering as "now".
+ */
+export function ago(at, now = Date.now()) {
+  if (typeof at !== "string") return "unknown";
+  const then = Date.parse(at);
+  if (Number.isNaN(then)) return "unknown";
+  const seconds = Math.round((now - then) / 1000);
+  if (seconds < 0) return "just now";
+  if (seconds < 60) return `${seconds}s ago`;
+  if (seconds < 5400) return `${Math.round(seconds / 60)}m ago`;
+  if (seconds < 172_800) return `${Math.round(seconds / 3600)}h ago`;
+  return `${Math.round(seconds / 86_400)}d ago`;
+}
+
+// A task id carries its objective, which carries the founder's whole prompt.
+// Rendering that raw fills the panel with one wall of text, so the readable
+// part is the node name — the segment after the objective hash.
+export function shortTaskId(taskId) {
+  const id = text(taskId, "");
+  const match = /^obj-[0-9a-f]+-(.+)$/.exec(id);
+  return match ? match[1].replace(/-/g, " ") : id;
+}
+
+// Phrasing taken from the event types this factory actually emits, read off a
+// live feed rather than guessed. An unmapped type still renders — as its own
+// name — because a new event type appearing is information, not a reason to
+// drop the row.
+const EVENT_VERBS = {
+  "dispatch-ready": "is queued for",
+  "dispatch-running": "is running",
+  "dispatch-completed": "finished",
+  "dispatch-failed": "failed on",
+  "recovery-verifying": "is verifying",
+  "recovery-repair-attempted": "attempted a repair on",
+  "recovery-escalated": "escalated",
+  "pr-merged": "merged the PR for",
+  "pr-opened": "opened a PR for",
+  "task-created": "created",
+  "task-blocked": "blocked on",
+  "stage-completed": "completed",
+  "stage-failed": "failed",
+  "deferred-decision-recorded": "recorded your decision on",
+};
+
+/**
+ * The live feed: which agent is doing what, right now and recently.
+ *
+ * This is the panel that answers "what are the agents doing", and it is built
+ * from the events the factory already records rather than from agent status
+ * flags — a flag says "working", an event says what it is working ON.
+ */
+export function activityPanel(panels) {
+  const company = panels?.company;
+  const reason = unavailable(company);
+  if (reason) return { title: "What the factory is doing", note: reason, rows: [] };
+
+  const events = list(company.activityFeed).slice(0, 14);
+
+  const rows = events.map((event) => {
+    const who = text(event?.actor, text(event?.stage, "the factory"));
+    const verb = EVENT_VERBS[event?.type] || text(event?.type, "acted");
+    const what = shortTaskId(event?.taskId);
+    const stage = text(event?.stage, "");
+    const failed = /fail|block/i.test(String(event?.type || "")) || event?.outcome === "fail";
+
+    return {
+      primary: `${who} ${verb}${what ? ` ${what}` : ""}`,
+      secondary: [text(event?.project, ""), stage && stage !== who ? `stage: ${stage}` : ""]
+        .filter(Boolean)
+        .join("  ·  "),
+      meta: ago(event?.at),
+      tone: failed ? "bad" : event?.type === "dispatch-running" ? "good" : "muted",
+    };
+  });
+
+  return {
+    title: "What the factory is doing",
+    note: rows.length ? null : "no activity recorded yet",
+    rows,
+  };
+}
+
+const TASK_TONE = { active: "good", blocked: "bad", failed: "bad", "merge-ready": "warn", merged: "muted" };
+
+/**
+ * Every task the factory is carrying, most recently touched first.
+ *
+ * Sorted by activity rather than by name: the founder's question is "what is
+ * moving", and a list ordered alphabetically answers a question nobody asked.
+ * Finished work sinks below live work for the same reason.
+ */
+export function tasksPanel(panels) {
+  const operations = panels?.operations;
+  const reason = unavailable(operations);
+  if (reason) return { title: "Tasks", note: reason, rows: [] };
+
+  const tasks = list(operations.tasks).slice();
+  const rank = (task) => (task?.status === "active" ? 0 : task?.status === "blocked" ? 1 : 2);
+  tasks.sort((a, b) => rank(a) - rank(b) || String(b?.updatedAt || "").localeCompare(String(a?.updatedAt || "")));
+
+  const rows = tasks.slice(0, 20).map((task) => ({
+    primary: shortTaskId(task?.taskId),
+    secondary: [
+      task?.stage ? `stage: ${text(task.stage)}` : "",
+      task?.actor ? `actor: ${text(task.actor)}` : "",
+      task?.lease ? "leased" : "",
+    ].filter(Boolean).join("  ·  "),
+    meta: `${text(task?.status, "unknown")} · ${ago(task?.updatedAt)}`,
+    tone: TASK_TONE[task?.status] || "muted",
+  }));
+
+  const hidden = Math.max(0, tasks.length - rows.length);
+  return {
+    title: "Tasks",
+    note: rows.length ? (hidden ? `${hidden} more not shown` : null) : "no tasks",
+    rows,
+  };
 }
