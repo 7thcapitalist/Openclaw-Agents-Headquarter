@@ -716,10 +716,15 @@ test("an answered post-task decision leaves the inbox and cannot be answered twi
   state.deferredDecisions = [{
     id: "architect-1",
     stage: "architect",
-    question: "Should the chapter screen stay read-only this milestone?",
+    question: "Should the export include the user's raw health entries?",
     why: "The team completed the safe work and is reporting this choice for your review.",
-    options: ["A. Read-only this milestone", "B. Read-write now", "Other: describe your preference"],
+    options: ["A. Aggregates only", "B. Raw entries", "Other: describe your preference"],
     requestedAt: "2026-09-10T21:15:09.109Z",
+    // Only a decision that declares a founder-owned impact reaches the inbox at
+    // all (hq/escalation-gate.mjs). This test is about what answering one does,
+    // so it starts from a decision that legitimately belongs to the founder.
+    impact: "privacy",
+    escalate: true,
   }];
   writeState(statePath, state);
 
@@ -727,10 +732,10 @@ test("an answered post-task decision leaves the inbox and cannot be answered twi
   assert.equal(before.inbox.length, 1);
   assert.equal(before.inbox[0].kind, "post-task-decision");
 
-  resolveFounderDecision({ root, hqRoot: root, statePath, direction: "A. Read-only this milestone" });
+  resolveFounderDecision({ root, hqRoot: root, statePath, direction: "A. Aggregates only" });
 
   const recorded = JSON.parse(readFileSync(statePath, "utf8"));
-  assert.equal(recorded.deferredDecisions[0].founderResponse, "A. Read-only this milestone");
+  assert.equal(recorded.deferredDecisions[0].founderResponse, "A. Aggregates only");
 
   const after = buildFounderOverview(root, [{ id: "startup-ops", name: "Startup Ops" }]);
   assert.equal(after.inbox.length, 0, "an answered decision must not be rebuilt into the inbox");
@@ -738,10 +743,10 @@ test("an answered post-task decision leaves the inbox and cannot be answered twi
   // The endpoint is reachable directly, so it refuses rather than silently
   // overwriting the answer the founder already gave.
   assert.throws(
-    () => resolveFounderDecision({ root, hqRoot: root, statePath, direction: "B. Read-write now" }),
+    () => resolveFounderDecision({ root, hqRoot: root, statePath, direction: "B. Raw entries" }),
     /already answered/i,
   );
   const unchanged = JSON.parse(readFileSync(statePath, "utf8"));
-  assert.equal(unchanged.deferredDecisions[0].founderResponse, "A. Read-only this milestone");
+  assert.equal(unchanged.deferredDecisions[0].founderResponse, "A. Aggregates only");
   assert.equal(unchanged.events.filter((e) => e.type === "deferred-decision-recorded").length, 1);
 });

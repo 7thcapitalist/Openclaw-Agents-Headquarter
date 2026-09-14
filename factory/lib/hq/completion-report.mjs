@@ -130,6 +130,25 @@ export function buildCompletionReport(state, { now = Date.now() } = {}) {
   if (!ran) out.push("- (no stage has produced a verdict yet)");
   out.push("");
 
+  // Every choice a stage flagged along the way, including the ones it decided
+  // itself. The escalation gate keeps unclassified decisions out of the Founder
+  // Inbox (hq/escalation-gate.mjs); that must never mean the founder cannot
+  // find out a choice was made, so this is where they are all written down.
+  const deferred = Array.isArray(state.deferredDecisions) ? state.deferredDecisions : [];
+  if (deferred.length) {
+    out.push("## Choices made along the way");
+    for (const d of deferred) {
+      const answered = d.founderResponse
+        ? `founder chose: ${truncate(d.founderResponse, 200)}`
+        : d.escalate === true
+          ? "waiting on the founder"
+          : `decided by ${d.stage || "the team"} — ${truncate(d.escalationReason || "not a founder-owned call", 160)}`;
+      out.push(`- **${truncate(d.question || "(no question recorded)", 200)}** — ${answered}`);
+      if (d.recommendation) out.push(`  - recommended: ${truncate(d.recommendation, 200)}`);
+    }
+    out.push("");
+  }
+
   if (state.status === "blocked" && state.blocker) {
     out.push("## Why it is blocked");
     out.push(`- Stage: ${state.blocker.stage || "—"}`);
