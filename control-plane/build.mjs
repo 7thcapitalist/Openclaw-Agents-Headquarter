@@ -17,12 +17,13 @@
 // and the entry point must actually reference the assets it depends on. If any
 // of that is untrue the exit code is non-zero and the deploy stops.
 
-import { readFileSync, statSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = dirname(fileURLToPath(import.meta.url));
 const publicDir = join(root, "public");
+const apiDir = join(root, "api");
 
 // Every file that must reach the deployment. Adding an asset means adding it
 // here; an asset absent from this list is not protected by the check.
@@ -57,6 +58,39 @@ if (!failures.length) {
   for (const reference of REQUIRED_REFERENCES) {
     if (!html.includes(reference)) {
       failures.push(`index.html does not reference ${reference}`);
+    }
+  }
+}
+
+// The static assets can be perfect while the API is not deployed at all.
+//
+// That is not hypothetical: setting `outputDirectory` in vercel.json put the
+// project into static-output mode, and Vercel stopped building `api/`
+// altogether. The page served fine, every /api/* route hung, and the build log
+// said nothing was wrong — the same shape of silent success this build script
+// was written to prevent, one layer up.
+//
+// So: if this tree has an api/ directory, the configuration must not be one
+// that excludes it.
+if (!failures.length) {
+  let routes = [];
+  try {
+    routes = readdirSync(apiDir).filter((name) => name.endsWith(".mjs") || name.endsWith(".js"));
+  } catch {
+    routes = [];
+  }
+
+  if (routes.length) {
+    let config = {};
+    try {
+      config = JSON.parse(readFileSync(join(root, "vercel.json"), "utf8"));
+    } catch {
+      failures.push("api/ exists but vercel.json could not be read");
+    }
+    if (config.outputDirectory) {
+      failures.push(
+        `vercel.json sets outputDirectory=${config.outputDirectory}, which disables the ${routes.length} function(s) in api/`,
+      );
     }
   }
 }
