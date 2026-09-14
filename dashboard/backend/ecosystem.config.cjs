@@ -12,6 +12,10 @@
  *   them. Reads HQ_CONTROL_PLANE_URL and HQ_WRITE_TOKEN from <repo-root>/.env.
  *   Stopping it is rollback level 1: the hosted view goes stale and says so,
  *   and the factory is unaffected.
+ * - hq-intents   : polls the control plane for founder intents and runs them
+ *   locally through the existing gates. Outbound only. The closed handler map
+ *   in scripts/hq-intents.mjs is the whole of what a founder intent can cause
+ *   on this machine; `node scripts/hq-intents.mjs peek` prints it.
  * - hq-tunnel    : a Cloudflare *quick* tunnel (cloudflared) that publishes the
  *   dashboard on an ephemeral https://<random>.trycloudflare.com URL. The URL
  *   changes every time this process restarts; find the current one with:
@@ -87,6 +91,26 @@ module.exports = {
         HQ_CONTROL_PLANE_URL: env.HQ_CONTROL_PLANE_URL || "",
         HQ_WRITE_TOKEN: env.HQ_WRITE_TOKEN || "",
         HQ_PUBLISH_INTERVAL_MS: env.HQ_PUBLISH_INTERVAL_MS || "30000",
+      },
+      autorestart: true,
+      max_restarts: 50,
+      restart_delay: 5000,
+      min_uptime: 5000,
+      kill_timeout: 25000,
+      time: true,
+    },
+    {
+      name: "hq-intents",
+      cwd: REPO_ROOT,
+      script: "scripts/hq-intents.mjs",
+      args: ["loop"],
+      interpreter: "node",
+      env: {
+        NODE_ENV: "production",
+        AGENT_LAB_ROOT: REPO_ROOT,
+        HQ_CONTROL_PLANE_URL: env.HQ_CONTROL_PLANE_URL || "",
+        HQ_WRITE_TOKEN: env.HQ_WRITE_TOKEN || "",
+        HQ_INTENT_INTERVAL_MS: env.HQ_INTENT_INTERVAL_MS || "30000",
       },
       autorestart: true,
       max_restarts: 50,

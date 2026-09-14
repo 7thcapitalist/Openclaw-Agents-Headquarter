@@ -317,3 +317,71 @@ export function panelsFor(snapshot) {
 
   return out;
 }
+
+// --- founder intents ---------------------------------------------------------
+
+function describeArgs(args) {
+  if (!args || typeof args !== "object") return "";
+  return Object.entries(args)
+    .map(([key, value]) => `${key}: ${String(value).slice(0, 80)}`)
+    .join("  ");
+}
+
+/**
+ * What the founder has asked for, and what became of it.
+ *
+ * Queued is shown separately from finished because that distinction is the
+ * honest part of this design: an intent is ACCEPTED here and EXECUTED on the
+ * machine, up to one poll interval later. A page that showed a queued action as
+ * done would invent exactly the certainty an outbound-only topology gives up.
+ */
+export function intentsPanel(queue) {
+  const pending = list(queue?.pending);
+  const results = list(queue?.results);
+
+  const rows = [
+    ...pending.map((intent) => ({
+      primary: text(intent?.kind, "intent"),
+      secondary: describeArgs(intent?.args),
+      meta: "queued",
+      tone: "warn",
+    })),
+    ...results.slice(0, 8).map((result) => ({
+      primary: text(result?.id, "intent"),
+      secondary: text(result?.detail, ""),
+      meta: text(result?.status, "done"),
+      tone: result?.status === "done" ? "good" : "bad",
+    })),
+  ];
+
+  return {
+    title: "Your requests",
+    note: rows.length ? null : "nothing requested from here yet",
+    rows,
+  };
+}
+
+/**
+ * The actions offered on one decision.
+ *
+ * Options come from the decision itself, so the page never offers a choice the
+ * factory did not. A decision with no recorded options gets a free-text reply
+ * rather than an invented menu.
+ */
+export function decisionActions(decision) {
+  const options = list(decision?.options).map((option) => String(option)).filter(Boolean);
+  return {
+    id: text(decision?.id, ""),
+    question: text(decision?.question || decision?.summary, "decision"),
+    options,
+    freeText: options.length === 0,
+  };
+}
+
+/** Decisions the founder can answer from here, with their ids intact. */
+export function answerableDecisions(panels) {
+  if (unavailable(panels?.company)) return [];
+  return list(panels.company.decisions)
+    .map(decisionActions)
+    .filter((decision) => decision.id !== "");
+}

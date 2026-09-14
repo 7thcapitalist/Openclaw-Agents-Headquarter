@@ -216,3 +216,58 @@ test("large numbers stay readable", () => {
   assert.equal(compact(25_000), "25k");
   assert.equal(compact(3_400_000), "3.4M");
 });
+
+// --- founder intents ---------------------------------------------------------
+
+test("a queued request is never shown as finished", async () => {
+  const { intentsPanel } = await import("../../control-plane/public/render.mjs");
+  const panel = intentsPanel({
+    pending: [{ id: "a", kind: "task.retry", args: { taskId: "obj-1" } }],
+    results: [{ id: "b", status: "done", detail: "resumed obj-2" }],
+  });
+  const queued = panel.rows.find((r) => r.meta === "queued");
+  const finished = panel.rows.find((r) => r.meta === "done");
+  assert.ok(queued, "a pending intent must read as queued");
+  assert.ok(finished, "a finished intent must read as done");
+  // The machine executes on its next poll; claiming otherwise is the one lie
+  // this topology makes easy to tell.
+  assert.notEqual(queued.meta, "done");
+});
+
+test("a failed request is visible, not quietly dropped", async () => {
+  const { intentsPanel } = await import("../../control-plane/public/render.mjs");
+  const panel = intentsPanel({ pending: [], results: [{ id: "b", status: "failed", detail: "no such task" }] });
+  assert.equal(panel.rows[0].tone, "bad");
+  assert.match(panel.rows[0].secondary, /no such task/);
+});
+
+test("the page never offers a choice the factory did not", async () => {
+  const { decisionActions } = await import("../../control-plane/public/render.mjs");
+  const offered = decisionActions({ id: "t:1", question: "Ship it?", options: ["A. Yes", "B. No"] });
+  assert.deepEqual(offered.options, ["A. Yes", "B. No"]);
+  assert.equal(offered.freeText, false);
+
+  // No recorded options means a free-text reply, never an invented menu.
+  const open = decisionActions({ id: "t:2", question: "What next?" });
+  assert.deepEqual(open.options, []);
+  assert.equal(open.freeText, true);
+});
+
+test("a decision without an id cannot be answered from here", async () => {
+  const { answerableDecisions } = await import("../../control-plane/public/render.mjs");
+  const decisions = answerableDecisions({
+    company: { decisions: [{ question: "no id" }, { id: "t:1", question: "has id" }] },
+  });
+  assert.equal(decisions.length, 1, "an answer with nowhere to go must not be offered");
+  assert.equal(decisions[0].id, "t:1");
+});
+
+test("intent rendering never throws on malformed queue data", async () => {
+  const { intentsPanel, answerableDecisions } = await import("../../control-plane/public/render.mjs");
+  for (const queue of [null, undefined, {}, { pending: "no" }, { results: 5 }, { pending: [null], results: [null] }]) {
+    assert.doesNotThrow(() => intentsPanel(queue), `threw on ${JSON.stringify(queue)}`);
+  }
+  for (const panels of [null, undefined, {}, { company: { decisions: "no" } }, { company: { unavailable: true } }]) {
+    assert.doesNotThrow(() => answerableDecisions(panels));
+  }
+});
