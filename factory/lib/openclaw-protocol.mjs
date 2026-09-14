@@ -306,6 +306,10 @@ export function ingestResult({ statePath, result, agentMeta = null, maxAttemptsP
         const recovered = recordRecoveryResult(state, {
           outcome: result.outcome === "decision-deferred" ? "pass" : result.outcome,
           actor, summary: result.summary, evidence, diagnosis: result.diagnosis || null,
+          // A recovery pass that escalates carries the question it wants
+          // answered. This is the path the 2026-09-14 integration escalation
+          // took, and where its question was being dropped.
+          decision: result.outcome === "decision-required" ? result.decision || null : null,
           maxAttemptsPerStage, maxInfraAttemptsPerStage, now,
         });
         recovered.dispatches = [...(state.dispatches || []), { ...dispatch, status: "completed", outcome: result.outcome, summary: result.summary, completedAt: now, ...(agentMeta ? { usage: sanitizeUsage(agentMeta) } : {}) }];
@@ -314,6 +318,10 @@ export function ingestResult({ statePath, result, agentMeta = null, maxAttemptsP
       }
       const evidence = verifyEvidence(evidencePathsOf(result.evidence), state.worktree);
       const deferredDecision = result.outcome === "decision-deferred" ? result.decision : null;
+      // `decision-required` carries a question too. It was previously read only
+      // for `decision-deferred`, so a required decision's question and options
+      // never reached task state and the founder queue had nothing to show.
+      const requiredDecision = result.outcome === "decision-required" ? result.decision || null : null;
       // The agent's own description of its artifacts and which criteria they
       // settle. `observed:false` is not negotiable here — the factory did not
       // run these commands, so nothing in this result can be treated as an
@@ -330,6 +338,7 @@ export function ingestResult({ statePath, result, agentMeta = null, maxAttemptsP
         agentEvidence: claimed,
         dispatchId: dispatch.id || dispatch.dispatchId || null,
         deferredDecision,
+        decision: requiredDecision,
         now,
       });
       // Freeze the tree the review stages will judge (FCT-P0-05, requirement 7).
