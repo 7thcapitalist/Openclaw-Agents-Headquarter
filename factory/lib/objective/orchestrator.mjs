@@ -741,6 +741,7 @@ export async function runObjective({ hqRoot, objectivePath, maxConcurrent = 3, e
   // wakeup worker instead of waiting for someone to notice it. Best-effort by
   // construction: an observation failure must never change the outcome above.
   const observation = observeObjectiveGraph({
+    hqRoot,
     objectivePath,
     nodeStateRoot,
     before: graphAtStart,

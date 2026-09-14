@@ -935,7 +935,10 @@ app.post("/api/founder/tasks/:id/interactions", (req, res) => {
     });
 
     const taskDir = dirname(statePath);
-    const result = appendInteraction(interactionsPath(taskDir), interaction);
+    // hqRoot threaded so interaction.post is checked. The author here is always
+    // the authenticated founder, whose authority is superior, so this route is
+    // never refused — the check matters for the agent callers that come later.
+    const result = appendInteraction(interactionsPath(taskDir), interaction, { hqRoot: ROOT });
 
     const wakeups = [];
     if (result.accepted) {
@@ -945,7 +948,7 @@ app.post("/api/founder/tasks/:id/interactions", (req, res) => {
       const queuePath = join(dirname(dirname(taskDir)), "wakeups.json");
       for (const wakeup of mentionWakeups({ interactions: [interaction], knownAgents, objectiveId: interaction.objectiveId })) {
         // Best effort: failing to announce a mention must not lose the comment.
-        try { enqueueWakeup(queuePath, wakeup); wakeups.push(wakeup.actorId); }
+        try { enqueueWakeup(queuePath, wakeup, { hqRoot: ROOT }); wakeups.push(wakeup.actorId); }
         catch { /* the thread is the record; the wakeup is a hint */ }
       }
     }
