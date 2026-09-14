@@ -23,7 +23,7 @@ removed:
 
 | Cause | Count | Why it fails |
 | --- | --- | --- |
-| `@vercel/blob` unresolved | 9 | `control-plane/` declares it, but `npm run setup` only installs `dashboard/backend`. CI installs it explicitly; a developer machine never does. |
+| `@vercel/blob` unresolved | 9 | `control-plane/` declares it, but `npm run setup` only installs `dashboard/backend`. CI installs it explicitly; a developer machine never does. Fixed at the root in 1a: the routes load the package on demand, so no test needs it installed at all. |
 | Ambient founder key | 24 | The founder-authority tests assert "no anchor configured" while reading the real enrolled key from `dashboard/backend/data/`, which is gitignored — so they pass in CI and in every worktree, and fail in the only checkout that has real founder state. |
 
 A third problem sits underneath both and is not visible as a failure at all: a
@@ -54,7 +54,8 @@ audited by nothing, and asked about nowhere:
 | Position | PR | Change | Dependency |
 | --- | --- | --- | --- |
 | 0 | this one | Campaign tracker | None |
-| 1 | | The suite installs what it needs from a clean clone | None |
+| 1a | #209 | Control-plane routes stay importable without `npm install` there | None |
+| 1b | #208 | The suite installs what it needs, and refuses to start when a silent-skip workspace is missing | 1a |
 | 2 | | Founder-authority tests stop reading live machine state | None |
 | 3 | | Wire `task.dispatch` and `github.open-pr` | 1, 2 |
 | 4 | | Wire `objective.run` and `objective.recover` | 1, 2 |
@@ -63,6 +64,14 @@ audited by nothing, and asked about nowhere:
 Positions 1 and 2 are independent of each other and of everything else; they
 come first because positions 3–5 claim "the suite is green" as their
 verification evidence, and that claim is only worth something once it is true.
+
+1a must land before 1b, and the two solve different halves. 1a removes the
+dependency the tests were failing on; 1b catches the workspace whose absence
+makes tests *skip* instead of fail — the failure mode that reports green. Only
+the second kind earns a refusal to start: a preflight that blocks on a
+dependency nothing is waiting for would take back what 1a bought, which is a
+factory agent's fresh worktree being able to run the control plane's auth
+tests at all.
 
 Positions 3, 4 and 5 are independent of each other and touch disjoint files, so
 they may merge in any order among themselves once 1 and 2 have landed.
