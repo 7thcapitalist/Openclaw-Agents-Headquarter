@@ -4,6 +4,7 @@ import { randomUUID } from "crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
 import { assertSupportedVersion } from "../store/durable-version.mjs";
 import { dirname, resolve } from "path";
+import { checkCapability } from "../hq/capability-check.mjs";
 
 export const WAKEUP_SOURCES = Object.freeze(["schedule", "assignment", "mention", "dependency", "recovery", "manual"]);
 export const WAKEUP_STATUSES = Object.freeze(["queued", "claimed", "succeeded", "failed", "dead-letter"]);
@@ -11,6 +12,21 @@ const SAFE = /^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,199}$/;
 
 export function enqueueWakeup(path, input, options = {}) {
   if (input && ("command" in input || "payload" in input)) throw new Error("Wakeups cannot contain commands or arbitrary payloads");
+  // A wakeup carries no command — only an identifier — so this gates who may
+  // put work on someone else's queue, not what that work is. `hqRoot` is
+  // optional: a caller that does not supply one has no registry to consult,
+  // which is not a denial.
+  checkCapability({
+    hqRoot: options.hqRoot || null,
+    capability: "wakeup.enqueue",
+    action: "enqueue a wakeup",
+    actor: options.actor || null,
+    scope: { type: "task", id: input?.taskRef || input?.actorId || null, projectId: options.projectId || null },
+    correlation: {
+      ...(input?.actorId ? { targetActorId: input.actorId } : {}),
+      ...(input?.source ? { source: input.source } : {}),
+    },
+  });
   return mutate(path, (state) => {
     const request = makeRequest(input, options);
     const duplicate = state.items.find((item) => item.idempotencyKey === request.idempotencyKey);

@@ -26,6 +26,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from "fs";
 import { assertSupportedVersion } from "../store/durable-version.mjs";
 import { dirname, join, resolve } from "path";
 import { scrubText } from "../common/redact.mjs";
+import { checkCapability } from "./capability-check.mjs";
 
 export const INTERACTION_KINDS = Object.freeze(["comment", "question", "note"]);
 export const AUTHOR_TYPES = Object.freeze(["human", "agent", "system"]);
@@ -95,7 +96,26 @@ export function createInteraction(input, { now = () => new Date().toISOString() 
 
 // Append-only and idempotent. Re-posting the same interaction is a no-op, so a
 // retried delivery or a replayed webhook cannot duplicate a thread.
-export function appendInteraction(path, interaction) {
+export function appendInteraction(path, interaction, options = {}) {
+  // Who may attach a comment or mention to a task's canonical context.
+  //
+  // The dashboard route posts as the authenticated founder, and founder
+  // authority is superior in the permission system, so that path is always
+  // allowed — this bites when an AGENT posts, which nothing does yet. Wiring it
+  // now means the check exists before the first caller that needs it, rather
+  // than being remembered afterwards.
+  checkCapability({
+    hqRoot: options.hqRoot || null,
+    capability: "interaction.post",
+    action: "post an interaction",
+    actor: interaction?.author || null,
+    scope: { type: "task", id: interaction?.taskId || null, projectId: options.projectId || null },
+    correlation: {
+      ...(interaction?.taskId ? { taskId: interaction.taskId } : {}),
+      ...(interaction?.kind ? { kind: interaction.kind } : {}),
+    },
+  });
+
   const existing = readInteractions(path);
   const duplicate = existing.find((item) => item.idempotencyKey === interaction.idempotencyKey);
   if (duplicate) return { accepted: false, duplicate: true, interaction: duplicate };

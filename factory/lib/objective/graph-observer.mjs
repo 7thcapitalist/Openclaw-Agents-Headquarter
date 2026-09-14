@@ -32,9 +32,9 @@ export function objectiveWakeupQueuePath(nodeStateRoot) {
   return join(nodeStateRoot, "wakeups.json");
 }
 
-export function observeObjectiveGraph({ objectivePath, nodeStateRoot, before, after, agentForNode = () => "openclaw-factory", now = Date.now }) {
+export function observeObjectiveGraph({ hqRoot = null, objectivePath, nodeStateRoot, before, after, agentForNode = () => "openclaw-factory", now = Date.now }) {
   const health = recordGraphHealth({ objectivePath, nodeStateRoot, objective: after, now });
-  const wakeups = enqueueDependencyWakeups({ nodeStateRoot, before, after, objectiveId: after?.objectiveId, agentForNode });
+  const wakeups = enqueueDependencyWakeups({ hqRoot, nodeStateRoot, before, after, objectiveId: after?.objectiveId, agentForNode });
   return { health, wakeups };
 }
 
@@ -66,7 +66,7 @@ function recordGraphHealth({ objectivePath, nodeStateRoot, objective, now }) {
   }
 }
 
-function enqueueDependencyWakeups({ nodeStateRoot, before, after, objectiveId, agentForNode }) {
+function enqueueDependencyWakeups({ hqRoot = null, nodeStateRoot, before, after, objectiveId, agentForNode }) {
   if (!objectiveId) return { enqueued: 0, duplicates: 0, skipped: "objective has no id" };
   let requests;
   try {
@@ -84,7 +84,7 @@ function enqueueDependencyWakeups({ nodeStateRoot, before, after, objectiveId, a
       // The queue dedupes on idempotencyKey across all history, so re-running
       // an objective re-enqueues nothing and a genuine retry (a new attempt
       // number) does get its own wakeup.
-      if (enqueueWakeup(path, request).duplicate) duplicates += 1;
+      if (enqueueWakeup(path, request, { hqRoot, projectId: after?.project || null }).duplicate) duplicates += 1;
       else enqueued += 1;
     } catch (error) {
       errors.push(`${request.taskRef}: ${String(error?.message || error)}`);
