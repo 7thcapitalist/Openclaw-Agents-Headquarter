@@ -28,7 +28,11 @@ import {
   resolveTrustedFounderAuthority,
 } from "../lib/founder-authority.mjs";
 import { redact, redactText } from "../../dashboard/backend/lib/securityAudit.mjs";
-import { anchorFounderKey, clearFounderAnchor } from "./helpers/anchor.mjs";
+import { anchorFounderKey, clearFounderAnchor, detachAmbientAnchor } from "./helpers/anchor.mjs";
+
+// This suite reasons about roots it creates, not about the checkout it happens
+// to run inside — see detachAmbientAnchor's own comment for what that cost.
+detachAmbientAnchor();
 
 const task = {
   id: "issue-42",

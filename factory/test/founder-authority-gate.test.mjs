@@ -5,7 +5,7 @@
 // task past `builder`? The answer must be no, for every variation.
 
 import test from "node:test";
-import { anchorFounderKey } from "./helpers/anchor.mjs";
+import { anchorFounderKey, detachAmbientAnchor } from "./helpers/anchor.mjs";
 import assert from "node:assert/strict";
 import { generateKeyPairSync, sign } from "node:crypto";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
@@ -25,6 +25,10 @@ import {
   revokeFounderApprovalKey,
   unsignedFounderAssertion,
 } from "../lib/task-workflow.mjs";
+
+// This suite reasons about roots it creates, not about the checkout it happens
+// to run inside — see detachAmbientAnchor's own comment for what that cost.
+detachAmbientAnchor();
 
 const task = {
   id: "issue-42",

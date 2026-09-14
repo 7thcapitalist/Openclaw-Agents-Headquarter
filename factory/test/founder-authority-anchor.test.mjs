@@ -34,6 +34,11 @@ import {
   fingerprintOf,
   resolveTrustedFounderAuthority,
 } from "../lib/founder-authority.mjs";
+import { detachAmbientAnchor } from "./helpers/anchor.mjs";
+
+// This suite reasons about roots it creates, not about the checkout it happens
+// to run inside — see detachAmbientAnchor's own comment for what that cost.
+detachAmbientAnchor();
 
 const task = {
   id: "issue-42",
