@@ -57,9 +57,9 @@ audited by nothing, and asked about nowhere:
 | 1a | #209 | Control-plane routes stay importable without `npm install` there | None |
 | 1b | #208 | The suite installs what it needs, and refuses to start when a silent-skip workspace is missing | 1a |
 | 2 | #212 | Founder-authority tests stop reading live machine state | None |
-| 3 | | The shared capability-check seam, plus `task.dispatch` and `github.open-pr` | 1, 2 |
-| 4 | | Wire `objective.run` and `objective.recover` | 3 |
-| 5 | | Wire `interaction.post` and `wakeup.enqueue` | 3 |
+| 3 | #213 | The shared capability-check seam, plus `task.dispatch` and `github.open-pr` | 1, 2 |
+| 4 | #215 | Wire `objective.run` and `objective.recover` | 3 |
+| 5 | #217 | Wire `interaction.post` and `wakeup.enqueue` | 3 |
 
 Positions 1 and 2 are independent of each other and of everything else; they
 come first because positions 3–5 claim "the suite is green" as their
@@ -93,6 +93,27 @@ anything.
 
 Every capability wired here is already granted by #205's table, so no position
 in this campaign adds or widens a grant.
+
+## Open question raised by position 4
+
+Wiring the objective capabilities surfaced the first thing this campaign could
+not answer for itself, and position 4 deliberately did not answer it either.
+
+#205's grant table names *agents* — `architect`, `reviewer`, `qa`,
+`backend-builder`. The orchestrator does not run as any of them: it schedules an
+objective on the founder's instruction, before any agent is acting. So
+`objective.run` and `objective.recover` will record `wouldDeny: true` in report
+mode during completely normal operation.
+
+That is the grant table meeting reality, which is what `report` mode is for.
+Three ways to resolve it, all founder decisions about how authority is modelled:
+
+1. grant `openclaw-factory` the objective capabilities;
+2. thread a real agent identity down to the orchestrator;
+3. treat objectives as founder-initiated and send `actorType: "human"`.
+
+Not urgent — in `report` mode the cost is log noise, not behaviour — but it
+should be settled before anyone proposes `enforce`.
 
 ## Invariants
 
