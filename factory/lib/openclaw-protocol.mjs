@@ -3,8 +3,9 @@ import { basename, dirname, join } from "path";
 import { randomUUID } from "crypto";
 import { DEFAULT_MAX_INFRA_ATTEMPTS, completeStage, recordRecoveryResult, recordVerifiedCommit, routeStageFailure, startRecovery, verifyEvidence } from "./task-workflow.mjs";
 import { execFileSync } from "node:child_process";
-import { mutateTransactionalState } from "./store/transactional-json.mjs";
+import { mutateTransactionalState, readTransactionalState } from "./store/transactional-json.mjs";
 import { writeHandoff } from "./handoff.mjs";
+import { checkCapability } from "./hq/capability-check.mjs";
 
 // Which stages the workflow can route a failure AWAY from.
 //
@@ -67,7 +68,58 @@ export function quarantineStaleResult(resultPath) {
   }
 }
 
+// The stage a dispatch would run, and who would run it — computed from a read
+// outside the transaction so the capability check can happen before any state
+// is written. Returns null when no dispatch would be created, so the check is
+// skipped rather than recording a decision about work that cannot happen.
+function prospectiveDispatch(statePath) {
+  let state;
+  try { state = readTransactionalState(statePath); } catch { return null; }
+  if (!state || state.status !== "active") return null;
+  if (state.currentDispatch?.status === "ready" || state.currentDispatch?.status === "running") return null;
+  const recovery = state.recovery?.active;
+  const stage = recovery?.failedStage || state.currentStage;
+  if (!stage) return null;
+  const actorId = recovery
+    ? (recovery.phase === "diagnose" ? "recovery" : state.assignments?.[recovery.verificationStage || "qa"])
+    : state.assignments?.[stage];
+  return { state, stage, actorId };
+}
+
+function checkDispatchPermission({ hqRoot, statePath }) {
+  if (!hqRoot) return;
+  const prospective = prospectiveDispatch(statePath);
+  if (!prospective) return;
+  const { state, stage, actorId } = prospective;
+  checkCapability({
+    hqRoot,
+    capability: "task.dispatch",
+    action: `dispatch ${stage}`,
+    actor: { type: "agent", id: actorId || "openclaw-factory" },
+    scope: { type: "task", id: state.task?.id, projectId: state.task?.project || null },
+    founderApproval: state.founderApproval || null,
+    correlation: {
+      taskId: state.task?.id,
+      ...(state.task?.project ? { projectId: state.task.project } : {}),
+      stage,
+    },
+  });
+}
+
 export function prepareDispatch({ hqRoot, statePath, now = new Date().toISOString() }) {
+  // Running a stage is checked here, before the transaction that creates the
+  // dispatch.
+  //
+  // The actor is only knowable from state, and the decision has to be made
+  // before any dispatch exists — a denial that arrives after the task already
+  // records a dispatch has denied nothing. So the state is read first and the
+  // transaction's own early-return conditions are mirrored, which keeps the
+  // audit log free of decisions about dispatches that were never going to be
+  // created. The remaining gap is a genuine race with a concurrent caller, and
+  // an audit record for a dispatch someone else created in the same instant is
+  // accurate, not misleading.
+  checkDispatchPermission({ hqRoot, statePath });
+
   let freshDispatch = null;
   const nextState = mutateTransactionalState(statePath, {
     // Preparing a dispatch is derived deterministically from state that is

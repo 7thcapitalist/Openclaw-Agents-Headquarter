@@ -3,7 +3,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } fr
 import { basename, dirname, join, resolve } from "path";
 import { createState, taskStatePath, validateTaskContract, writeState } from "./task-workflow.mjs";
 import { writeHandoff } from "./handoff.mjs";
-import { enforce, readPermissionRegistry } from "./hq/permissions.mjs";
+import { checkCapability } from "./hq/capability-check.mjs";
 
 // The public half of the founder approval authority embedded into every
 // high-risk task at creation. Prefer the key the founder enrolled from
@@ -108,20 +108,11 @@ export function ensureEvidenceLintIgnored(worktree) {
 // cannot be read is a denial, not a bypass: a broken permissions file must not
 // silently disable the control it configures.
 function checkInitializePermission({ hqRoot, task, actor }) {
-  if (!hqRoot) return;
-  let registry;
-  try {
-    registry = readPermissionRegistry(hqRoot);
-  } catch (error) {
-    throw new Error(`permission registry is unreadable, refusing to initialize: ${error.message}`);
-  }
-  if (registry.enforcement === "off") return;
-  enforce({
-    registry,
-    auditPath: join(resolve(hqRoot), ".openclaw-factory", "telemetry", "permissions.ndjson"),
-    actorType: actor?.type || "agent",
-    actorId: actor?.id || "openclaw-factory",
+  checkCapability({
+    hqRoot,
     capability: "task.initialize",
+    action: "initialize",
+    actor,
     scope: { type: "task", id: task.id, projectId: task.project || null },
     founderApproval: task.founderApproval || null,
     correlation: { taskId: task.id, ...(task.project ? { projectId: task.project } : {}) },
