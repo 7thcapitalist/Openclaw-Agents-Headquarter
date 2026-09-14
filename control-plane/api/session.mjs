@@ -9,15 +9,11 @@
 // serverless deployment has no shared memory — but it makes an unbounded
 // guessing loop from one client meaningfully slower, and the password is long
 // and random rather than chosen.
+//
+// Node signature, because that is what Vercel's runtime calls. See _lib/http.mjs.
 
-import {
-  clearedCookie,
-  issueSession,
-  isViewer,
-  passwordMatches,
-  refuse,
-  sessionCookie,
-} from "./_lib/auth.mjs";
+import { clearedCookie, issueSession, isViewer, passwordMatches, sessionCookie } from "./_lib/auth.mjs";
+import { readJson, requestLike, sendJson } from "./_lib/http.mjs";
 
 const WINDOW_MS = 60_000;
 const MAX_ATTEMPTS = 8;
@@ -36,49 +32,45 @@ function tooMany(key, now) {
   return record.count > MAX_ATTEMPTS;
 }
 
-function json(body, status = 200, headers = {}) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "content-type": "application/json", "cache-control": "no-store", ...headers },
-  });
-}
-
-export default async function handler(request) {
+export default async function handler(req, res) {
   try {
-    if (request.method === "GET") {
-      return json({ authenticated: isViewer(request) });
+    const request = requestLike(req);
+
+    if (req.method === "GET") {
+      return sendJson(res, 200, { authenticated: isViewer(request) });
     }
 
-    if (request.method === "DELETE") {
-      return json({ ok: true }, 200, { "set-cookie": clearedCookie() });
+    if (req.method === "DELETE") {
+      return sendJson(res, 200, { ok: true }, { "set-cookie": clearedCookie() });
     }
 
-    if (request.method === "POST") {
+    if (req.method === "POST") {
       const client = request.headers.get("x-forwarded-for") || "unknown";
       if (tooMany(client, Date.now())) {
-        return json({ error: "too many attempts" }, 429, { "retry-after": "60" });
+        return sendJson(res, 429, { error: "too many attempts" }, { "retry-after": "60" });
       }
 
-      let password;
+      let body;
       try {
-        ({ password } = await request.json());
+        body = await readJson(req);
       } catch {
-        return json({ error: "body is not JSON" }, 400);
+        return sendJson(res, 400, { error: "body is not JSON" });
       }
 
+      const password = body?.password;
       if (typeof password !== "string" || !passwordMatches(password)) {
         // Same answer, same shape, whatever was wrong with it.
-        return refuse();
+        return sendJson(res, 401, { error: "unauthorized" });
       }
 
-      return json({ ok: true }, 200, { "set-cookie": sessionCookie(issueSession()) });
+      return sendJson(res, 200, { ok: true }, { "set-cookie": sessionCookie(issueSession()) });
     }
 
-    return json({ error: "method not allowed" }, 405, { allow: "GET, POST, DELETE" });
+    return sendJson(res, 405, { error: "method not allowed" }, { allow: "GET, POST, DELETE" });
   } catch (error) {
     if (error?.code === "unconfigured") {
-      return json({ error: "control plane is not configured", detail: error.message }, 503);
+      return sendJson(res, 503, { error: "control plane is not configured", detail: error.message });
     }
-    return json({ error: "session unavailable" }, 500);
+    return sendJson(res, 500, { error: "session unavailable" });
   }
 }
