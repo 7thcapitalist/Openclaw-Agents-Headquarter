@@ -22,7 +22,33 @@
 // filled with junk by a stolen session, and nothing that pretends to be
 // security.
 
-import { del, head, list, put } from "@vercel/blob";
+// Loaded on demand, never at module scope — the same rule _lib/store.mjs
+// follows, and the one factory/test/control-plane-routes-importable.test.mjs
+// enforces across this whole tree.
+//
+// A static import here makes the package a prerequisite for merely IMPORTING a
+// route, and control-plane/node_modules is gitignored and installed by nothing
+// the test suite runs. That does not fail the auth tests on this public
+// endpoint, it stops them being collected at all — which is strictly worse,
+// because a missing dependency then looks exactly like passing auth. That is
+// what #209 fixed; this keeps the new queue on the right side of it.
+let blobModule;
+async function blob() {
+  if (!blobModule) {
+    try {
+      blobModule = await import("@vercel/blob");
+    } catch (error) {
+      // Fail closed, exactly like a missing token: `unconfigured` is what the
+      // routes turn into a 503. A queue we cannot reach must never read as an
+      // empty queue.
+      const missing = new Error("@vercel/blob is not installed — run `npm install` in control-plane/");
+      missing.code = "unconfigured";
+      missing.cause = error;
+      throw missing;
+    }
+  }
+  return blobModule;
+}
 
 const PENDING = "intents/pending/";
 const CLAIMED = "intents/claimed/";
@@ -87,7 +113,11 @@ async function readBlob(url) {
 
 /** Enqueue one intent. Returns its id. */
 export async function enqueue({ kind, args = {}, requestedBy = "founder", now = new Date().toISOString() }) {
-  const pending = await list({ prefix: PENDING, token: token(), limit: MAX_PENDING + 1 });
+  // token() before the package load, so an unconfigured deployment reports a
+  // missing token rather than a missing module.
+  const authorization = token();
+  const { list, put } = await blob();
+  const pending = await list({ prefix: PENDING, token: authorization, limit: MAX_PENDING + 1 });
   if ((pending.blobs || []).length > MAX_PENDING) {
     const error = new Error("intent queue is full");
     error.code = "queue_full";
@@ -104,14 +134,16 @@ export async function enqueue({ kind, args = {}, requestedBy = "founder", now = 
     addRandomSuffix: false,
     allowOverwrite: false,
     cacheControlMaxAge: 0,
-    token: token(),
+    token: authorization,
   });
   return id;
 }
 
 /** Every pending intent, oldest first. */
 export async function listPending({ limit = 50 } = {}) {
-  const pending = await list({ prefix: PENDING, token: token(), limit });
+  const authorization = token();
+  const { list } = await blob();
+  const pending = await list({ prefix: PENDING, token: authorization, limit });
   const blobs = (pending.blobs || []).slice().sort((a, b) => a.pathname.localeCompare(b.pathname));
   const out = [];
   for (const blob of blobs) {
@@ -130,9 +162,11 @@ export async function listPending({ limit = 50 } = {}) {
  * running the action twice.
  */
 export async function claim(id, { claimedBy = "factory-machine", now = new Date().toISOString() } = {}) {
+  const authorization = token();
+  const { del, head, put } = await blob();
   let record;
   try {
-    const meta = await head(`${PENDING}${id}.json`, { token: token() });
+    const meta = await head(`${PENDING}${id}.json`, { token: authorization });
     record = await readBlob(meta.downloadUrl || meta.url);
   } catch (error) {
     if (isNotFound(error)) return null; // already claimed, or never existed
@@ -148,7 +182,7 @@ export async function claim(id, { claimedBy = "factory-machine", now = new Date(
       // The whole point: the store, not this code, decides who claimed it.
       allowOverwrite: false,
       cacheControlMaxAge: 0,
-      token: token(),
+      token: authorization,
     });
   } catch {
     return null; // someone already claimed it
@@ -157,12 +191,14 @@ export async function claim(id, { claimedBy = "factory-machine", now = new Date(
   // Only after the claim is durable. If this delete fails the intent is claimed
   // and still listed, which a second claim attempt then refuses — noisy, but
   // never a double execution.
-  await del(`${PENDING}${id}.json`, { token: token() }).catch(() => {});
+  await del(`${PENDING}${id}.json`, { token: authorization }).catch(() => {});
   return claimed;
 }
 
 /** Record what happened. Terminal; never read back into the pending queue. */
 export async function report(id, { status, detail = null, now = new Date().toISOString() }) {
+  const authorization = token();
+  const { del, put } = await blob();
   const record = { version: 1, id, status, detail: detail ? String(detail).slice(0, 2000) : null, reportedAt: now };
   await put(`${RESULTS}${id}.json`, JSON.stringify(record), {
     access: "private",
@@ -170,15 +206,17 @@ export async function report(id, { status, detail = null, now = new Date().toISO
     addRandomSuffix: false,
     allowOverwrite: true,
     cacheControlMaxAge: 0,
-    token: token(),
+    token: authorization,
   });
-  await del(`${CLAIMED}${id}.json`, { token: token() }).catch(() => {});
+  await del(`${CLAIMED}${id}.json`, { token: authorization }).catch(() => {});
   return record;
 }
 
 /** Recent results, for the founder to see what became of what they asked. */
 export async function listResults({ limit = 50 } = {}) {
-  const results = await list({ prefix: RESULTS, token: token(), limit });
+  const authorization = token();
+  const { list } = await blob();
+  const results = await list({ prefix: RESULTS, token: authorization, limit });
   const blobs = (results.blobs || []).slice().sort((a, b) => b.pathname.localeCompare(a.pathname));
   const out = [];
   for (const blob of blobs) {
