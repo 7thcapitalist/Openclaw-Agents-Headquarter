@@ -7,6 +7,11 @@
  * - hq-dashboard : the Express control plane (dashboard/backend/server.mjs),
  *   bound to 127.0.0.1 only. Reads its secrets/config from <repo-root>/.env
  *   (server.mjs loads dotenv from $AGENT_LAB_ROOT/.env).
+ * - hq-publisher : pushes the Headquarters mirror to the Vercel control plane
+ *   (SFD-2026-012). Outbound only — it opens connections and never accepts
+ *   them. Reads HQ_CONTROL_PLANE_URL and HQ_WRITE_TOKEN from <repo-root>/.env.
+ *   Stopping it is rollback level 1: the hosted view goes stale and says so,
+ *   and the factory is unaffected.
  * - hq-tunnel    : a Cloudflare *quick* tunnel (cloudflared) that publishes the
  *   dashboard on an ephemeral https://<random>.trycloudflare.com URL. The URL
  *   changes every time this process restarts; find the current one with:
@@ -68,6 +73,26 @@ module.exports = {
       restart_delay: 2000,
       min_uptime: 5000,
       kill_timeout: 8000,
+      time: true,
+    },
+    {
+      name: "hq-publisher",
+      cwd: REPO_ROOT,
+      script: "scripts/hq-publish.mjs",
+      args: ["loop"],
+      interpreter: "node",
+      env: {
+        NODE_ENV: "production",
+        AGENT_LAB_ROOT: REPO_ROOT,
+        HQ_CONTROL_PLANE_URL: env.HQ_CONTROL_PLANE_URL || "",
+        HQ_WRITE_TOKEN: env.HQ_WRITE_TOKEN || "",
+        HQ_PUBLISH_INTERVAL_MS: env.HQ_PUBLISH_INTERVAL_MS || "30000",
+      },
+      autorestart: true,
+      max_restarts: 50,
+      restart_delay: 5000,
+      min_uptime: 5000,
+      kill_timeout: 25000,
       time: true,
     },
     {

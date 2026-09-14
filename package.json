@@ -29,6 +29,7 @@
     "hq:status": "node scripts/hq-status.mjs",
     "factory:retention": "node scripts/factory-retention.mjs",
     "company:preview-import": "node scripts/preview-agent-company-import.mjs",
-    "check:provenance": "node scripts/check-third-party-provenance.mjs"
+    "check:provenance": "node scripts/check-third-party-provenance.mjs",
+    "hq:publish": "node scripts/hq-publish.mjs"
   }
 }
