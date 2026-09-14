@@ -305,3 +305,20 @@ body {
   font-size: 0.8rem;
 }
 .decision-actions .btn-primary { margin-top: 0; padding: 0.45rem 0.9rem; font-size: 0.8rem; }
+.decision-why { margin: 0.3rem 0 0; color: var(--muted); font-size: 0.78rem; }
+.decision-rec {
+  margin: 0.5rem 0 0;
+  padding: 0.5rem 0.6rem;
+  border-left: 2px solid var(--blue);
+  background: #0b1018;
+  color: #c3c9d4;
+  font-size: 0.78rem;
+}
+.decision-rec small {
+  display: block;
+  color: var(--blue);
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 0.2rem;
+}

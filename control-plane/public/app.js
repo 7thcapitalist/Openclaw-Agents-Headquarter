@@ -150,6 +150,12 @@ function renderDecisions(decisions) {
   for (const decision of decisions) {
     const block = el("div", "decision");
     block.append(el("strong", null, decision.question));
+    if (decision.why) block.append(el("p", "decision-why", decision.why));
+    if (decision.recommendation) {
+      const rec = el("p", "decision-rec");
+      rec.append(el("small", null, "The factory recommends"), document.createTextNode(decision.recommendation));
+      block.append(rec);
+    }
 
     const actions = el("div", "decision-actions");
     if (decision.freeText) {
