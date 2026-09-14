@@ -167,7 +167,7 @@ export function createState({ task, repo, branch, worktree, founderPublicKey = n
   return state;
 }
 
-export function completeStage(state, { stage, actor, outcome, summary, evidence = [], manifest = null, agentEvidence = null, dispatchId = null, commitSha = null, deferredDecision = null, now = new Date().toISOString() }) {
+export function completeStage(state, { stage, actor, outcome, summary, evidence = [], manifest = null, agentEvidence = null, dispatchId = null, commitSha = null, deferredDecision = null, decision = null, now = new Date().toISOString() }) {
   if (state.status !== "active") throw new Error(`Task is ${state.status}; it cannot advance.`);
   if (stage !== state.currentStage) throw new Error(`Expected stage ${state.currentStage}, received ${stage}.`);
   if (actor !== state.assignments[stage]) {
@@ -248,7 +248,18 @@ export function completeStage(state, { stage, actor, outcome, summary, evidence 
 
   if (outcome !== "pass") {
     next.status = "blocked";
-    next.blocker = { stage, outcome, summary: String(summary), actor, at: now };
+    next.blocker = {
+      stage, outcome, summary: String(summary), actor, at: now,
+      ...(dispatchId ? { dispatchId } : {}),
+      // The agent's actual question and options, carried onto the blocker so
+      // the founder queue can show what is being asked rather than only a prose
+      // summary. Without this a `decision-required` result's `.decision` was
+      // dropped at ingestion and the question survived only in the result file,
+      // which no founder-facing surface reads.
+      ...(outcome === "decision-required" && decision
+        ? { decision: normalizeBlockerDecision(decision, stage, now) }
+        : {}),
+    };
     return next;
   }
 
@@ -302,6 +313,28 @@ export function completeStage(state, { stage, actor, outcome, summary, evidence 
     next.events.push({ at: now, type: "handoff-ready", stage: next.currentStage });
   }
   return next;
+}
+
+// A `decision-required` question, normalised for storage on `.blocker`.
+//
+// Deliberately more forgiving than normalizeDeferredDecision: a deferred
+// decision is optional, so the protocol can insist it be well formed and reject
+// it otherwise. A required decision is the task stopping dead, and dropping it
+// for being malformed is how the question gets lost — which is the failure this
+// exists to prevent. Keep whatever the agent gave, never throw.
+function normalizeBlockerDecision(input, stage, now) {
+  const options = Array.isArray(input?.options)
+    ? input.options.map((x) => String(x).trim()).filter(Boolean).slice(0, 4)
+    : [];
+  return {
+    id: String(input?.id || `${stage}-${Date.parse(now) || Date.now()}`),
+    stage,
+    question: String(input?.question || "").trim(),
+    why: String(input?.why || "").trim(),
+    options,
+    recommendation: String(input?.recommendation || "").trim(),
+    requestedAt: now,
+  };
 }
 
 function normalizeDeferredDecision(input, stage, now) {
@@ -544,7 +577,7 @@ export function startRecovery(state, { failedStage, actor, error, evidence = [],
   return next;
 }
 
-export function recordRecoveryResult(state, { outcome, actor, summary, evidence = [], diagnosis = null, maxAttemptsPerStage = 3, maxInfraAttemptsPerStage = DEFAULT_MAX_INFRA_ATTEMPTS, now = new Date().toISOString() }) {
+export function recordRecoveryResult(state, { outcome, actor, summary, evidence = [], diagnosis = null, decision = null, maxAttemptsPerStage = 3, maxInfraAttemptsPerStage = DEFAULT_MAX_INFRA_ATTEMPTS, now = new Date().toISOString() }) {
   const active = state.recovery?.active;
   if (!active) throw new Error("No recovery attempt is active.");
   const next = structuredClone(state);
@@ -560,7 +593,7 @@ export function recordRecoveryResult(state, { outcome, actor, summary, evidence 
       next.events.push({ at: now, type: "recovery-verifying", stage: active.failedStage, actor: next.assignments[next.recovery.active.verificationStage], attempt: active.attempt });
       return next;
     }
-    return finishRecoveryFailure(next, { summary, actor, evidence, outcome, now });
+    return finishRecoveryFailure(next, { summary, actor, evidence, outcome, decision, now });
   }
   attempt.verification = { outcome, summary: String(summary || ""), evidence: structuredClone(evidence), actor, at: now };
   next.events.push({ at: now, type: "recovery-verification", stage: active.failedStage, actor, outcome, attempt: active.attempt });
@@ -606,10 +639,10 @@ export function recordRecoveryResult(state, { outcome, actor, summary, evidence 
     next.events.push({ at: now, type: "task-resumed", stage: resumeAt, actor: "system", reason: "recovery-verified", attempt: attempts + 1, ...(resumeAt !== active.failedStage ? { fromStage: active.failedStage, invalidatedDownstream: true } : {}) });
     return next;
   }
-  return finishRecoveryFailure(next, { summary, actor, evidence, outcome, now });
+  return finishRecoveryFailure(next, { summary, actor, evidence, outcome, decision, now });
 }
 
-function finishRecoveryFailure(state, { summary, actor, outcome, now }) {
+function finishRecoveryFailure(state, { summary, actor, outcome, decision = null, now }) {
   const next = structuredClone(state);
   const active = next.recovery.active;
   const attempt = next.recovery.attempts.at(-1);
@@ -618,7 +651,7 @@ function finishRecoveryFailure(state, { summary, actor, outcome, now }) {
   const error = String(summary || "Recovery could not repair the failure.");
   const kind = attempt.classification;
   if (outcome === "decision-required") {
-    return escalateRecovery(next, { failedStage: active.failedStage, kind: "FOUNDER_DECISION_REQUIRED", error, now });
+    return escalateRecovery(next, { failedStage: active.failedStage, kind: "FOUNDER_DECISION_REQUIRED", error, decision, now });
   }
   const openCount = openIncidentAttempts(next.recovery).length;
   if (openCount < next.recovery.maxAttempts && next.recovery.attempts.length < next.recovery.maxTotalAttempts && isRecoverableFailure(kind)) {
@@ -631,7 +664,7 @@ function finishRecoveryFailure(state, { summary, actor, outcome, now }) {
   return escalateRecovery(next, { failedStage: active.failedStage, kind, error, now });
 }
 
-function escalateRecovery(state, { failedStage, kind, error, now }) {
+function escalateRecovery(state, { failedStage, kind, error, decision = null, now }) {
   const next = structuredClone(state);
   next.recovery.active = null;
   next.status = "blocked";
@@ -647,6 +680,7 @@ function escalateRecovery(state, { failedStage, kind, error, now }) {
     whatHappensAfterApproval: "The original task will resume from the failed stage after the blocker is resolved.",
     summary: `Recovery could not continue after ${openIncidentAttempts(next.recovery).length} bounded attempt(s): ${String(error || "unknown failure")}`,
     at: now,
+    ...(decision ? { decision: normalizeBlockerDecision(decision, failedStage, now) } : {}),
   };
   next.events.push({ at: now, type: "recovery-escalated", stage: failedStage, actor: "system", classification: kind });
   next.updatedAt = now;
