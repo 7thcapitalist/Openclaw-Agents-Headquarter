@@ -16,62 +16,41 @@
           <div class="brand-sub">Control plane</div>
         </div>
       </div>
+      <span class="freshness" id="freshness" hidden></span>
+      <button type="button" class="btn-ghost" id="refresh" hidden>Refresh</button>
       <button type="button" class="btn-ghost" id="sign-out" hidden>Sign out</button>
     </header>
 
     <main class="page">
-      <!-- Sign in. Shown until the session cookie proves otherwise; the server
-           is the authority, this is only which view to draw. -->
+      <!-- Sign in. The server is the authority; this is only which view to draw. -->
       <section class="shell-state" id="signin" hidden>
         <span class="eyebrow">Headquarters</span>
         <h1>Sign in.</h1>
         <p>
           This control plane mirrors company state. It is not public, and it
-          holds no factory controls that the local dashboard does not already
-          have.
+          holds no factory controls the local dashboard does not already have.
         </p>
         <form id="signin-form" autocomplete="on">
           <label class="field-label" for="password">Password</label>
-          <input
-            type="password"
-            id="password"
-            name="password"
-            autocomplete="current-password"
-            required
-          />
+          <input type="password" id="password" name="password" autocomplete="current-password" required />
           <p class="signin-error" id="signin-error" hidden></p>
           <button type="submit" class="btn-primary" id="signin-submit">Sign in</button>
         </form>
       </section>
 
+      <!-- Anything that is not a rendered mirror: empty, offline, unreadable. -->
       <section class="shell-state" id="state" hidden>
-        <span class="eyebrow" id="state-eyebrow">Waiting for first publish</span>
-        <h1 id="state-title">No snapshot has been published yet.</h1>
-        <p id="state-body">
-          This is the control plane for OpenClaw Headquarters. It renders a
-          projection that the factory machine publishes outbound.
-        </p>
-
-        <dl class="shell-facts">
-          <div>
-            <dt>Mirror</dt>
-            <dd id="fact-mirror">none published</dd>
-          </div>
-          <div>
-            <dt>Contract</dt>
-            <dd>hq.mirror/1</dd>
-          </div>
-          <div>
-            <dt>Publisher</dt>
-            <dd id="fact-publisher">not connected</dd>
-          </div>
-        </dl>
-
-        <p class="shell-note">
-          Headquarters itself runs on the factory machine and stays reachable
-          there. This view is a mirror and holds no control over it.
-        </p>
+        <span class="eyebrow" id="state-eyebrow"></span>
+        <h1 id="state-title"></h1>
+        <p id="state-body"></p>
       </section>
+
+      <!-- The mirror itself. -->
+      <div id="mirror" hidden>
+        <div class="stale-banner" id="stale-banner" hidden></div>
+        <section class="stat-row" id="stats"></section>
+        <div class="panel-grid" id="panels"></div>
+      </div>
     </main>
 
     <script type="module" src="/app.js"></script>

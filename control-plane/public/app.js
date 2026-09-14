@@ -1,11 +1,23 @@
-// The control plane's client. Two views: sign in, and the mirror's state.
+// The control plane's client: sign in, then draw the mirror.
 //
-// The server is the authority on both. Nothing here decides whether a viewer is
-// allowed in — it asks /api/session and draws what it is told. A client that
-// could grant itself the view would be a gate in the wrong place (DC-2026-004
-// puts the check at one boundary, and that boundary is on the server).
+// The server is the authority on access. Nothing here decides whether a viewer
+// is allowed in — it asks /api/session and draws what it is told, because a
+// client that could grant itself the view would put the gate in the wrong place
+// (DC-2026-004 puts the check at one boundary, and that boundary is on the
+// server).
+//
+// Rendering logic lives in render.mjs as pure functions over the snapshot, so
+// the part that can actually be wrong is testable without a browser. This file
+// is the DOM and the fetching.
 
-const TIMEOUT_MS = 8000;
+import { freshness, panelsFor, statsFrom } from "/render.mjs";
+
+const TIMEOUT_MS = 12_000;
+
+// Slower than the 30s publish interval on purpose: a viewer does not need to
+// see every publish, and a tab left open overnight should not spend the day
+// polling.
+const POLL_MS = 60_000;
 
 const els = {
   signin: document.getElementById("signin"),
@@ -14,52 +26,113 @@ const els = {
   signinSubmit: document.getElementById("signin-submit"),
   password: document.getElementById("password"),
   signOut: document.getElementById("sign-out"),
+  refresh: document.getElementById("refresh"),
+  freshness: document.getElementById("freshness"),
   state: document.getElementById("state"),
   eyebrow: document.getElementById("state-eyebrow"),
   title: document.getElementById("state-title"),
   body: document.getElementById("state-body"),
-  mirror: document.getElementById("fact-mirror"),
-  publisher: document.getElementById("fact-publisher"),
+  mirror: document.getElementById("mirror"),
+  staleBanner: document.getElementById("stale-banner"),
+  stats: document.getElementById("stats"),
+  panels: document.getElementById("panels"),
 };
+
+let timer = null;
 
 async function request(url, options = {}) {
   const abort = new AbortController();
-  const timer = setTimeout(() => abort.abort(), TIMEOUT_MS);
+  const id = setTimeout(() => abort.abort(), TIMEOUT_MS);
   try {
     return await fetch(url, { ...options, signal: abort.signal, cache: "no-store" });
   } finally {
-    clearTimeout(timer);
+    clearTimeout(id);
   }
 }
 
+function view(which) {
+  els.signin.hidden = which !== "signin";
+  els.state.hidden = which !== "state";
+  els.mirror.hidden = which !== "mirror";
+  const authed = which !== "signin";
+  els.signOut.hidden = !authed;
+  els.refresh.hidden = which !== "mirror";
+  els.freshness.hidden = which !== "mirror";
+}
+
 function showSignIn(message) {
-  els.signin.hidden = false;
-  els.state.hidden = true;
-  els.signOut.hidden = true;
+  stopPolling();
+  view("signin");
   els.signinError.hidden = !message;
   if (message) els.signinError.textContent = message;
   els.password.focus();
 }
 
-function renderState({ eyebrow, title, body, mirror, publisher, stale = false }) {
-  els.signin.hidden = true;
-  els.state.hidden = false;
-  els.signOut.hidden = false;
+function showState({ eyebrow, title, body }) {
+  view("state");
   els.eyebrow.textContent = eyebrow;
   els.title.textContent = title;
   els.body.textContent = body;
-  els.mirror.textContent = mirror;
-  els.publisher.textContent = publisher;
-  els.state.classList.toggle("is-stale", stale);
 }
 
-function age(publishedAt) {
-  const then = Date.parse(publishedAt);
-  if (Number.isNaN(then)) return "unknown age";
-  const seconds = Math.max(0, Math.round((Date.now() - then) / 1000));
-  if (seconds < 90) return `${seconds}s ago`;
-  if (seconds < 5400) return `${Math.round(seconds / 60)}m ago`;
-  return `${Math.round(seconds / 3600)}h ago`;
+// textContent everywhere, never innerHTML. The snapshot is company data that
+// passed through a redactor, not a sanitiser — it is not HTML and must never be
+// parsed as any.
+function el(tag, className, textContent) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (textContent !== undefined) node.textContent = textContent;
+  return node;
+}
+
+function renderStats(stats) {
+  els.stats.replaceChildren();
+  for (const stat of stats) {
+    const card = el("div", stat.attention ? "stat attention" : "stat");
+    card.append(el("strong", null, stat.value), el("span", null, stat.label));
+    if (stat.sub) card.append(el("small", null, stat.sub));
+    els.stats.append(card);
+  }
+}
+
+function renderPanels(panels) {
+  els.panels.replaceChildren();
+  for (const panel of panels) {
+    const card = el("section", panel.unknown ? "panel unknown" : "panel");
+    card.append(el("h2", null, panel.title));
+    if (panel.note) card.append(el("p", "panel-note", panel.note));
+
+    for (const row of panel.rows) {
+      const line = el("div", `row tone-${row.tone || "muted"}`);
+      const main = el("div", "row-main");
+      main.append(el("strong", null, row.primary));
+      if (row.secondary) main.append(el("span", null, row.secondary));
+      line.append(main);
+      if (row.meta) line.append(el("em", "row-meta", row.meta));
+      card.append(line);
+    }
+
+    els.panels.append(card);
+  }
+}
+
+function renderMirror(snapshot) {
+  const age = freshness(snapshot?.publishedAt);
+  view("mirror");
+
+  els.freshness.textContent = `published ${age.label}`;
+  els.freshness.className = age.stale ? "freshness stale" : "freshness";
+
+  // Rule 2: never let a number read as live when it is not.
+  els.staleBanner.hidden = !age.stale;
+  if (age.stale) {
+    els.staleBanner.textContent = age.unknown
+      ? "This snapshot does not say when it was published. Treat everything below as of unknown age."
+      : `This snapshot is ${age.label}. The factory machine may be offline, or the publisher stopped — everything below is as of then, not now.`;
+  }
+
+  renderStats(statsFrom(snapshot?.panels));
+  renderPanels(panelsFor(snapshot));
 }
 
 async function loadMirror() {
@@ -67,74 +140,63 @@ async function loadMirror() {
   try {
     response = await request("/api/mirror");
   } catch {
-    renderState({
+    showState({
       eyebrow: "Offline",
       title: "The control plane could not be reached.",
-      body:
-        "Headquarters itself is unaffected — it runs on the factory machine " +
-        "and this view is a mirror of it.",
-      mirror: "unreachable",
-      publisher: "unknown",
-      stale: true,
+      body: "Headquarters itself is unaffected — it runs on the factory machine and this view is a mirror of it.",
     });
     return;
   }
 
-  if (response.status === 401) {
-    showSignIn("That session has expired. Sign in again.");
-    return;
-  }
+  if (response.status === 401) return showSignIn("That session has expired. Sign in again.");
 
   if (response.status === 404) {
-    renderState({
+    return showState({
       eyebrow: "Waiting for first publish",
       title: "No snapshot has been published yet.",
-      body:
-        "The control plane is reachable and the store is empty. The factory " +
-        "machine has not published a projection yet.",
-      mirror: "none published",
-      publisher: "not connected",
+      body: "The control plane is reachable and the store is empty. The factory machine has not published a projection yet.",
     });
-    return;
   }
 
   if (!response.ok) {
-    renderState({
+    return showState({
       eyebrow: "Store unreachable",
       title: "The snapshot store did not answer.",
       body: `The store responded with ${response.status}. This view is a mirror; the factory is unaffected.`,
-      mirror: `error ${response.status}`,
-      publisher: "unknown",
-      stale: true,
     });
-    return;
   }
 
   let snapshot;
   try {
     snapshot = await response.json();
   } catch {
-    renderState({
-      eyebrow: "Store unreachable",
-      title: "The snapshot store returned something unreadable.",
+    return showState({
+      eyebrow: "Unreadable",
+      title: "The snapshot could not be read.",
       body: "Treat this view as stale until the next publish succeeds.",
-      mirror: "unreadable",
-      publisher: "unknown",
-      stale: true,
     });
-    return;
   }
 
-  // A snapshot exists but nothing renders it until node #189.
-  renderState({
-    eyebrow: "Snapshot received",
-    title: "A projection is published, and this view cannot render it yet.",
-    body:
-      "The mirror renderer arrives with campaign node #189. Until then the " +
-      "snapshot is stored and reachable but not displayed.",
-    mirror: snapshot?.publishedAt ? age(snapshot.publishedAt) : "published",
-    publisher: snapshot?.publisher ? String(snapshot.publisher) : "unnamed",
-  });
+  try {
+    renderMirror(snapshot);
+  } catch (error) {
+    // A whole-page render failure still has to say something true.
+    showState({
+      eyebrow: "Render failed",
+      title: "This snapshot could not be displayed.",
+      body: `${String(error?.message || error).slice(0, 160)} — the data is stored and intact; only this view failed.`,
+    });
+  }
+}
+
+function startPolling() {
+  stopPolling();
+  timer = setInterval(loadMirror, POLL_MS);
+}
+
+function stopPolling() {
+  if (timer) clearInterval(timer);
+  timer = null;
 }
 
 els.signinForm.addEventListener("submit", async (event) => {
@@ -150,6 +212,7 @@ els.signinForm.addEventListener("submit", async (event) => {
     if (response.ok) {
       els.password.value = "";
       await loadMirror();
+      startPolling();
       return;
     }
     showSignIn(
@@ -168,11 +231,13 @@ els.signOut.addEventListener("click", async () => {
   try {
     await request("/api/session", { method: "DELETE" });
   } catch {
-    // Clearing the cookie server-side is best effort; the view resets either
-    // way, and an expired or orphaned cookie grants nothing on its own.
+    // Best effort: the view resets either way, and an orphaned cookie grants
+    // nothing on its own.
   }
   showSignIn();
 });
+
+els.refresh.addEventListener("click", () => loadMirror());
 
 async function main() {
   try {
@@ -180,10 +245,11 @@ async function main() {
     const { authenticated } = await response.json();
     if (authenticated) {
       await loadMirror();
+      startPolling();
       return;
     }
   } catch {
-    // Fall through to the sign-in view: unknown is never treated as allowed.
+    // Unknown is never treated as allowed.
   }
   showSignIn();
 }
