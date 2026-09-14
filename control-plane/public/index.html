@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OpenClaw Startup HQ</title>
+    <meta name="robots" content="noindex, nofollow" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark"></span>
+        <div>
+          <div class="brand-title">OpenClaw Startup HQ</div>
+          <div class="brand-sub">Control plane</div>
+        </div>
+      </div>
+    </header>
+
+    <main class="page">
+      <section class="shell-state" id="state">
+        <span class="eyebrow" id="state-eyebrow">Waiting for first publish</span>
+        <h1 id="state-title">No snapshot has been published yet.</h1>
+        <p id="state-body">
+          This is the control plane for OpenClaw Headquarters. It renders a
+          projection that the factory machine publishes outbound. Nothing has
+          arrived yet, so there is nothing to show — this page is not broken,
+          and it is not hiding an error.
+        </p>
+
+        <dl class="shell-facts">
+          <div>
+            <dt>Mirror</dt>
+            <dd id="fact-mirror">none published</dd>
+          </div>
+          <div>
+            <dt>Contract</dt>
+            <dd>hq.mirror/1</dd>
+          </div>
+          <div>
+            <dt>Publisher</dt>
+            <dd id="fact-publisher">not connected</dd>
+          </div>
+        </dl>
+
+        <p class="shell-note">
+          Headquarters itself runs on the factory machine and stays reachable
+          there. This deployment holds no company data and no credential.
+        </p>
+      </section>
+    </main>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
