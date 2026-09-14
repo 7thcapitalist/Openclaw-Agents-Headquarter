@@ -250,6 +250,38 @@ async function runNode({ hqRoot, objectivePath, nodeId, execute, agentIds, maxAt
 
 // ── integration node ─────────────────────────────────────────────────────────
 
+// What the integration node should become when its runner returns.
+//
+// Pure, and exported, because the inline version of this produced a node with
+// `status: "blocked", blocker: null` — blocked for no stated cause. There is
+// then nothing for the founder to read, nothing for classifyBlocker to
+// classify, and nothing for the retry sweep to decide on; the objective simply
+// stops with an empty explanation. Observed on obj-c58897c0 after its
+// orchestrator was killed mid-dispatch by a kernel OOM.
+//
+// Two rules, both already honoured by the build-node path above, which is why
+// build nodes never showed this and integration did:
+//
+//   1. A task that is merely WAITING is not blocked. runToTerminal returns as
+//      soon as the status stops being "active", and a claimed dispatch whose
+//      result has not landed yet comes back `waiting` with the task perfectly
+//      healthy. Recording that as blocked stops the objective on work that is
+//      still in flight.
+//   2. Never block without a reason. If the task recorded no blocker, say what
+//      the runner actually did instead of writing null.
+export function integrationOutcome({ resp, state, now = new Date().toISOString() }) {
+  if (resp?.waiting) return { status: "running", blocker: null, waiting: true };
+  if (resp?.status === "merge-ready") return { status: GATE_SATISFIED, blocker: null, waiting: false };
+  const blocker = state?.blocker || {
+    stage: state?.currentStage || "builder",
+    outcome: "fail",
+    summary: resp?.blocker?.summary
+      || `the integration runner stopped at ${state?.currentStage || "an unknown stage"} with status "${resp?.status || "unknown"}" and the task recorded no blocker`,
+    at: now,
+  };
+  return { status: "blocked", blocker, waiting: false };
+}
+
 async function runIntegration({ hqRoot, objectivePath, execute, agentIds, maxAttemptsPerStage, concurrentGroups, stateRoot, publish }) {
   const obj = readObjState(objectivePath);
   const integ = obj.integration;
@@ -347,15 +379,20 @@ async function runIntegration({ hqRoot, objectivePath, execute, agentIds, maxAtt
   }
 
   const state = readState(statePath);
-  let blocker = resp.status === "merge-ready" ? null : (state.blocker || null);
+  const outcome = integrationOutcome({ resp, state });
+  if (outcome.waiting) {
+    patchNode(objectivePath, integ.id, { status: "running", blocker: null }, { type: "node-waiting-for-delegate" });
+    return resp;
+  }
+  let blocker = outcome.blocker;
   if (blocker && isInfraBlocker(blocker)) blocker = asInfraBlocker(blocker);
   patchNode(objectivePath, integ.id, {
     mergeLog,
-    status: resp.status === "merge-ready" ? GATE_SATISFIED : "blocked",
+    status: outcome.status,
     finishedAt: new Date().toISOString(),
     githubPublish: state.githubPublish || null,
     blocker,
-  }, { type: resp.status === "merge-ready" ? "integration-gate-satisfied" : "integration-blocked" });
+  }, { type: outcome.status === GATE_SATISFIED ? "integration-gate-satisfied" : "integration-blocked", detail: blocker?.summary });
   return resp;
 }
 
