@@ -11,7 +11,42 @@
 // would route around the viewer gate entirely. Verified against the live store
 // — an anonymous GET of the exact blob URL returns 403.
 
-import { head, put } from "@vercel/blob";
+// Loaded on demand rather than at module scope.
+//
+// A static `import { head, put } from "@vercel/blob"` made the whole package a
+// prerequisite for merely IMPORTING a route. control-plane/ carries its own
+// package.json, its node_modules is gitignored, and nothing in the repository
+// installs it — `npm run setup` covers dashboard/backend only. So in any fresh
+// checkout, which is exactly what a factory agent worktree is, importing
+// api/mirror.mjs threw ERR_MODULE_NOT_FOUND and took TEN tests down with it,
+// including every auth guard on this public endpoint: "an unauthenticated read
+// is refused", "a wrong write credential is refused", "no response body ever
+// contains a credential".
+//
+// Those tests did not fail, which would have been survivable — they never ran.
+// A missing dependency and broken authentication are indistinguishable in that
+// state, on the one surface of this system that faces the internet.
+//
+// Nothing here needs the package until a blob call actually happens, and
+// token() already fails closed before that point, so the import moves to the
+// call sites and the routes stay importable anywhere.
+let blobModule;
+async function blob() {
+  if (!blobModule) {
+    try {
+      blobModule = await import("@vercel/blob");
+    } catch (error) {
+      // Fail closed, like a missing token: `unconfigured` is what mirror.mjs
+      // turns into a 503. A store we cannot reach must never read as an empty
+      // mirror or an open one.
+      const missing = new Error("@vercel/blob is not installed — run `npm install` in control-plane/");
+      missing.code = "unconfigured";
+      missing.cause = error;
+      throw missing;
+    }
+  }
+  return blobModule;
+}
 
 // Fixed pathname, overwritten in place. A random suffix would leave the newest
 // snapshot unfindable without an index, and an index is a second thing to keep
@@ -43,6 +78,10 @@ export function isNotFound(error) {
 }
 
 export async function writeSnapshot(snapshot) {
+  // Before the package load, so an unconfigured deployment still reports a
+  // missing token rather than a missing module.
+  const authorization = token();
+  const { put } = await blob();
   const body = JSON.stringify(snapshot);
   const result = await put(PATHNAME, body, {
     access: "private",
@@ -52,15 +91,17 @@ export async function writeSnapshot(snapshot) {
     // The mirror must never be served from an edge cache: a viewer reading a
     // cached copy would be told an age that is not the snapshot's own.
     cacheControlMaxAge: 0,
-    token: token(),
+    token: authorization,
   });
   return { pathname: result.pathname, size: body.length };
 }
 
 export async function readSnapshot() {
+  const authorization = token();
+  const { head } = await blob();
   let meta;
   try {
-    meta = await head(PATHNAME, { token: token() });
+    meta = await head(PATHNAME, { token: authorization });
   } catch (error) {
     // No snapshot yet is an ordinary state, not a failure — it is what the
     // control plane shows until the publisher first runs.
@@ -85,7 +126,7 @@ export async function readSnapshot() {
   // A private blob requires the token on the read as well; the URL alone is
   // not a capability.
   const response = await fetch(meta.downloadUrl || meta.url, {
-    headers: { authorization: `Bearer ${token()}` },
+    headers: { authorization: `Bearer ${authorization}` },
     cache: "no-store",
   });
   if (response.status === 404) return null;
