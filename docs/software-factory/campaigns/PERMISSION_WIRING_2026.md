@@ -56,10 +56,10 @@ audited by nothing, and asked about nowhere:
 | 0 | this one | Campaign tracker | None |
 | 1a | #209 | Control-plane routes stay importable without `npm install` there | None |
 | 1b | #208 | The suite installs what it needs, and refuses to start when a silent-skip workspace is missing | 1a |
-| 2 | | Founder-authority tests stop reading live machine state | None |
-| 3 | | Wire `task.dispatch` and `github.open-pr` | 1, 2 |
-| 4 | | Wire `objective.run` and `objective.recover` | 1, 2 |
-| 5 | | Wire `interaction.post` and `wakeup.enqueue` | 1, 2 |
+| 2 | #212 | Founder-authority tests stop reading live machine state | None |
+| 3 | | The shared capability-check seam, plus `task.dispatch` and `github.open-pr` | 1, 2 |
+| 4 | | Wire `objective.run` and `objective.recover` | 3 |
+| 5 | | Wire `interaction.post` and `wakeup.enqueue` | 3 |
 
 Positions 1 and 2 are independent of each other and of everything else; they
 come first because positions 3–5 claim "the suite is green" as their
@@ -73,8 +73,14 @@ dependency nothing is waiting for would take back what 1a bought, which is a
 factory agent's fresh worktree being able to run the control plane's auth
 tests at all.
 
-Positions 3, 4 and 5 are independent of each other and touch disjoint files, so
-they may merge in any order among themselves once 1 and 2 have landed.
+Position 3 carries the seam every later position calls. Each check is the same
+ten lines — read the registry, fail loudly if it is unreadable, return early
+when enforcement is off, then `enforce` — and six hand-copied versions of a
+policy decision is how one of them quietly ends up missing the early return.
+Positions 4 and 5 therefore depend on 3 rather than duplicating it, as this
+campaign's own rule against copying from an unmerged predecessor requires. They
+are independent of each other and touch disjoint files, so they may merge in
+either order once 3 has landed.
 
 ## Relationship to #205
 
