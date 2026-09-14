@@ -30,6 +30,18 @@ function token() {
   return value;
 }
 
+// "Not found" reaches us in more than one shape depending on how the SDK wraps
+// the store's response, so this checks the name, the status and the message
+// rather than trusting one of them. Deliberately narrow otherwise: anything
+// that is not recognisably a miss must keep throwing.
+export function isNotFound(error) {
+  if (!error) return false;
+  if (error.status === 404 || error.statusCode === 404) return true;
+  const name = String(error.name || "");
+  if (name === "BlobNotFoundError" || name.includes("NotFound")) return true;
+  return /\b(not found|no such (?:blob|key|object)|does not exist)\b/i.test(String(error.message || ""));
+}
+
 export async function writeSnapshot(snapshot) {
   const body = JSON.stringify(snapshot);
   const result = await put(PATHNAME, body, {
@@ -52,7 +64,20 @@ export async function readSnapshot() {
   } catch (error) {
     // No snapshot yet is an ordinary state, not a failure — it is what the
     // control plane shows until the publisher first runs.
-    if (error?.name === "BlobNotFoundError" || error?.status === 404) return null;
+    //
+    // Matching on `error.name === "BlobNotFoundError"` alone was not enough:
+    // against the live store an empty mirror produced a 502 "mirror
+    // unavailable" instead of the empty state, because the thrown error did not
+    // carry that exact name. The empty state is the FIRST thing a new
+    // deployment shows, so getting it wrong means the control plane looks
+    // broken on day one and correct ever after — the hardest kind of bug to
+    // notice later.
+    //
+    // So the match is widened to every shape "not found" arrives in, and only
+    // that. A credential or transport failure still throws, because reporting
+    // "nothing published yet" for an unreachable store would be a lie that
+    // looks like calm.
+    if (isNotFound(error)) return null;
     throw error;
   }
   if (!meta?.downloadUrl && !meta?.url) return null;
