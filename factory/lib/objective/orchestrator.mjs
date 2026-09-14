@@ -33,7 +33,7 @@ class MergeConflict extends Error {
   constructor(nodeId, detail) { super(`merge conflict integrating ${nodeId}`); this.nodeId = nodeId; this.detail = detail; this.fatal = true; }
 }
 
-const INFRA_FAILURE_RE = /could not start the cli|rate.?limit|cooldown|all models failed|did not write its result file|429|quota|usage limit|provider .* unavailable|ECONNREFUSED|ETIMEDOUT/i;
+const INFRA_FAILURE_RE = /could not start the cli|rate.?limit|cooldown|all models failed|did not write its result file|429|quota|usage limit|provider .* unavailable|ECONNREFUSED|ETIMEDOUT|agent call connection closed|gateway[^.;]{0,60}(?:connection closed|not reachable|unreachable)/i;
 // Third of the three layers that must agree (see failure-classification.mjs).
 // The missing-result wrapper matches INFRA_FAILURE_RE regardless of the real
 // cause, so a conflict wrapped in it would be restated as "could not run ...

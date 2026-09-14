@@ -54,6 +54,15 @@ const INFRA = new RegExp([
   "auth profile\\s+\\S*\\s*(?:missing|unavailable|not found|indeterminate|expired|invalid)",
   "orphaned\\s+(?:session|run|dispatch|worktree|process|lease)",
   "host restart",
+  // The OpenClaw Gateway dropping a call mid-turn, or being down when one is
+  // placed. Anchored to the gateway/transport itself, never a bare "connection
+  // closed" — a review finding about the product's own socket handling must
+  // stay PROJECT_ERROR. Without these, "reviewer agent could not run: Gateway
+  // agent call connection closed" fell through every alternative above and was
+  // classified PROJECT_ERROR: an environment crash blamed on the branch.
+  "agent call connection closed",
+  "gateway[^.;]{0,60}(?:connection closed|not reachable|unreachable|is down)",
+  "(?:not reachable|unreachable) at wss?://",
 ].join("|"), "i");
 
 const FACTORY = /factory|orchestrator|workflow|state\.json|dispatch|protocol|invalid .*result|unsupported .*version|cannot advance|expected stage/i;
