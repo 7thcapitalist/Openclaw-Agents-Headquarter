@@ -49,6 +49,39 @@ for the founder to review afterward. This is not a blocker. The agent records a
 short question, two options plus `Other`, and a recommendation. Headquarters
 shows it only after the task reaches `merge-ready` or `merged`.
 
+### Declaring the impact — required to reach the founder
+
+A deferred decision reaches the Founder Inbox **only** if it declares an
+`impact` naming which founder-owned concern it carries. Use one of the trigger
+ids from `factory/decision-protocol.json`:
+
+`privacy` · `spend` · `public` · `product-direction` · `scope` ·
+`irreversible` · `security-posture` · `legal`
+
+```json
+{ "outcome": "decision-deferred",
+  "decision": {
+    "question": "Should the export include the user's raw health entries?",
+    "impact": "privacy",
+    "options": ["A. Aggregates only (recommended)", "B. Raw entries"],
+    "recommendation": "A — raw entries widen the data we retain." } }
+```
+
+A decision with **no** `impact`, or one naming something not in that list, is
+still recorded on the task and still appears in the completion report under
+"Choices made along the way" — but the founder is not paged, because
+`AGENTS.md` already assigns that call to you:
+
+> Reversible implementation details should be decided autonomously. Escalate
+> only strategic, costly, privacy-sensitive, destructive, or hard-to-reverse
+> decisions.
+
+Silence means *decide it yourself*. Escalation is a claim on the founder's
+attention and has to be justified, not assumed. If you are weighing a
+reversible implementation detail — which screen ships read-only this milestone,
+which of two equivalent libraries, how a component is factored — make the call,
+record it, and keep going.
+
 ## ask (rare)
 
 The task cannot make *any* safe progress and one short factual clarification

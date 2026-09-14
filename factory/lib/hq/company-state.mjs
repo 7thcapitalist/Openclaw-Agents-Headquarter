@@ -289,7 +289,7 @@ function deriveTaskDecisions(tasks) {
   // takes it out of the published inbox the same way it leaves the dashboard's.
   const deferred = tasks
     .filter((t) => ["merge-ready", "merged"].includes(t.status) && Array.isArray(t.deferredDecisions))
-    .flatMap((t) => t.deferredDecisions.filter((d) => !d.founderResponse).map((d) => ({
+    .flatMap((t) => t.deferredDecisions.filter((d) => !d.founderResponse && d.escalate === true).map((d) => ({
       kind: "post-task-decision",
       id: `${t.id}:${d.id}`,
       taskId: t.id,

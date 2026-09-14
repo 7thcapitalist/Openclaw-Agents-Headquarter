@@ -994,7 +994,7 @@ export function buildFounderOverview(root, hqProjects = []) {
     // card is rebuilt on the next poll and the founder answers it forever.
     ...tasks
       .filter((task) => ["merge-ready", "merged"].includes(task.status) && Array.isArray(task.deferredDecisions))
-      .flatMap((task) => task.deferredDecisions.filter((decision) => !decision.founderResponse).map((decision) => ({
+      .flatMap((task) => task.deferredDecisions.filter(isFounderDeferredDecision).map((decision) => ({
         id: `${task.id}:${decision.id}`,
         taskId: task.id,
         project: task.project,
@@ -1160,6 +1160,16 @@ function buildJobInbox(jobs, covered = { taskIds: new Set(), objectiveIds: new S
 // the founder: high-risk approvals, decisions a stage raised, terminally
 // blocked tasks, and any unanswered question. It is a projection of task state
 // + the control file; it adds no new state and no new workflow.
+// A deferred decision reaches the founder only when it is unanswered AND the
+// stage declared a founder-owned impact for it (hq/escalation-gate.mjs writes
+// `escalate`). A decision carrying no verdict predates the gate, and the gate's
+// default is the safe one: an unclassified question is the agent's own call.
+// Nothing is lost either way — the decision stays on the task and in the
+// completion report.
+function isFounderDeferredDecision(decision) {
+  return !decision.founderResponse && decision.escalate === true;
+}
+
 function buildFounderInbox({ tasks, decisions, questions, objectives = [], maxAutoRetries = 3 }) {
   const items = [];
   const byId = new Map(tasks.map((t) => [t.id, t]));

@@ -3,6 +3,7 @@ import { execFileSync } from "child_process";
 import { join, resolve } from "path";
 import { createHash, randomUUID, sign as signPayload, verify as verifySignature } from "crypto";
 import { classifyBlocker } from "./hq/blocker-class.mjs";
+import { escalationVerdict } from "./hq/escalation-gate.mjs";
 import { classifyFailure, isRecoverableFailure, recoveryStrategy, repairTargetFor } from "./failure-classification.mjs";
 import { mutateTransactionalState, readTransactionalState } from "./store/transactional-json.mjs";
 import { authorityForVerification } from "./founder-authority.mjs";
@@ -264,7 +265,18 @@ export function completeStage(state, { stage, actor, outcome, summary, evidence 
     const decision = normalizeDeferredDecision(deferredDecision, stage, now);
     next.stages[stage].deferredDecision = decision;
     next.deferredDecisions = [...(next.deferredDecisions || []), decision];
-    next.events.push({ at: now, type: "stage-decision-deferred", stage, actor, decisionId: decision.id });
+    next.events.push({
+      at: now,
+      type: "stage-decision-deferred",
+      stage,
+      actor,
+      decisionId: decision.id,
+      // An unescalated decision is not a hidden one: the event log says the
+      // stage asked, and says why the founder was not brought in.
+      escalated: decision.escalate,
+      impact: decision.impact,
+      reason: decision.escalationReason,
+    });
   }
 
   const index = STAGES.indexOf(stage);
@@ -298,6 +310,10 @@ function normalizeDeferredDecision(input, stage, now) {
   const options = Array.isArray(input.options) ? input.options.map((x) => String(x).trim()).filter(Boolean).slice(0, 3) : [];
   if (options.length < 2) throw new Error("A deferred decision requires at least two options.");
   if (!options.some((option) => /^other\b/i.test(option))) options.push("Other: describe your preference");
+  // Whether this reaches the founder at all. Recorded on the decision rather
+  // than decided by whoever renders it, so the task's own file says why the
+  // founder was or was not asked. See hq/escalation-gate.mjs.
+  const verdict = escalationVerdict(input);
   return {
     id: String(input.id || `${stage}-${Date.parse(now) || Date.now()}`),
     stage,
@@ -306,6 +322,9 @@ function normalizeDeferredDecision(input, stage, now) {
     options,
     recommendation: String(input.recommendation || "").trim(),
     requestedAt: now,
+    impact: verdict.impact,
+    escalate: verdict.escalate,
+    escalationReason: verdict.reason,
   };
 }
 
