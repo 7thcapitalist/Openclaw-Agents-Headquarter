@@ -1462,6 +1462,50 @@ export function finishFounderJob(root, job, {
   }));
 }
 
+// A decomposed objective keeps TWO records of the same node: the task state at
+// tasks/<id>/state.json, and the node inside objectives/<obj>/objective-state.json.
+//
+// resolveFounderDecision resumed the task and left the node alone. So answering
+// a decision on an objective node put the task back to `active` while the
+// objective went on reporting `blocked`, carrying the very blocker that had just
+// been answered. runObjective only runs READY nodes, and a blocked node is never
+// ready, so the work was never picked up again: the founder answered, the
+// dashboard confirmed the answer was recorded, and the run stayed dead.
+//
+// That is how obj-c58897c0 sat for 1d20h AFTER its merge conflict was resolved,
+// and it is not a one-off — the same divergence stalled that objective a second
+// time the same week. Answering a question the team is waiting on has to
+// actually release the team.
+export function clearObjectiveNodeAfterDecision(root, taskId, { now = new Date().toISOString() } = {}) {
+  const objectiveId = String(taskId || "").match(/^(obj-[0-9a-f]{8})-/)?.[1] || null;
+  if (!objectiveId) return null; // a standalone task has no wrapper to mirror
+  const objectivePath = findObjectiveStatePath(root, objectiveId);
+  if (!objectivePath) return null;
+
+  let objective;
+  try { objective = readObjState(objectivePath); } catch { return null; }
+  const node = objective.nodes?.[taskId] || (objective.integration?.id === taskId ? objective.integration : null);
+  // Only a blocked node needs releasing. A node that is already pending or
+  // running belongs to a live runner, and clearing it would race that runner.
+  if (!node || (!node.blocker && node.status !== "blocked")) return null;
+
+  mutateTransactionalState(objectivePath, {
+    commandId: `founder-decision-node:${taskId}:${randomUUID()}`,
+    mutate: (state) => {
+      const next = structuredClone(state);
+      const target = next.nodes?.[taskId] || (next.integration?.id === taskId ? next.integration : null);
+      if (!target) return state;
+      target.status = "pending";
+      target.blocker = null;
+      target.finishedAt = null;
+      next.events.push({ at: now, type: "objective-node-retry", node: taskId, reason: "founder-decision-resolved" });
+      next.updatedAt = now;
+      return next;
+    },
+  });
+  return { objectiveId, objectivePath, nodeId: taskId };
+}
+
 export function resolveFounderDecision({ root, hqRoot, statePath, direction }) {
   const path = resolve(statePath);
   const allowedRoot = resolve(factoryRoot(root));
@@ -1497,5 +1541,11 @@ export function resolveFounderDecision({ root, hqRoot, statePath, direction }) {
     },
   });
   if (next.status === "active") writeHandoff({ hqRoot, statePath: path, state: next });
-  return taskView(path);
+  // Release the objective wrapper in the same breath. Without this the answer
+  // lands on the task and the objective stays blocked on the answered question.
+  const released = next.status === "active" ? clearObjectiveNodeAfterDecision(root, next.task?.id) : null;
+  const view = taskView(path);
+  // NOT `objective`: taskView already uses that key for the task's outcome
+  // text, which the dashboard renders as a string.
+  return released ? { ...view, objectiveResume: released } : view;
 }
