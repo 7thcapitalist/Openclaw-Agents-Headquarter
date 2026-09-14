@@ -24,6 +24,7 @@ import { fileURLToPath } from "url";
 import {
   createFounderApprovalAssertion,
   isAwaitingFounderApproval,
+  isAwaitingFounderDecision,
   readState,
   recordFounderApproval,
   verifyEvidence,
@@ -48,17 +49,33 @@ async function main(args) {
     ? resolve(args["state-root"])
     : join(hqRoot, "dashboard", "backend", "data", "factory");
   let pending = findPending(stateRoot);
-  if (args.task) pending = pending.filter((p) => p.state.task.id === args.task);
+  let decisions = findDecisions(stateRoot);
+  if (args.task) {
+    pending = pending.filter((p) => p.state.task.id === args.task);
+    decisions = decisions.filter((p) => p.state.task.id === args.task);
+  }
 
-  if (!pending.length) {
+  if (!pending.length && !decisions.length) {
     console.log(args.task
-      ? `Nothing to approve: ${args.task} is not waiting for a high-risk approval.`
+      ? `Nothing to approve: ${args.task} is not waiting on you.`
       : "Nothing is waiting for your approval.");
     return;
   }
 
-  console.log(`${pending.length} high-risk ${pending.length === 1 ? "task is" : "tasks are"} waiting for you:\n`);
-  for (const p of pending) printCard(p);
+  if (pending.length) {
+    console.log(`${pending.length} high-risk ${pending.length === 1 ? "task is" : "tasks are"} waiting for you to sign:\n`);
+    for (const p of pending) printCard(p);
+  }
+
+  // A decision cannot be signed — it is answered. Show it here rather than
+  // letting the founder queue read empty while the factory waits on them.
+  if (decisions.length) {
+    console.log(`${decisions.length} ${decisions.length === 1 ? "task is" : "tasks are"} blocked on a decision from you:\n`);
+    for (const p of decisions) printDecisionCard(p);
+    console.log("  Decisions are answered in the dashboard, not signed here.\n");
+  }
+
+  if (!pending.length) return;
 
   if (args.list) return;
 
@@ -78,11 +95,21 @@ async function main(args) {
 // ── discovery ────────────────────────────────────────────────────────────────
 
 function findPending(stateRoot) {
+  return collect(stateRoot, isAwaitingFounderApproval);
+}
+
+// Decisions the factory is blocked on but cannot sign its way out of. Kept as a
+// separate list from findPending so the signature flow never tries to sign one.
+function findDecisions(stateRoot) {
+  return collect(stateRoot, isAwaitingFounderDecision);
+}
+
+function collect(stateRoot, matches) {
   const out = [];
   for (const path of walkStateFiles(stateRoot)) {
     let state;
     try { state = readState(path); } catch { continue; }
-    if (isAwaitingFounderApproval(state)) out.push({ path, state });
+    if (matches(state)) out.push({ path, state });
   }
   return out.sort((a, b) => String(a.state.updatedAt).localeCompare(String(b.state.updatedAt)));
 }
@@ -110,6 +137,17 @@ function printCard({ state }) {
   console.log(`    branch  : ${state.branch}`);
   console.log(`    why you : high-risk work is held here until you sign off — no code has been written yet`);
   console.log(`    after   : ${NEXT_STAGES}`);
+  console.log("");
+}
+
+function printDecisionCard({ state }) {
+  const t = state.task;
+  console.log(`  ${t.id}`);
+  console.log(`    project : ${t.project || basename(state.repo || "")}`);
+  console.log(`    doing   : ${t.outcome}`);
+  console.log(`    stuck at: ${state.blocker?.stage || state.currentStage || "(unknown)"}`);
+  console.log(`    since   : ${state.blocker?.at || state.updatedAt || "(unknown)"}`);
+  console.log(`    asking  : ${short(state.blocker?.summary, 300)}`);
   console.log("");
 }
 
@@ -189,4 +227,4 @@ function parseArgs(argv) {
   return out;
 }
 
-export { findPending, resolveKeyPath, renderEvidence };
+export { findPending, findDecisions, resolveKeyPath, renderEvidence };
