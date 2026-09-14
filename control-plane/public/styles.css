@@ -136,3 +136,61 @@ body {
 .is-stale .eyebrow {
   color: var(--amber);
 }
+
+/* Sign in */
+#signin-form {
+  margin-top: 1.2rem;
+}
+
+.field-label {
+  display: block;
+  margin: 0 0 0.35rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+#password {
+  width: 100%;
+  max-width: 340px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #11151d;
+  color: var(--text);
+  padding: 0.62rem 0.7rem;
+  font: inherit;
+}
+
+.btn-primary {
+  margin-top: 0.9rem;
+  border: 0;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #5585ff, #426be0);
+  color: #fff;
+  padding: 0.62rem 1.1rem;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.btn-primary:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.btn-ghost {
+  margin-left: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  padding: 0.4rem 0.75rem;
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.signin-error {
+  margin: 0.7rem 0 0 !important;
+  color: #fb7185 !important;
+  font-size: 0.8rem !important;
+}

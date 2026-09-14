@@ -16,17 +16,40 @@
           <div class="brand-sub">Control plane</div>
         </div>
       </div>
+      <button type="button" class="btn-ghost" id="sign-out" hidden>Sign out</button>
     </header>
 
     <main class="page">
-      <section class="shell-state" id="state">
+      <!-- Sign in. Shown until the session cookie proves otherwise; the server
+           is the authority, this is only which view to draw. -->
+      <section class="shell-state" id="signin" hidden>
+        <span class="eyebrow">Headquarters</span>
+        <h1>Sign in.</h1>
+        <p>
+          This control plane mirrors company state. It is not public, and it
+          holds no factory controls that the local dashboard does not already
+          have.
+        </p>
+        <form id="signin-form" autocomplete="on">
+          <label class="field-label" for="password">Password</label>
+          <input
+            type="password"
+            id="password"
+            name="password"
+            autocomplete="current-password"
+            required
+          />
+          <p class="signin-error" id="signin-error" hidden></p>
+          <button type="submit" class="btn-primary" id="signin-submit">Sign in</button>
+        </form>
+      </section>
+
+      <section class="shell-state" id="state" hidden>
         <span class="eyebrow" id="state-eyebrow">Waiting for first publish</span>
         <h1 id="state-title">No snapshot has been published yet.</h1>
         <p id="state-body">
           This is the control plane for OpenClaw Headquarters. It renders a
-          projection that the factory machine publishes outbound. Nothing has
-          arrived yet, so there is nothing to show — this page is not broken,
-          and it is not hiding an error.
+          projection that the factory machine publishes outbound.
         </p>
 
         <dl class="shell-facts">
@@ -46,7 +69,7 @@
 
         <p class="shell-note">
           Headquarters itself runs on the factory machine and stays reachable
-          there. This deployment holds no company data and no credential.
+          there. This view is a mirror and holds no control over it.
         </p>
       </section>
     </main>
