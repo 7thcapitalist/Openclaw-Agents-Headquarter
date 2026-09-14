@@ -59,29 +59,36 @@ without merging the two concerns back together.
 | Order | Issue | Node | Depends on | Risk |
 | --- | --- | --- | --- | --- |
 | 1 | #186 | Serve the control-plane app shell | — | low |
-| 2 | #187 | Store the mirror behind an authenticated write endpoint | #186, **DC-2026-004** | high |
+| 2 | #187 | Store the mirror behind an authenticated write endpoint | #186 | high |
 | 3 | #188 | Publish the snapshot outbound from the machine | #187 | medium |
 | 4 | #189 | Render the published mirror as the HQ view | #187 | low |
 | 5 | #190 | Complete the founder intent round trip | #188, #189 | high |
 | 6 | #191 | Retire the Cloudflare tunnel | #190 | medium |
 
-Node 1 carries no company data and no credential, so it can land while
-DC-2026-004 is still open. Node 2 is where company data first reaches a public
-URL, and it is blocked until that card is signed.
+Node 1 carries no company data and no credential. Node 2 is where company data
+first reaches a public URL, which is why the gate below had to be settled first.
 
-## Founder decision this campaign surfaced
+## Founder decision this campaign surfaced — resolved
 
-**DC-2026-004 — who may read the hosted Headquarters view.**
+**DC-2026-004 — who may read the hosted Headquarters view. Option A, 2026-09-13.**
 
 DC-2026-003 settled the network boundary, the data scope, the credential, the
 retention and the rollback. It did not settle viewer authentication. The local
 dashboard is password-protected and session-bound; a `*.vercel.app` URL is
-public by default. The signed data scope — founder inbox, cost totals, goal
-titles, agent scorecards — is the whole company on a public address unless a
-decision says otherwise.
+public by default and its address is guessable from the repository name. The
+signed data scope — founder inbox, cost totals, goal titles, agent scorecards —
+would have been the whole company on a public address.
 
-This was not an oversight to work around silently. It gates node 2 and is
-written up in `decision-cards/DC-2026-004-hq-viewer-auth.md`.
+Resolved as Option A: one shared secret exchanged for a session cookie, the
+model the local dashboard already uses, kept at a single boundary so the later
+swap to GitHub OAuth (Option C) stays contained. The viewing credential is
+distinct from the write credential the machine holds for publishing, and
+rotating either does not force rotating the other. Node 2 implements it and is
+no longer blocked.
+
+Authentication controls who reads the mirror. It does not widen what the mirror
+contains: the data scope is unchanged and `mirror.mjs` is still the only place
+that decides what leaves the machine.
 
 ## Deferred decisions
 

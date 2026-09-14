@@ -1,5 +1,13 @@
 # Decision Required
 
+> **Resolved 2026-09-13 — Option A**, delegated to the recommendation by the
+> founder ("just make sure to push those things the way you think is best")
+> rather than chosen option by option. Recorded that way deliberately: a
+> delegated answer and a deliberated one carry different weight, and the next
+> person to read this should be able to tell which this was. The upgrade path
+> in the recommendation stands — if a second reader ever needs HQ, revisit as
+> Option C rather than adding a second password.
+
 ## Decision
 Who may read the hosted Headquarters view, and how is that enforced?
 
@@ -76,3 +84,28 @@ founder's remote access.
 
 ## Reply format
 `A`, `B`, `C`, or `Other: ...`.
+
+---
+
+## Decisions recorded
+
+### Viewer authentication
+One shared secret held by the control plane, exchanged for a session cookie —
+the model `dashboard/backend/server.mjs` already uses. That secret is a viewing
+credential and is distinct from the write credential the factory machine holds
+for publishing. Rotating either must not require rotating the other, and
+neither may appear in the repository, in an artifact, or in a log.
+
+### Where the check lives
+At one boundary in the control-plane app. The store and the renderer do not
+each carry their own opinion about who may read, so replacing the password with
+GitHub OAuth later is a contained change rather than a rewrite.
+
+### What this does not decide
+Multi-viewer access, per-viewer audit trails, and team accounts. Those arrive
+together with Option C, and none of them is in this campaign's scope.
+
+### Unchanged
+The data scope stays exactly as DC-2026-003 set it. Authentication controls who
+reads the mirror; it does not widen what the mirror contains. `mirror.mjs`
+remains the only place that decides what leaves the machine.
