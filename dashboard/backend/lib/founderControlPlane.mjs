@@ -576,6 +576,9 @@ export async function handleObjectiveRetry({
   }
 
   const { resumed, skipped } = resumeObjectiveNodes({
+    // Threaded so the objective.recover capability can be checked. Falls back
+    // to `root`, which is the HQ root for every dashboard caller.
+    hqRoot: hqRoot || root,
     objectivePath: statePath,
     nodeIds: plan.nodes.map((n) => n.id),
     now: nowISO,
