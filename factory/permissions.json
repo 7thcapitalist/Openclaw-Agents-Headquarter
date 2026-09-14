@@ -1,0 +1,127 @@
+{
+  "version": 1,
+  "_comment": "ACTIVE scoped-permission registry. Mode 'report' computes and audits every decision exactly as 'enforce' would, then allows the work anyway \u2014 the audit log at .openclaw-factory/telemetry/permissions.ndjson answers 'what would enforcement have stopped' without stopping anything. Switch to 'enforce' only after that log is quiet. Deleting this file returns the factory to unenforced. This system can only DENY: it never grants merge, deployment, deletion, secret, billing or publishing authority, and a grant naming one of those is rejected outright. See docs/software-factory/PAPERCLIP_SCOPED_PERMISSIONS.md.",
+  "mode": "report",
+  "grants": [
+    {
+      "actorId": "openclaw-factory",
+      "capability": "task.initialize",
+      "scopeType": "company",
+      "scopeId": "*"
+    },
+    {
+      "actorId": "backend-builder",
+      "capability": "task.initialize",
+      "scopeType": "company",
+      "scopeId": "*"
+    },
+    {
+      "actorId": "backend-builder",
+      "capability": "task.dispatch",
+      "scopeType": "company",
+      "scopeId": "*"
+    },
+    {
+      "actorId": "backend-builder",
+      "capability": "github.open-pr",
+      "scopeType": "project",
+      "scopeId": "openclaw-factory"
+    },
+    {
+      "actorId": "frontend-builder",
+      "capability": "task.initialize",
+      "scopeType": "company",
+      "scopeId": "*"
+    },
+    {
+      "actorId": "frontend-builder",
+      "capability": "task.dispatch",
+      "scopeType": "company",
+      "scopeId": "*"
+    },
+    {
+      "actorId": "architect",
+      "capability": "objective.run",
+      "scopeType": "company",
+      "scopeId": "*"
+    },
+    {
+      "actorId": "architect",
+      "capability": "objective.recover",
+      "scopeType": "company",
+      "scopeId": "*"
+    },
+    {
+      "actorId": "reviewer",
+      "capability": "task.dispatch",
+      "scopeType": "company",
+      "scopeId": "*"
+    },
+    {
+      "actorId": "qa",
+      "capability": "task.dispatch",
+      "scopeType": "company",
+      "scopeId": "*"
+    },
+    {
+      "actorId": "security",
+      "capability": "task.dispatch",
+      "scopeType": "company",
+      "scopeId": "*"
+    },
+    {
+      "actorId": "release",
+      "capability": "task.dispatch",
+      "scopeType": "company",
+      "scopeId": "*"
+    },
+    {
+      "actorId": "openclaw-wakeup-worker",
+      "capability": "wakeup.enqueue",
+      "scopeType": "company",
+      "scopeId": "*"
+    },
+    {
+      "actorId": "product",
+      "capability": "task.dispatch",
+      "scopeType": "company",
+      "scopeId": "*"
+    },
+    {
+      "actorId": "main",
+      "capability": "task.dispatch",
+      "scopeType": "company",
+      "scopeId": "*"
+    },
+    {
+      "actorId": "learning",
+      "capability": "task.dispatch",
+      "scopeType": "company",
+      "scopeId": "*"
+    },
+    {
+      "actorId": "research",
+      "capability": "task.dispatch",
+      "scopeType": "company",
+      "scopeId": "*"
+    },
+    {
+      "actorId": "architect",
+      "capability": "task.initialize",
+      "scopeType": "company",
+      "scopeId": "*"
+    },
+    {
+      "actorId": "architect",
+      "capability": "task.dispatch",
+      "scopeType": "company",
+      "scopeId": "*"
+    },
+    {
+      "actorId": "release",
+      "capability": "github.open-pr",
+      "scopeType": "company",
+      "scopeId": "*"
+    }
+  ]
+}

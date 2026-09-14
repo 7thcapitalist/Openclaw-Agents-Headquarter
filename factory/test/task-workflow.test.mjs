@@ -1,5 +1,5 @@
 import test from "node:test";
-import { anchorFounderKey } from "./helpers/anchor.mjs";
+import { anchorFounderKey, detachAmbientAnchor } from "./helpers/anchor.mjs";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
@@ -21,6 +21,10 @@ import {
   revokeFounderApprovalKey,
   unsignedFounderAssertion,
 } from "../lib/task-workflow.mjs";
+
+// This suite reasons about roots it creates, not about the checkout it happens
+// to run inside — see detachAmbientAnchor's own comment for what that cost.
+detachAmbientAnchor();
 
 const keys = generateKeyPairSync("ed25519");
 const founderPublicKey = keys.publicKey.export({ type: "spki", format: "pem" });

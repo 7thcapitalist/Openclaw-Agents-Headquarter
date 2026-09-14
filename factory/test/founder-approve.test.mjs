@@ -1,5 +1,5 @@
 import test from "node:test";
-import { anchorFounderKey } from "./helpers/anchor.mjs";
+import { anchorFounderKey, detachAmbientAnchor } from "./helpers/anchor.mjs";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
@@ -17,6 +17,10 @@ import {
   readState,
 } from "../lib/task-workflow.mjs";
 import { findPending } from "../../scripts/founder-approve.mjs";
+
+// This suite reasons about roots it creates, not about the checkout it happens
+// to run inside — see detachAmbientAnchor's own comment for what that cost.
+detachAmbientAnchor();
 
 const HQ = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const APPROVE = join(HQ, "scripts", "founder-approve.mjs");

@@ -757,7 +757,25 @@ app.post("/api/founder/decisions/resolve", (req, res) => {
   try {
     const direction = String(req.body?.direction || "").trim();
     if (!req.body?.statePath || !direction) return res.status(400).json({ error: "statePath and direction are required." });
-    res.json({ task: resolveFounderDecision({ root: ROOT, hqRoot: ROOT, statePath: req.body.statePath, direction }) });
+    const task = resolveFounderDecision({ root: ROOT, hqRoot: ROOT, statePath: req.body.statePath, direction });
+    res.json({ task });
+    // Answering the question has to release the team, not just record the
+    // answer. resolveFounderDecision clears the objective node; without this
+    // the released node then waits for a sweep, so the founder still sees
+    // nothing happen. Detached and after the response, exactly like the
+    // recovery-retry route: the orchestrator runs for as long as the pipeline
+    // takes and must never hold the HTTP request open.
+    if (task?.objectiveResume?.objectivePath) {
+      let cfg = {};
+      try { cfg = JSON.parse(readFileSync(join(ROOT, "factory", "factory.config.json"), "utf8")); } catch { /* defaults */ }
+      Promise.resolve()
+        .then(() => runObjectiveJob(null, {
+          objectivePath: task.objectiveResume.objectivePath,
+          cfg,
+          stateRoot: dirname(dirname(dirname(task.objectiveResume.objectivePath))),
+        }))
+        .catch((error) => console.error(`[decisions/resolve] objective ${task.objectiveResume.objectiveId} did not resume:`, error?.message || error));
+    }
   } catch (e) {
     res.status(400).json({ error: String(e.message || e) });
   }
