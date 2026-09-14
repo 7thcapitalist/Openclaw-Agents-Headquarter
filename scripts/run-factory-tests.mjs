@@ -73,23 +73,32 @@ function isRunning(pid) {
   try { process.kill(pid, 0); return true; } catch (error) { return error.code === "EPERM"; }
 }
 
-// Workspaces whose dependencies the suite actually imports.
+// Workspaces whose absence SILENTLY shrinks the suite.
 //
-// The repository root declares no dependencies, so it is easy to assume there
-// is nothing to install. There is: `control-plane/` declares `@vercel/blob`,
-// and nine tests import the API routes that use it. CI installs both
-// workspaces explicitly (.github/workflows/factory-tests.yml), so this only
-// ever bit developer machines — as nine identical ERR_MODULE_NOT_FOUND stacks
-// that say nothing about the cause. Say it once, plainly, before running
-// anything.
+// Only `dashboard/backend` qualifies, and the distinction is the point. Its
+// CSRF, CSP, session and stored-XSS tests skip themselves when their
+// dependencies are missing rather than failing, so the run reports green while
+// 14 security tests never execute — the exact failure mode the CI workflow's
+// own comment warns about, reproduced locally and unnoticed. A skip is
+// invisible; that is what has to be turned into a stop.
+//
+// `control-plane` is deliberately NOT here. It declares `@vercel/blob`, but no
+// test needs the package installed: its routes load it on demand, inside the
+// function that calls it, and a guard test keeps it that way
+// (factory/test/control-plane-routes-importable.test.mjs). All 55
+// control-plane tests pass with no `control-plane/node_modules` at all. Listing
+// it would refuse to run the suite over a dependency nothing is waiting for,
+// and would take back exactly what that change bought: a factory agent's fresh
+// worktree being able to run the auth tests on the one surface that faces the
+// internet. `npm run setup` still installs it — you need it to serve the
+// control plane, just not to test it.
 const WORKSPACES = [
-  ["dashboard/backend", "the dashboard's CSRF, CSP, session and stored-XSS tests"],
-  ["control-plane", "the control-plane API route tests (@vercel/blob)"],
+  ["dashboard/backend", "the dashboard's CSRF, CSP, session and stored-XSS tests, which SKIP rather than fail without it"],
 ];
 
 const uninstalled = WORKSPACES.filter(([dir]) => !existsSync(join(dir, "node_modules")));
 if (uninstalled.length) {
-  console.error("Dependencies are missing, so part of the suite cannot run:\n");
+  console.error("Dependencies are missing, so part of the suite would silently not run:\n");
   for (const [dir, what] of uninstalled) console.error(`  ${dir}/node_modules  — needed by ${what}`);
   console.error("\nRun `npm run setup` from the repository root, then try again.");
   process.exit(1);
