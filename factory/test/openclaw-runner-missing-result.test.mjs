@@ -44,7 +44,10 @@ test("a resolved execution with no result writes redacted diagnostics and a legi
   assert.equal(existsSync(artifactPath), true);
   assert.ok(statSync(artifactPath).size > 0);
   const artifact = readFileSync(artifactPath, "utf8");
-  assert.match(artifact, /sessionKey: agent:openclaw:factory-issue-901-product-1/);
+  // Routed to the configured `product` runtime agent. This used to read
+  // `agent:openclaw:...` — the logical actor used as an agent id, which is the
+  // silent fallback that made reviewer and security unrunnable in production.
+  assert.match(artifact, /sessionKey: agent:product:factory-issue-901-product-1/);
   assert.match(artifact, /\[redacted: aws-akia\]/);
   assert.match(artifact, /\[redacted: openai-sk\]/);
   assert.doesNotMatch(artifact, new RegExp(aws));

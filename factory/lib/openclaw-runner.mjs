@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, unlinkSync, writeFileSync, readFileSync } from "
 import { basename, dirname, join } from "path";
 import { PROTOCOL_VERSION, computeDispatchPaths, failDispatch, ingestResult, markDispatchRunning, prepareDispatch, readResultFile, recordDispatchAgentId } from "./openclaw-protocol.mjs";
 import { describeAgentCompletion, parseAgentMeta } from "./hq/agent-meta.mjs";
-import { DEFAULT_MAX_INFRA_ATTEMPTS, readState } from "./task-workflow.mjs";
+import { DEFAULT_MAX_INFRA_ATTEMPTS, STAGES, readState } from "./task-workflow.mjs";
 import { mutateTransactionalState } from "./store/transactional-json.mjs";
 import { writeHandoff } from "./handoff.mjs";
 import { publishMergeReadyTask } from "./hq/github-publish.mjs";
@@ -29,15 +29,34 @@ export function configuredAgentIds(hqRoot, agentIds = {}) {
   let fromConfig = {};
   try {
     const config = JSON.parse(readFileSync(join(hqRoot, "factory", "factory.config.json"), "utf8"));
-    // Only import stage+harness routes implicitly. Legacy direct callers and
-    // unit harnesses may intentionally use logical actors such as `openclaw`;
-    // broad stage/actor defaults are supplied explicitly by the orchestrator.
-    // Recovery routes must also be available to standalone task retries.
+    // Always import stage+harness routes ("qa:claude") and recovery routes.
+    //
+    // Bare PIPELINE STAGE routes ("reviewer", "security", "release") are
+    // imported only when the caller supplied no map of its own. The
+    // orchestrator passes the whole config explicitly and so already has them;
+    // the approval-triggered run path passes nothing, and without this
+    // selectAgentId finds no route for a stage whose config key has no colon
+    // and silently falls back to the LOGICAL ACTOR as the agent id.
+    //
+    // That is `Unknown agent id "claude"` on lifemaxing
+    // obj-c58897c0-game-frontend: `qa:claude` resolved and QA ran, while bare
+    // `reviewer` and `security` were dropped and both stages failed to start
+    // three times each on a route that could never have worked.
+    //
+    // Gating on "caller supplied nothing" keeps the guarantee the original
+    // filter existed for: a direct caller or unit harness that deliberately
+    // routes by logical actor (`{ openclaw: "main-agent" }`) still wins, and an
+    // implicitly imported stage route never shadows it.
+    const explicit = Object.keys(agentIds).length > 0;
     fromConfig = Object.fromEntries(Object.entries(config.openclawIntegration?.agentIds || {})
-      .filter(([key]) => key.includes(":") || key === "recovery" || key === "recovery-verify"));
+      .filter(([key]) => key.includes(":")
+        || key === "recovery"
+        || key === "recovery-verify"
+        || (!explicit && STAGES.includes(key))));
   } catch { /* isolated unit tests may not have a factory config */ }
   return { ...fromConfig, ...agentIds };
 }
+
 
 export function isYieldedExecution(executed) {
   let envelope;
