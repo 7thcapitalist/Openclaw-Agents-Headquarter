@@ -521,6 +521,12 @@ export function startRecovery(state, { failedStage, actor, error, evidence = [],
     // retry-recover -> deeper-diagnosis -> independent-review for every
     // incident rather than falling off the end of the list on the second one.
     incident: next.recovery.incident,
+    // Monotonic across the whole task and never reused. `number` restarts each
+    // incident, and computeDispatchPaths built dispatch ids from it — so a new
+    // incident recomputed an id an earlier one had already spent, and
+    // markDispatchRunning's `running:<id>` idempotency key replayed the old
+    // commit instead of marking the dispatch running. See the note there.
+    ordinal: next.recovery.attempts.length + 1,
     number: used + 1, strategy: recoveryStrategy(used + 1), originalObjective: next.task.outcome,
     failedStage, agent: actor, error: String(error || "unknown failure"), classification: kind,
     repairTarget: repairTargetFor(kind), relevantEvidence: structuredClone(evidence),
@@ -528,7 +534,7 @@ export function startRecovery(state, { failedStage, actor, error, evidence = [],
     status: "diagnosing", startedAt: now,
   };
   next.recovery.attempts = [...next.recovery.attempts, attempt];
-  next.recovery.active = { phase: "diagnose", failedStage, attempt: attempt.number };
+  next.recovery.active = { phase: "diagnose", failedStage, attempt: attempt.number, ordinal: attempt.ordinal };
   next.status = "active";
   next.currentStage = failedStage;
   delete next.blocker;
@@ -616,8 +622,9 @@ function finishRecoveryFailure(state, { summary, actor, outcome, now }) {
   }
   const openCount = openIncidentAttempts(next.recovery).length;
   if (openCount < next.recovery.maxAttempts && next.recovery.attempts.length < next.recovery.maxTotalAttempts && isRecoverableFailure(kind)) {
-    next.recovery.active = { phase: "diagnose", failedStage: active.failedStage, attempt: openCount + 1 };
-    next.recovery.attempts.push({ incident: next.recovery.incident, number: openCount + 1, strategy: recoveryStrategy(openCount + 1), originalObjective: next.task.outcome, failedStage: active.failedStage, agent: "recovery", error, classification: kind, repairTarget: repairTargetFor(kind), relevantEvidence: [], attemptedActions: [], currentState: next.status, diagnosis: null, repair: null, verification: null, status: "diagnosing", startedAt: now });
+    const ordinal = next.recovery.attempts.length + 1;
+    next.recovery.active = { phase: "diagnose", failedStage: active.failedStage, attempt: openCount + 1, ordinal };
+    next.recovery.attempts.push({ incident: next.recovery.incident, ordinal, number: openCount + 1, strategy: recoveryStrategy(openCount + 1), originalObjective: next.task.outcome, failedStage: active.failedStage, agent: "recovery", error, classification: kind, repairTarget: repairTargetFor(kind), relevantEvidence: [], attemptedActions: [], currentState: next.status, diagnosis: null, repair: null, verification: null, status: "diagnosing", startedAt: now });
     next.events.push({ at: now, type: "recovery-diagnosing", stage: active.failedStage, actor: "recovery", attempt: openCount + 1, classification: kind });
     return next;
   }
