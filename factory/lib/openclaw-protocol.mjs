@@ -336,6 +336,47 @@ export function failDispatch({ statePath, dispatchId, error, maxAttemptsPerStage
   return terminalResponse(next);
 }
 
+// Park a dispatch that failed for a DETERMINISTIC reason the retry ladder can
+// never clear, as a founder decision.
+//
+// `failDispatch` is the right home for a failure whose cause might go away on
+// its own — a dropped seat, a model that returned nothing. It routes the stage
+// for another attempt and then hands the task to recovery. That is exactly the
+// wrong treatment for a merge conflict between two sub-task branches: the merge
+// is a pure function of two commits, so re-running it reproduces the same
+// conflict, and three bounded recovery attempts burn in under a second before
+// escalating the whole objective as INFRASTRUCTURE_ERROR. The founder is then
+// asked to decide about a failure no agent ever looked at.
+//
+// So: record the dispatch as failed, state the real cause, and block on
+// `decision-required` WITHOUT routeStageFailure or startRecovery.
+export function blockDispatch({ statePath, dispatchId, error, now = new Date().toISOString() }) {
+  const next = mutateTransactionalState(statePath, {
+    commandId: `block:${dispatchId}`,
+    now,
+    mutate: (state) => {
+      assertCurrentDispatch(state, dispatchId);
+      const dispatch = state.currentDispatch;
+      const blocked = structuredClone(state);
+      blocked.status = "blocked";
+      blocked.blocker = {
+        stage: dispatch.stage,
+        outcome: "decision-required",
+        founderAction: true,
+        summary: String(error),
+        actor: dispatch.actor,
+        at: now,
+      };
+      blocked.dispatches = [...(state.dispatches || []), { ...dispatch, status: "failed", error: String(error), completedAt: now }];
+      delete blocked.currentDispatch;
+      blocked.updatedAt = now;
+      blocked.events.push({ at: now, type: "dispatch-blocked", stage: dispatch.stage, actor: dispatch.actor, dispatchId });
+      return blocked;
+    },
+  });
+  return terminalResponse(next);
+}
+
 export function readResultFile(path) {
   if (!existsSync(path)) throw new Error(`Agent did not write its result file: ${path}`);
   return JSON.parse(readFileSync(path, "utf8"));

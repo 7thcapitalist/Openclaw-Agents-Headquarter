@@ -4,7 +4,7 @@ import { randomUUID } from "crypto";
 import { setTimeout as delay } from "timers/promises";
 import { existsSync, mkdirSync, unlinkSync, writeFileSync, readFileSync } from "fs";
 import { basename, dirname, join } from "path";
-import { PROTOCOL_VERSION, computeDispatchPaths, failDispatch, ingestResult, markDispatchRunning, prepareDispatch, readResultFile, recordDispatchAgentId } from "./openclaw-protocol.mjs";
+import { PROTOCOL_VERSION, blockDispatch, computeDispatchPaths, failDispatch, ingestResult, markDispatchRunning, prepareDispatch, readResultFile, recordDispatchAgentId } from "./openclaw-protocol.mjs";
 import { describeAgentCompletion, parseAgentMeta } from "./hq/agent-meta.mjs";
 import { DEFAULT_MAX_INFRA_ATTEMPTS, STAGES, readState } from "./task-workflow.mjs";
 import { mutateTransactionalState } from "./store/transactional-json.mjs";
@@ -15,6 +15,25 @@ import { sanitizeExcerpt } from "./common/redact.mjs";
 import { observeDispatchState } from "./telemetry/dispatch.mjs";
 
 const execFileAsync = promisify(execFile);
+
+// A caller-supplied `execute` does not only stand in for an agent. The objective
+// orchestrator uses one to perform the integration merge itself, and that merge
+// can fail deterministically — two sub-task branches that conflict.
+//
+// Every other error out of `execute` means "the agent attempt failed", so the
+// catch below converts it into a missing-result dispatch failure and lets the
+// retry ladder work. Applying that to a merge conflict is how objective
+// obj-c58897c0 stalled for two days: the conflict was rewritten as `builder
+// dispatch wrote no result file ... Reason: merge conflict integrating
+// factory/obj-c58897c0-game-backend`, the generic wrapper classified it
+// INFRASTRUCTURE_ERROR, and three recovery attempts logged inside one second
+// without an agent ever running. The orchestrator's own MergeConflict handler,
+// which would have raised a clean founder decision naming the conflict, was
+// unreachable because the error never escaped the runner.
+//
+// An error tagged `fatal` is therefore a control-flow signal for the CALLER:
+// park the dispatch as a decision and rethrow it untouched.
+export const isControlFlowError = (error) => error?.fatal === true;
 
 // Stages that may run concurrently once the builder is done and the branch is
 // frozen. All three read-only against the same worktree; order of results does
@@ -168,6 +187,15 @@ export async function runOneStage({ hqRoot, statePath, agentIds = {}, maxAttempt
       }
     }
   } catch (error) {
+    if (isControlFlowError(error)) {
+      const reason = summarizeError(error);
+      try {
+        blockDispatch({ statePath, dispatchId: prepared.dispatchId, error: reason });
+      } catch { /* the dispatch moved on under us; the throw below still reaches the caller */ }
+      observeDispatchState({ hqRoot, statePath, phase: "failed", dispatchId: prepared.dispatchId, error: reason });
+      writeCompletionReport({ statePath });
+      throw error;
+    }
     const current = readState(statePath);
     if (current.currentDispatch?.id !== prepared.dispatchId) {
       return { version: PROTOCOL_VERSION, status: current.status, taskId: current.task.id,
@@ -347,6 +375,10 @@ export async function runConcurrentGroupIfReady({ hqRoot, statePath, agentIds = 
       throw error;
     }
   }));
+  // Same contract as the sequential path: a deterministic control-flow failure
+  // belongs to the caller, not to the retry ladder.
+  const fatal = settled.find((s) => s.status === "rejected" && isControlFlowError(s.reason));
+  if (fatal) throw fatal.reason;
   for (let i = 0; i < members.length; i += 1) {
     const m = members[i];
     const rejected = settled[i].status === "rejected";

@@ -54,9 +54,44 @@ const INFRA = new RegExp([
   "auth profile\\s+\\S*\\s*(?:missing|unavailable|not found|indeterminate|expired|invalid)",
   "orphaned\\s+(?:session|run|dispatch|worktree|process|lease)",
   "host restart",
+  // The OpenClaw Gateway dropping a call mid-turn, or being down when one is
+  // placed. Anchored to the gateway/transport itself, never a bare "connection
+  // closed" — a review finding about the product's own socket handling must
+  // stay PROJECT_ERROR. Without these, "reviewer agent could not run: Gateway
+  // agent call connection closed" fell through every alternative above and was
+  // classified PROJECT_ERROR: an environment crash blamed on the branch.
+  "agent call connection closed",
+  "gateway[^.;]{0,60}(?:connection closed|not reachable|unreachable|is down)",
+  "(?:not reachable|unreachable) at wss?://",
 ].join("|"), "i");
 
 const FACTORY = /factory|orchestrator|workflow|state\.json|dispatch|protocol|invalid .*result|unsupported .*version|cannot advance|expected stage/i;
+
+// Failures that are unambiguously about the CONTENT of the project's branches.
+// Deterministic by construction: a merge is a pure function of two commits, so
+// no amount of retrying changes the outcome.
+//
+// Every alternative must be a phrase git itself emits, or one that can only
+// describe a conflict — the mirror of the INFRA constraint above. That keeps it
+// safe to check FIRST (see classifyFailure), which it must be for two reasons:
+// the missing-result wrapper would otherwise win with INFRA, and the branch
+// name in "merge conflict integrating factory/obj-...-game-backend" contains
+// the word `factory`, which would aim recovery at the factory rather than at
+// the conflicting branches.
+const PROJECT_CONTENT = new RegExp([
+  "merge conflict",
+  "CONFLICT \\(",
+  "automatic merge failed",
+  "conflict markers?",
+  "fix conflicts and then commit",
+  "(?:patch|rebase|cherry-pick)\\s+(?:failed|conflict)",
+].join("|"), "i");
+
+// Shared with blocker-class.mjs and the objective orchestrator so all three
+// layers agree that a conflict is never environmental and never auto-retried.
+export function isDeterministicProjectFailure(text) {
+  return PROJECT_CONTENT.test(String(text || ""));
+}
 
 // The agent ran to completion and still produced no gate artifact. Checked
 // before INFRA because "no result file" is the symptom of both a dropped
@@ -69,6 +104,14 @@ export function classifyFailure({ error = "", outcome = "fail", source = "execut
   const text = String(error || "");
   if (founderDecision || outcome === "decision-required") return "FOUNDER_DECISION_REQUIRED";
   if (AGENT_STALL_RE.test(text)) return "AGENT_ERROR";
+  // Checked before INFRA, and this order is the whole fix. The missing-result
+  // wrapper ("... wrote no result file ... Reason: merge conflict integrating
+  // <branch>") matches INFRA on the wrapper alone, whatever cause it carries,
+  // so a conflict was classified INFRASTRUCTURE_ERROR — auto-retried, never
+  // shown to the founder as what it was. PROJECT_CONTENT is narrow enough to
+  // take precedence safely: everything it matches is deterministic, so calling
+  // it infrastructure is always wrong.
+  if (PROJECT_CONTENT.test(text)) return "PROJECT_ERROR";
   if (INFRA.test(text)) return "INFRASTRUCTURE_ERROR";
   if (source === "factory" || FACTORY.test(text)) return "FACTORY_ERROR";
   if (source === "agent" || source === "harness") return "AGENT_ERROR";
