@@ -1145,6 +1145,31 @@ export function isAwaitingFounderApproval(state) {
   );
 }
 
+// True when a task is parked on a question only the founder can answer, at any
+// stage, at any risk level — the reviewer that will not approve without a call
+// on scope, the recovery pass that has run out of road.
+//
+// This is deliberately NOT `isAwaitingFounderApproval`. That predicate gates a
+// cryptographic signature and is scoped tightly on purpose (high risk, parked
+// before `builder`, no valid assertion); widening it would widen what a
+// signature authorizes. A decision is the other thing a founder owes the
+// factory: an answer, not an authorization. Nothing is signed to clear one.
+//
+// Before this existed the founder queue only ever looked for signature
+// requests, so a `decision-required` blocker raised at `reviewer` — which is
+// where reviewers actually raise them — was invisible, and `npm run approve
+// --list` printed "Nothing is waiting for your approval" while the factory sat
+// blocked on the founder. The two sets are kept disjoint so a task parked at
+// the high-risk gate is reported once, as the signature request it is.
+export function isAwaitingFounderDecision(state) {
+  return Boolean(
+    state
+    && state.status === "blocked"
+    && state.blocker?.outcome === "decision-required"
+    && !isAwaitingFounderApproval(state),
+  );
+}
+
 // The ONLY thing that satisfies the high-risk gate: a task-scoped Ed25519
 // assertion that verifies against the authority recorded on the task. If this
 // returns false the task stays blocked until a real signature arrives.
