@@ -28,10 +28,20 @@ function config() {
 test("vercel.json does not disable the api/ functions", () => {
   const routes = readdirSync(join(controlPlane, "api")).filter((n) => n.endsWith(".mjs"));
   assert.ok(routes.length > 0, "this test is meaningless without functions to protect");
+
+  // Both keys take the project out of zero-config, and zero-config is the only
+  // mode that builds api/. Either one produces a deployment that serves the
+  // page perfectly and answers no API route — verified twice against real
+  // deployments before this test existed.
   assert.equal(
     config().outputDirectory,
     undefined,
     "outputDirectory switches the deployment to static-only and silently drops api/",
+  );
+  assert.equal(
+    config().buildCommand,
+    undefined,
+    "buildCommand switches the deployment to build-output mode and silently drops api/",
   );
 });
 

@@ -14,8 +14,16 @@
 //
 // A static app has nothing to compile, so this does not generate the output —
 // it verifies it. Every file the deployment needs must exist and be non-empty,
-// and the entry point must actually reference the assets it depends on. If any
-// of that is untrue the exit code is non-zero and the deploy stops.
+// and the entry point must actually reference the assets it depends on.
+//
+// WHERE THIS RUNS: CI, on every PR, via factory/test/control-plane-shell.test.mjs.
+// It is deliberately NOT wired as Vercel's buildCommand. Setting one puts the
+// project into build-output mode, and in that mode Vercel stops scanning api/
+// and deploys a site with no functions at all — which is how two tested,
+// working endpoints reached production as dead routes. Zero-config is what
+// builds the API, so zero-config is what the deployment uses, and this check
+// gates the merge instead of the deploy. Only merged main reaches production,
+// so the gate still stands in front of it — one step earlier.
 
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -87,10 +95,14 @@ if (!failures.length) {
     } catch {
       failures.push("api/ exists but vercel.json could not be read");
     }
-    if (config.outputDirectory) {
-      failures.push(
-        `vercel.json sets outputDirectory=${config.outputDirectory}, which disables the ${routes.length} function(s) in api/`,
-      );
+    // Either key takes the project out of zero-config, and zero-config is the
+    // only mode that builds api/ at all.
+    for (const key of ["outputDirectory", "buildCommand"]) {
+      if (config[key]) {
+        failures.push(
+          `vercel.json sets ${key}=${config[key]}, which disables the ${routes.length} function(s) in api/`,
+        );
+      }
     }
   }
 }
