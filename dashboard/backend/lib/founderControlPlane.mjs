@@ -986,9 +986,12 @@ export function buildFounderOverview(root, hqProjects = []) {
   }));
   const decisions = [
     ...blockedDecisions,
+    // Only decisions the founder has NOT answered yet. `founderResponse` is the
+    // record that the question was settled; without this filter an answered
+    // card is rebuilt on the next poll and the founder answers it forever.
     ...tasks
       .filter((task) => ["merge-ready", "merged"].includes(task.status) && Array.isArray(task.deferredDecisions))
-      .flatMap((task) => task.deferredDecisions.map((decision) => ({
+      .flatMap((task) => task.deferredDecisions.filter((decision) => !decision.founderResponse).map((decision) => ({
         id: `${task.id}:${decision.id}`,
         taskId: task.id,
         project: task.project,
@@ -1474,7 +1477,12 @@ export function resolveFounderDecision({ root, hqRoot, statePath, direction }) {
       if (["merge-ready", "merged"].includes(state.status) && Array.isArray(state.deferredDecisions) && state.deferredDecisions.length) {
         const at = new Date().toISOString();
         const revised = structuredClone(state);
-        const pending = revised.deferredDecisions.find((item) => !item.founderResponse) || revised.deferredDecisions[0];
+        // Never fall back to the first entry: that silently overwrote an answer
+        // the founder had already given. Once every decision on the task is
+        // answered there is nothing here to resolve, and saying so is the whole
+        // point — a second answer to a settled question is a bug, not an edit.
+        const pending = revised.deferredDecisions.find((item) => !item.founderResponse);
+        if (!pending) throw new Error("Every decision on this task is already answered.");
         pending.founderResponse = String(direction).trim();
         revised.events.push({ at, type: "deferred-decision-recorded", stage: pending.stage, actor: "founder", direction: pending.founderResponse, decisionId: pending.id });
         return revised;

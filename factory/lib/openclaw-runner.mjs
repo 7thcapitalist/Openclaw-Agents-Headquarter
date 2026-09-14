@@ -449,6 +449,11 @@ function synthesizeFailResult({ worktree, member, reason }) {
       stage: member.stage,
       actor: member.actor,
       outcome: "fail",
+      // The protocol needs an outcome for the engine to route on, but this
+      // stage never ran: nothing judged the work. Say so explicitly, so the
+      // per-stage budget counts it against the infrastructure allowance rather
+      // than spending a rejection the stage never actually made.
+      infraFailure: true,
       summary: `${member.stage} agent could not run: ${String(reason).split("\n")[0].slice(0, 240)}`,
       evidence: [rel],
     }), "utf8");

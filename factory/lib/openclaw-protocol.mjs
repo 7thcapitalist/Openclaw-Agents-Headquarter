@@ -271,6 +271,10 @@ export function ingestResult({ statePath, result, agentMeta = null, maxAttemptsP
       }
 
       const finished = { ...dispatch, status: "completed", outcome: result.outcome, summary: result.summary, completedAt: now };
+      // Carry the fan-out's "this agent never ran" marker onto the durable
+      // record, so the per-stage budget can tell a routing artifact from a
+      // verdict long after the result file is gone.
+      if (result.infraFailure === true) finished.infraFailure = true;
       if (agentMeta) finished.usage = sanitizeUsage(agentMeta);
       completed.dispatches = [...(state.dispatches || []), finished];
       delete completed.currentDispatch;

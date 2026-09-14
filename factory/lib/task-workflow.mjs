@@ -351,7 +351,11 @@ export function countStageAttempts(state, stage) {
   let verdicts = 0;
   let infra = 0;
   for (const item of dispatches) {
-    if (item.outcome) verdicts += 1;
+    // `infraFailure` is set by the concurrent review fan-out, which has to
+    // write a real `fail` result for a member whose agent could not start so
+    // the engine routes it. That outcome is a routing artifact, not a verdict —
+    // nothing judged the work — so it belongs in the infrastructure allowance.
+    if (item.outcome && !item.infraFailure) verdicts += 1;
     else infra += 1;
   }
   return { verdicts, infra, total: dispatches.length };

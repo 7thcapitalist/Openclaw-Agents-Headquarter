@@ -704,3 +704,44 @@ test("objective execution view briefs infrastructure blockers instead of present
   assert.match(view.blocker.headline, /retrying this automatically/i);
   assert.match(view.rawBlocker.summary, /Could not start the CLI/);
 });
+
+// A decision the founder has already answered is settled. It left the inbox the
+// moment `founderResponse` was written, and it never comes back — the founder
+// answering the same question on every poll is the bug this holds shut.
+test("an answered post-task decision leaves the inbox and cannot be answered twice", () => {
+  const { root, statePath } = fixture();
+  const state = JSON.parse(readFileSync(statePath, "utf8"));
+  state.status = "merge-ready";
+  state.currentStage = null;
+  state.deferredDecisions = [{
+    id: "architect-1",
+    stage: "architect",
+    question: "Should the chapter screen stay read-only this milestone?",
+    why: "The team completed the safe work and is reporting this choice for your review.",
+    options: ["A. Read-only this milestone", "B. Read-write now", "Other: describe your preference"],
+    requestedAt: "2026-09-10T21:15:09.109Z",
+  }];
+  writeState(statePath, state);
+
+  const before = buildFounderOverview(root, [{ id: "startup-ops", name: "Startup Ops" }]);
+  assert.equal(before.inbox.length, 1);
+  assert.equal(before.inbox[0].kind, "post-task-decision");
+
+  resolveFounderDecision({ root, hqRoot: root, statePath, direction: "A. Read-only this milestone" });
+
+  const recorded = JSON.parse(readFileSync(statePath, "utf8"));
+  assert.equal(recorded.deferredDecisions[0].founderResponse, "A. Read-only this milestone");
+
+  const after = buildFounderOverview(root, [{ id: "startup-ops", name: "Startup Ops" }]);
+  assert.equal(after.inbox.length, 0, "an answered decision must not be rebuilt into the inbox");
+
+  // The endpoint is reachable directly, so it refuses rather than silently
+  // overwriting the answer the founder already gave.
+  assert.throws(
+    () => resolveFounderDecision({ root, hqRoot: root, statePath, direction: "B. Read-write now" }),
+    /already answered/i,
+  );
+  const unchanged = JSON.parse(readFileSync(statePath, "utf8"));
+  assert.equal(unchanged.deferredDecisions[0].founderResponse, "A. Read-only this milestone");
+  assert.equal(unchanged.events.filter((e) => e.type === "deferred-decision-recorded").length, 1);
+});
