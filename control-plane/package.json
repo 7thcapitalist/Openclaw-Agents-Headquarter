@@ -1,0 +1,17 @@
+{
+  "name": "hq-control-plane",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Public control plane for OpenClaw Headquarters (SFD-2026-012). Deployable; the repository root is not.",
+  "scripts": {
+    "build": "node build.mjs",
+    "start": "node serve.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@vercel/blob": "2.8.0"
+  }
+}
