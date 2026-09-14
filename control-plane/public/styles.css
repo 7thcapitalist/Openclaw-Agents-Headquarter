@@ -194,3 +194,83 @@ body {
   color: #fb7185 !important;
   font-size: 0.8rem !important;
 }
+
+/* --- mirror --- */
+.page { max-width: 1100px; }
+
+.freshness {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 0.74rem;
+  white-space: nowrap;
+}
+.freshness.stale { color: var(--amber); }
+.topbar .btn-ghost { margin-left: 0.5rem; }
+
+.stale-banner {
+  margin-bottom: 1rem;
+  padding: 0.7rem 0.9rem;
+  border: 1px solid rgba(243, 201, 105, 0.3);
+  border-radius: 10px;
+  background: rgba(243, 201, 105, 0.06);
+  color: var(--amber);
+  font-size: 0.8rem;
+}
+
+.stat-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 1px;
+  margin-bottom: 1rem;
+  overflow: hidden;
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  background: var(--border-soft);
+}
+.stat { display: flex; flex-direction: column; gap: 0.15rem; padding: 0.9rem 1rem; background: #0e1117; }
+.stat strong { font-size: 1.4rem; letter-spacing: -0.02em; }
+.stat span { color: var(--muted); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; }
+.stat small { color: #687386; font-size: 0.7rem; }
+.stat.attention strong { color: var(--amber); }
+
+.panel-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1rem; }
+
+.panel {
+  padding: 1rem;
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  background: #0d1016;
+  min-width: 0;
+}
+.panel h2 { margin: 0 0 0.6rem; font-size: 1rem; letter-spacing: -0.01em; }
+.panel.unknown { border-style: dashed; }
+.panel-note { margin: 0; color: var(--muted); font-size: 0.78rem; }
+
+.row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.7rem;
+  align-items: baseline;
+  padding: 0.55rem 0;
+  border-top: 1px solid var(--border-soft);
+}
+.row:first-of-type { border-top: 0; }
+.row-main { min-width: 0; }
+.row-main strong { display: block; font-size: 0.82rem; font-weight: 600; overflow-wrap: anywhere; }
+.row-main span { display: block; margin-top: 0.15rem; color: var(--muted); font-size: 0.73rem; overflow-wrap: anywhere; }
+.row-meta {
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-style: normal;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+.tone-good .row-meta { color: var(--green, #4ade80); }
+.tone-bad .row-meta { color: #fb7185; }
+.tone-warn .row-meta { color: var(--amber); }
+
+@media (max-width: 560px) {
+  .row { grid-template-columns: minmax(0, 1fr); }
+  .row-meta { justify-self: start; }
+}
