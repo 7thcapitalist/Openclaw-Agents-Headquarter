@@ -31,7 +31,29 @@ export const PROTOCOL_VERSION = 1;
 export function computeDispatchPaths({ state, stage, statePath }) {
   const recovery = state.recovery?.active;
   const attempt = recovery ? recovery.attempt : (state.dispatches || []).filter((item) => item.stage === stage && (item.kind === "stage" || !item.kind)).length + 1;
-  const dispatchId = recovery ? `${state.task.id}-recovery-${attempt}-${recovery.phase}` : `${state.task.id}-${stage}-${attempt}`;
+  // The id must be unique for the LIFE of the task, not within one incident.
+  //
+  // `recovery.active.attempt` counts within the open incident, so it restarts
+  // at 1 every time an incident closes — and a dispatch id built from it then
+  // collides with a dispatch from an earlier incident. Both halves of the
+  // machinery key off that id:
+  //
+  //   * the result file — mitigated below by quarantineStaleResult()
+  //   * markDispatchRunning's idempotency key, `running:<dispatchId>`, which
+  //     is NOT mitigated. The store replays the earlier committed command
+  //     instead of applying the mutation, so the dispatch stays "ready"
+  //     forever while the agent call runs. The runner then waits on a
+  //     dispatch the state machine believes was never started.
+  //
+  // Observed on obj-c58897c0: incident 2 attempt 1 recomputed
+  // `-recovery-1-diagnose`, an id already spent by incident 1, and the run
+  // wedged for ten hours with no blocker and no progress.
+  //
+  // `ordinal` is monotonic across the whole task and never reused. Legacy state
+  // written before it existed falls back to `attempt`, which is what those
+  // tasks already used.
+  const ordinal = recovery ? (recovery.ordinal ?? recovery.attempt) : attempt;
+  const dispatchId = recovery ? `${state.task.id}-recovery-${ordinal}-${recovery.phase}` : `${state.task.id}-${stage}-${attempt}`;
   const resultPath = join(dirname(statePath), "results", `${dispatchId}.json`);
   return { dispatchId, resultPath, attempt };
 }
