@@ -17,6 +17,7 @@
 import { execFileSync } from "child_process";
 import { resolveCompanyProject } from "./registry.mjs";
 import { readHqConfig } from "./config.mjs";
+import { checkCapability } from "./capability-check.mjs";
 
 // Default git/gh runner. Injectable for tests — never talks to a real remote
 // unless a caller supplies the real one explicitly.
@@ -148,6 +149,29 @@ export function publishMergeReadyTask({ hqRoot, state, exec = defaultExec, ghAva
   if (!state || state.status !== "merge-ready") {
     return { published: false, reason: "task is not merge-ready" };
   }
+
+  // Pushing a branch and opening a pull request is the factory's most outward
+  // act, so it is where the `github.open-pr` capability is checked. Placed
+  // after the merge-ready guard — a task that is not finished was never going
+  // to publish, and auditing a decision about work that cannot happen would
+  // fill the log with noise the founder has to read past.
+  //
+  // Under `report` this records and allows. Under `enforce` it throws, and
+  // publishAndRecord turns that into `{ published: false, reason }` on the
+  // task, so a refused publish is visible on the task rather than silent.
+  checkCapability({
+    hqRoot,
+    capability: "github.open-pr",
+    action: "open a pull request",
+    actor: { type: "agent", id: state.assignments?.release || "openclaw-factory" },
+    scope: { type: "task", id: state.task?.id, projectId: state.task?.project || null },
+    founderApproval: state.founderApproval || null,
+    correlation: {
+      taskId: state.task?.id,
+      ...(state.task?.project ? { projectId: state.task.project } : {}),
+      branch: state.branch || null,
+    },
+  });
 
   const config = readHqConfig(hqRoot);
   if (config.github?.autoPublish === false) {
