@@ -16,13 +16,21 @@ Two problems, one campaign, because the second cannot be trusted without the
 first.
 
 **1. The suite is not green, so "tests pass" proves nothing.**
-`npm run test:factory` reports 24 failures in this checkout. None of them are
-real defects in the code under test:
+`npm run test:factory` reports failures in this checkout that are not defects in
+the code under test. The two causes overlap — installing the missing workspace
+reveals the second — so the counts below are each measured with the other cause
+removed:
 
 | Cause | Count | Why it fails |
 | --- | --- | --- |
 | `@vercel/blob` unresolved | 9 | `control-plane/` declares it, but `npm run setup` only installs `dashboard/backend`. CI installs it explicitly; a developer machine never does. |
-| Ambient founder key | 15 | The founder-authority tests assert "no anchor configured" while reading the real enrolled key from `dashboard/backend/data/`, which is gitignored — so they pass in CI and in every worktree, and fail in the only checkout that has real founder state. |
+| Ambient founder key | 24 | The founder-authority tests assert "no anchor configured" while reading the real enrolled key from `dashboard/backend/data/`, which is gitignored — so they pass in CI and in every worktree, and fail in the only checkout that has real founder state. |
+
+A third problem sits underneath both and is not visible as a failure at all: a
+fresh worktree has no `node_modules`, and the dashboard security tests SKIP
+themselves rather than fail when their dependencies are absent. Full-suite runs
+from a worktree were silently skipping 17 tests. Position 1 turns that into a
+refusal to start.
 
 Both are environment-dependence, not logic. Both make the release gate's
 "tests pass" evidence weaker than it reads.
