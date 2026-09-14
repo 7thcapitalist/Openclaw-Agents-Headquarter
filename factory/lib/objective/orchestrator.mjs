@@ -20,16 +20,28 @@ import { ensureBranchHasCommit } from "../hq/github-publish.mjs";
 import { assertAcyclic, buildNodesComplete, descendants, isDeadlocked, readyNodes, GATE_SATISFIED } from "./graph.mjs";
 import { observeObjectiveGraph } from "./graph-observer.mjs";
 import { classifyBlocker, classifyObjectiveNodeBlocker, founderApprovalSetupBlocker, isFounderApprovalSetupFailure, isRetriableInfraBlocker } from "../hq/blocker-class.mjs";
-import { classifyFailure } from "../failure-classification.mjs";
+import { classifyFailure, isDeterministicProjectFailure } from "../failure-classification.mjs";
 
 const INTEGRATION_SYNTHETIC_STAGES = new Set(["product", "architect", "builder"]);
 
+// `fatal` marks this as a control-flow signal for the runner (see
+// isControlFlowError in openclaw-runner.mjs). Without the tag the runner caught
+// it like any failed agent attempt, rewrote it as "wrote no result file", and
+// the catch below never fired — so a two-line conflict became three silent
+// recovery attempts and an INFRASTRUCTURE_ERROR escalation.
 class MergeConflict extends Error {
-  constructor(nodeId, detail) { super(`merge conflict integrating ${nodeId}`); this.nodeId = nodeId; this.detail = detail; }
+  constructor(nodeId, detail) { super(`merge conflict integrating ${nodeId}`); this.nodeId = nodeId; this.detail = detail; this.fatal = true; }
 }
 
 const INFRA_FAILURE_RE = /could not start the cli|rate.?limit|cooldown|all models failed|did not write its result file|429|quota|usage limit|provider .* unavailable|ECONNREFUSED|ETIMEDOUT/i;
-const isInfrastructureFailure = (text) => INFRA_FAILURE_RE.test(String(text || ""));
+// Third of the three layers that must agree (see failure-classification.mjs).
+// The missing-result wrapper matches INFRA_FAILURE_RE regardless of the real
+// cause, so a conflict wrapped in it would be restated as "could not run ...
+// Retry the objective later" — advice that can never work for a merge.
+const isInfrastructureFailure = (text) => {
+  const str = String(text || "");
+  return !isDeterministicProjectFailure(str) && INFRA_FAILURE_RE.test(str);
+};
 
 // True when the underlying failure is environmental, however it was surfaced.
 //
@@ -40,8 +52,9 @@ const isInfrastructureFailure = (text) => INFRA_FAILURE_RE.test(String(text || "
 // the founder was paged for an exhausted seat or an agent that never started —
 // exactly what must never reach them. Trust the machine classification first
 // and fall back to prose only when there is none.
-const isInfraBlocker = (blocker) => blocker?.classification === "INFRASTRUCTURE_ERROR"
-  || isInfrastructureFailure(blocker?.summary);
+const isInfraBlocker = (blocker) => !isDeterministicProjectFailure(blocker?.summary)
+  && !isDeterministicProjectFailure(blocker?.why)
+  && (blocker?.classification === "INFRASTRUCTURE_ERROR" || isInfrastructureFailure(blocker?.summary));
 
 // Restate an infrastructure failure as the founder-legible, machine-taggable
 // blocker the objective views and the retry sweep both key off.
@@ -307,11 +320,28 @@ async function runIntegration({ hqRoot, objectivePath, execute, agentIds, maxAtt
     resp = await runToTerminal({ hqRoot, statePath, agentIds, maxAttemptsPerStage, concurrentGroups, execute: integExecute, publish });
   } catch (error) {
     if (error instanceof MergeConflict) {
+      // Name the files. A conflict the founder can see is usually decided in
+      // seconds; "merge conflict integrating <branch>" on its own sends them
+      // into the worktree to run the merge by hand before they can judge it.
+      const files = [...String(error.detail || "").matchAll(/^CONFLICT \([^)]*\): Merge conflict in (.+)$/gim)].map((m) => m[1].trim());
+      const fileList = files.length ? files.join(", ") : "(see the merge log on this node)";
       patchNode(objectivePath, integ.id, {
         status: "blocked", mergeLog,
-        blocker: { stage: "builder", outcome: "decision-required", summary: `merge conflict integrating ${error.nodeId}`, at: new Date().toISOString() },
-      }, { type: "integration-conflict", detail: error.nodeId });
-      return { status: "blocked", reason: "merge-conflict", node: error.nodeId };
+        blocker: {
+          stage: "builder",
+          outcome: "decision-required",
+          founderAction: true,
+          classification: "PROJECT_ERROR",
+          conflictFiles: files,
+          summary: `merge conflict integrating ${error.nodeId}: ${fileList}`,
+          whatFailed: `Merging ${error.nodeId} into the integration branch stopped on ${files.length || "some"} conflicting file(s).`,
+          why: "Two sub-task branches changed the same lines, so git cannot compose them without a human or agent choosing the result. This is deterministic: re-running the merge reproduces it exactly, so it was NOT retried.",
+          whatItNeedsFromFounder: `Resolve the conflict in ${fileList} on the integration branch, or decide which sub-task branch wins, then resume the objective.`,
+          whatHappensAfterApproval: "The integration resumes at the builder stage and the merged tree goes on to review, QA and security.",
+          at: new Date().toISOString(),
+        },
+      }, { type: "integration-conflict", detail: `${error.nodeId}: ${fileList}` });
+      return { status: "blocked", reason: "merge-conflict", node: error.nodeId, conflictFiles: files };
     }
     throw error;
   }

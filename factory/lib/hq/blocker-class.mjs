@@ -12,7 +12,7 @@
 //
 // Pure. Node builtins only.
 
-import { AGENT_STALL_RE } from "../failure-classification.mjs";
+import { AGENT_STALL_RE, isDeterministicProjectFailure } from "../failure-classification.mjs";
 
 const INFRA_FAIL_RE = new RegExp(
   [
@@ -35,6 +35,19 @@ const INFRA_FAIL_RE = new RegExp(
   ].join("|"),
   "i",
 );
+
+// Is this prose environmental?
+//
+// INFRA_FAIL_RE reads the whole blocker string, and the missing-result wrapper
+// ("... wrote no result file ... Reason: merge conflict integrating <branch>")
+// matches it on the wrapper alone. Since "infra" here means "safe to retry
+// without ever telling the founder", that made a deterministic merge conflict
+// eligible for silent sweeping forever. A conflict is never environmental.
+function isInfraText(text) {
+  const str = String(text || "");
+  if (isDeterministicProjectFailure(str)) return false;
+  return INFRA_FAIL_RE.test(str);
+}
 
 // A high-risk task cannot even initialize until the founder's approval authority
 // is configured (FACTORY_FOUNDER_PUBLIC_KEY). That is a founder setup action, not
@@ -83,7 +96,7 @@ export function classifyBlocker(blocker) {
     // agent that ran and stopped without writing one would otherwise read as a
     // transient hiccup and be swept forever on the route that just failed.
     if (AGENT_STALL_RE.test(text)) return "hard";
-    return INFRA_FAIL_RE.test(text) ? "infra" : "hard";
+    return isInfraText(text) ? "infra" : "hard";
   }
   // Any other non-empty blocker outcome: treat as needing a look, not infra.
   return "hard";
@@ -126,6 +139,11 @@ export function isRetriableInfraBlocker(blocker) {
   // The route ran and produced nothing. Re-running it unchanged reproduces it,
   // so this is never safe for the sweep — whatever the wrapper says.
   if (AGENT_STALL_RE.test(String(blocker.summary || "")) || AGENT_STALL_RE.test(String(blocker.why || ""))) return false;
+  // A deterministic failure is never safe to sweep, whatever class was recorded
+  // at escalation time — objective-state written before this fix still carries
+  // `classification: "INFRASTRUCTURE_ERROR"` on conflicts, and that stale label
+  // would otherwise keep re-running a merge that cannot succeed.
+  if (isDeterministicProjectFailure(blocker.summary) || isDeterministicProjectFailure(blocker.why)) return false;
   if (classifyBlocker(blocker) === "infra") return true;
   if (blocker.classification === "INFRASTRUCTURE_ERROR") return true;
   // Recovery escalation keeps the ORIGINAL error in `why` and prefixes
@@ -133,7 +151,7 @@ export function isRetriableInfraBlocker(blocker) {
   // Judge the underlying cause, not the wrapper — otherwise an agent that
   // could not start the CLI reads as a project failure once recovery has
   // wrapped it, and the sweep will not pick it up when the seat returns.
-  return INFRA_FAIL_RE.test(String(blocker.why || ""));
+  return isInfraText(String(blocker.why || ""));
 }
 
 export function isInfraFailure(blocker) {
