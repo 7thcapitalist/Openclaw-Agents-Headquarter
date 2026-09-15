@@ -96,6 +96,13 @@ export default async function handler(req, res) {
     if (error?.code === "unconfigured") {
       return sendJson(res, 503, { error: "control plane is not configured", detail: error.message });
     }
+    console.error("[intents] unhandled error", JSON.stringify({
+      name: error?.name ?? null,
+      message: String(error?.message ?? error).slice(0, 500),
+      status: error?.status ?? error?.statusCode ?? null,
+      code: error?.code ?? null,
+      method: req.method,
+    }));
     return sendJson(res, 502, { error: "intent queue unavailable" });
   }
 }

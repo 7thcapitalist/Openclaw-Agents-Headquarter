@@ -18,13 +18,19 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { discoverFactoryTasks } from "../dashboard/backend/lib/founderControlPlane.mjs";
-import { buildSnapshot, publishOnce } from "../factory/lib/hq/publisher.mjs";
+import { buildSnapshot, publishSnapshot } from "../factory/lib/hq/publisher.mjs";
+import { DEFAULTS, failureAlert, nextDelayMs, shouldPublish, snapshotFingerprint } from "../factory/lib/hq/publish-cadence.mjs";
 
 const hqRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-// Slow enough to be cheap, fast enough that the founder-visible staleness is
-// smaller than the time it takes to notice something. Tunable without a deploy.
-const DEFAULT_INTERVAL_MS = 30_000;
+// Publish on change, not on a metronome.
+//
+// A fixed 30s full-document rewrite published 2,880 byte-identical copies a day
+// (~86k/month) and was the write amplification the pipe audit flagged. The
+// cadence is now: never more often than the floor, always at least every
+// heartbeat, and backing off when the store refuses.
+const FLOOR_MS = Number(process.env.HQ_PUBLISH_INTERVAL_MS || DEFAULTS.floorMs);
+const HEARTBEAT_MS = Number(process.env.HQ_PUBLISH_HEARTBEAT_MS || DEFAULTS.heartbeatMs);
 
 function tasks() {
   try {
@@ -40,10 +46,11 @@ function tasks() {
 // scrollback or a pm2 log is not a place to put it.
 function report(result) {
   const stamp = new Date().toISOString();
+  if (result.skipped) return;
   if (result.ok) {
     const r = result.redaction || {};
     console.log(
-      `${stamp} published ${result.panels?.length ?? 0} panel(s) ` +
+      `${stamp} published ${result.panels?.length ?? 0} panel(s) (${result.why || "changed"}) ` +
         `[secrets ${r.secretsRedacted ?? 0}, paths ${r.pathsRewritten ?? 0}, ` +
         `truncated ${r.fieldsTruncated ?? 0}, reasoning ${r.reasoningBlocksStripped ?? 0}]`,
     );
@@ -52,8 +59,39 @@ function report(result) {
   console.error(`${stamp} publish failed: ${result.reason || `status ${result.status}`}`);
 }
 
+// Build, decide, maybe send. Returns what happened so the loop can pace itself.
+async function attempt(state) {
+  let snapshot;
+  try {
+    snapshot = await buildSnapshot({ hqRoot, tasks: tasks() });
+  } catch (error) {
+    return { ok: false, reason: `snapshot build failed: ${String(error?.message || error).slice(0, 200)}` };
+  }
+
+  const fingerprint = snapshotFingerprint(snapshot);
+  const decision = shouldPublish({
+    fingerprint,
+    lastFingerprint: state.lastFingerprint,
+    lastPublishedAtMs: state.lastPublishedAtMs,
+    heartbeatMs: HEARTBEAT_MS,
+  });
+  if (!decision.publish) return { ok: true, skipped: true, fingerprint };
+
+  const result = await publishSnapshot({ snapshot });
+  return {
+    ...result,
+    fingerprint,
+    reason: result.reason,
+    why: decision.reason,
+    publishedAt: snapshot.publishedAt,
+    redaction: snapshot.redaction,
+    panels: Object.keys(snapshot.panels || {}),
+  };
+}
+
 async function once() {
-  const result = await publishOnce({ hqRoot, tasks: tasks() });
+  const state = { lastFingerprint: null, lastPublishedAtMs: null };
+  const result = await attempt(state);
   report(result);
   return result;
 }
@@ -77,8 +115,10 @@ async function dryRun() {
 }
 
 async function loop() {
-  const interval = Number(process.env.HQ_PUBLISH_INTERVAL_MS || DEFAULT_INTERVAL_MS);
-  console.log(`publishing every ${interval}ms; outbound only`);
+  console.log(
+    `publish-on-change: floor ${FLOOR_MS}ms, heartbeat ${HEARTBEAT_MS}ms, ` +
+      `backoff cap ${DEFAULTS.backoffCapMs}ms; outbound only`,
+  );
   let stopping = false;
   for (const signal of ["SIGINT", "SIGTERM"]) {
     process.on(signal, () => {
@@ -86,12 +126,36 @@ async function loop() {
       console.log(`${signal} received; stopping after the current publish`);
     });
   }
+
+  const state = { lastFingerprint: null, lastPublishedAtMs: null, failureStreak: 0, firstFailureAtMs: null };
+
   // Sequential rather than on a timer: overlapping publishes would race to
   // overwrite the same document, and the newest writer would not reliably win.
   while (!stopping) {
-    await once();
+    const result = await attempt(state);
+    report(result);
+
+    if (result.ok && !result.skipped) {
+      state.lastFingerprint = result.fingerprint;
+      state.lastPublishedAtMs = Date.now();
+    }
+    if (result.ok) {
+      if (state.failureStreak > 0) {
+        console.log(`${new Date().toISOString()} publisher recovered after ${state.failureStreak} failure(s)`);
+      }
+      state.failureStreak = 0;
+      state.firstFailureAtMs = null;
+    } else {
+      state.failureStreak += 1;
+      state.firstFailureAtMs ??= Date.now();
+      // Eleven hours of failure with nobody told is the actual bug behind the
+      // bug, so a run of failures gets louder rather than quieter.
+      const alert = failureAlert({ failureStreak: state.failureStreak, firstFailureAtMs: state.firstFailureAtMs });
+      if (alert) console.error(`${new Date().toISOString()} ${alert}`);
+    }
+
     if (stopping) break;
-    await new Promise((r) => setTimeout(r, interval));
+    await new Promise((r) => setTimeout(r, nextDelayMs({ failureStreak: state.failureStreak, floorMs: FLOOR_MS })));
   }
 }
 
