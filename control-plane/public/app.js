@@ -12,6 +12,7 @@
 
 import { answerableDecisions, freshness, intentsPanel, panelsFor, statsFrom } from "/render.mjs";
 import { renderHome } from "/home.mjs";
+import { renderAgents, renderBoard, renderProjects } from "/views.mjs";
 
 const TIMEOUT_MS = 12_000;
 
@@ -35,6 +36,8 @@ const els = {
   body: document.getElementById("state-body"),
   mirror: document.getElementById("mirror"),
   home: document.getElementById("home"),
+  tabs: document.getElementById("tabs"),
+  view: document.getElementById("view"),
   staleBanner: document.getElementById("stale-banner"),
   stats: document.getElementById("stats"),
   panels: document.getElementById("panels"),
@@ -275,8 +278,55 @@ async function loadIntents() {
 // by a click is erased by the next paint unless it lives here.
 let lastSnapshot = null;
 
+// Which tab is showing, and any project the Board is narrowed to. Kept here so
+// a publish repaints the current tab rather than throwing the founder back to
+// Home every thirty seconds.
+let activeTab = "today";
+let boardProject = null;
+
+const TABS = [
+  ["today", "Today"],
+  ["board", "Board"],
+  ["projects", "Projects"],
+  ["agents", "Agents"],
+];
+
+function drawTabs() {
+  els.tabs.replaceChildren();
+  for (const [id, label] of TABS) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `tab${id === activeTab ? " tab--active" : ""}`;
+    button.textContent = label;
+    button.addEventListener("click", () => {
+      activeTab = id;
+      if (id !== "board") boardProject = null;
+      if (lastSnapshot) drawHome(lastSnapshot);
+    });
+    els.tabs.append(button);
+  }
+}
+
 function drawHome(snapshot) {
   lastSnapshot = snapshot;
+  drawTabs();
+
+  const onTab = activeTab !== "today";
+  els.home.hidden = onTab;
+  els.view.hidden = !onTab;
+  if (onTab) {
+    if (activeTab === "board") {
+      renderBoard(els.view, snapshot, { project: boardProject, onTask: () => {} });
+    } else if (activeTab === "projects") {
+      renderProjects(els.view, snapshot, {
+        onProject: (key) => { boardProject = key; activeTab = "board"; drawHome(snapshot); },
+      });
+    } else if (activeTab === "agents") {
+      renderAgents(els.view, snapshot);
+    }
+    return;
+  }
+
   renderHome(els.home, snapshot, {
     intentStateFor,
     onAnswer: (decision, choice, button) =>

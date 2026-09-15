@@ -1799,6 +1799,10 @@ app.use((err, req, res, next) => {
 // this maps the same path on disk into the local dashboard's module space. A
 // copy kept in step by discipline is how the two consoles came to disagree —
 // the local one said "Shaping the outcome" while the hosted one said "product".
+app.get("/lib/board.mjs", (req, res) => {
+  res.type("text/javascript").sendFile(join(ROOT, "control-plane", "public", "board.mjs"));
+});
+
 app.get("/lib/stage-vocabulary.mjs", (req, res) => {
   res.type("text/javascript").sendFile(join(ROOT, "control-plane", "public", "stage-vocabulary.mjs"));
 });

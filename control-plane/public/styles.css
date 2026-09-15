@@ -581,3 +581,78 @@ body {
 .home-intent--done { border-left-color: #2ea043; }
 .home-intent--failed { border-left-color: #f85149; }
 .home-option:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* Tabs. Mobile first: they scroll sideways in their own strip rather than
+   wrapping into a block that pushes the content down a phone screen. */
+.tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 18px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+.tabs::-webkit-scrollbar { display: none; }
+.tab {
+  flex: 0 0 auto;
+  min-height: 44px;
+  padding: 8px 16px;
+  border-radius: 999px;
+  border: 1px solid var(--line, #262b33);
+  background: var(--panel, #12151a);
+  color: var(--muted, #8a8f98);
+  font: inherit;
+  font-size: 0.88rem;
+  cursor: pointer;
+}
+.tab--active { color: var(--text, #e6edf3); border-color: #388bfd; background: rgba(56,139,253,0.12); }
+
+.view { display: flex; flex-direction: column; gap: 16px; max-width: 100%; }
+.view-lede { margin: 0; font-size: 0.9rem; color: var(--muted, #8a8f98); line-height: 1.5; }
+
+/* Six columns never sit side by side on a phone. Stacked by default, a grid
+   once there is room. */
+.board-grid { display: flex; flex-direction: column; gap: 14px; }
+.board-col {
+  border: 1px solid var(--line, #262b33);
+  border-radius: 10px;
+  background: var(--panel, #12151a);
+  padding: 12px;
+  min-width: 0;
+}
+.board-col-head {
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--muted, #8a8f98); margin-bottom: 10px;
+}
+.board-col-head b { color: var(--text, #e6edf3); }
+.board-card {
+  border: 1px solid var(--line, #262b33);
+  border-left: 3px solid #388bfd;
+  border-radius: 8px;
+  background: var(--raise, #1b2027);
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.board-card h4 { margin: 0 0 4px; font-size: 0.88rem; line-height: 1.4; }
+.board-card-foot { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+.home-chip--muted { background: rgba(138,143,152,0.15); color: var(--muted, #8a8f98); }
+.home-dot--idle { background: #6e7681; }
+.home-meta--dim { opacity: 0.8; }
+.stat-line { display: flex; flex-wrap: wrap; gap: 10px; margin: 8px 0; }
+.stat-chip { font-size: 0.8rem; color: var(--muted, #8a8f98); }
+.stat-chip strong { color: var(--text, #e6edf3); }
+
+@media (min-width: 900px) {
+  .board-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (min-width: 1300px) {
+  .board-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+}
+
+/* `hidden` must beat any display rule.
+   `.home { display: flex }` out-specified the attribute, so switching tabs left
+   Home's content stacked above the tab's content instead of replacing it. */
+[hidden] { display: none !important; }

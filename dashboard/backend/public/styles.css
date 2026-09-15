@@ -1582,3 +1582,22 @@ ul.timeline time { color: var(--muted); margin-right: 6px; }
 }
 /* The feed is now long enough to need its own scroll rather than growing Today. */
 .company-feed { max-height: 460px; overflow-y: auto; }
+
+/* Board cards: named by outcome, id small and muted. */
+.kanban-card { cursor: pointer; }
+.kanban-card h4 { margin: 0 0 6px; font-size: 0.9rem; line-height: 1.4; font-weight: 600; overflow-wrap: anywhere; }
+.kanban-meta { font-size: 0.78rem; color: var(--muted, #8a8f98); line-height: 1.45; }
+.kanban-foot { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+.kanban-id {
+  margin-top: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.68rem;
+  color: var(--muted, #8a8f98);
+  opacity: 0.7;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+@media (max-width: 720px) {
+  /* Six columns cannot sit side by side on a phone; stack them. */
+  .kanban { display: flex; flex-direction: column; gap: 14px; }
+}
