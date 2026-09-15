@@ -44,16 +44,56 @@ test("a decomposed objective whose nodes never ran is stranded", () => {
   const verdict = strandedNodes({
     status: "active",
     nodes: { a: node("a", "pending"), b: node("b", "pending") },
-    integration: { id: "i", status: "pending" },
+    integration: { id: "i", status: "pending", dependsOn: ["a", "b"] },
   });
   assert.equal(verdict.stranded, true);
-  assert.deepEqual(verdict.nodeIds.sort(), ["a", "b", "i"]);
+  // The integration node is not ready — it waits on a and b — so it is not
+  // listed. Scheduling the two build nodes is what restarts this objective.
+  assert.deepEqual(verdict.nodeIds.sort(), ["a", "b"]);
 });
 
 test("a node left `running` by a killed process is stranded — nothing can be running at boot", () => {
   const verdict = strandedNodes({ status: "active", nodes: { a: node("a", "running") } });
   assert.equal(verdict.stranded, true);
   assert.deepEqual(verdict.nodeIds, ["a"]);
+});
+
+// The defect this caught, found by reading production rather than the code.
+// Eight of the ten objectives on the machine on 2026-09-15 were week-old and
+// `blocked`, with every build node blocked or failed and an integration node
+// sitting `pending` behind them. `pending` alone would have called them
+// stranded — and runObjective re-asserts `status = "active"` unconditionally,
+// so all eight would have been relabelled as running work that does not exist.
+test("an integration node waiting behind blocked dependencies is NOT stranded", () => {
+  const verdict = strandedNodes({
+    status: "blocked",
+    nodes: {
+      a: node("a", "blocked"),
+      b: node("b", "blocked-by-dep", { dependsOn: ["a"] }),
+    },
+    integration: { id: "i", status: "pending", dependsOn: ["a", "b"] },
+  });
+  assert.equal(verdict.stranded, false, "nothing can run, so nothing is stranded");
+  assert.match(verdict.reason, /no node is ready/);
+});
+
+test("an integration node whose dependencies all finished IS stranded", () => {
+  const verdict = strandedNodes({
+    status: "active",
+    nodes: { a: node("a", "gate-satisfied"), b: node("b", "gate-satisfied") },
+    integration: { id: "i", status: "pending", dependsOn: ["a", "b"] },
+  });
+  assert.equal(verdict.stranded, true);
+  assert.deepEqual(verdict.nodeIds, ["i"]);
+});
+
+test("a pending node behind a failed dependency is not ready", () => {
+  const verdict = strandedNodes({
+    status: "active",
+    nodes: { a: node("a", "failed"), b: node("b", "pending", { dependsOn: ["a"] }) },
+    integration: { id: "i", status: "blocked" },
+  });
+  assert.equal(verdict.stranded, false);
 });
 
 test("a blocked node is a decision, not an interruption, and is left alone", () => {
@@ -65,7 +105,7 @@ test("a blocked node is a decision, not an interruption, and is left alone", () 
     integration: { id: "i", status: "blocked" },
   });
   assert.equal(verdict.stranded, false);
-  assert.match(verdict.reason, /no node is waiting/);
+  assert.match(verdict.reason, /no node is ready/);
 });
 
 test("a blocked objective with one released node IS resumed", () => {
@@ -73,11 +113,11 @@ test("a blocked objective with one released node IS resumed", () => {
   // still says `blocked` while the answered node has gone back to `pending`.
   const verdict = strandedNodes({
     status: "blocked",
-    nodes: { a: node("a", "pending"), b: node("b", "blocked-by-dep") },
-    integration: { id: "i", status: "pending" },
+    nodes: { a: node("a", "pending"), b: node("b", "blocked-by-dep", { dependsOn: ["a"] }) },
+    integration: { id: "i", status: "pending", dependsOn: ["a", "b"] },
   });
   assert.equal(verdict.stranded, true);
-  assert.ok(verdict.nodeIds.includes("a"));
+  assert.deepEqual(verdict.nodeIds, ["a"], "only the released node — the integration still waits on b");
 });
 
 test("a finished objective is never restarted", () => {
@@ -100,9 +140,10 @@ test("the sweep hands every stranded objective to the orchestrator, once", async
   const root = stateRoot();
   objectiveFixture(root, "lifemaxing", "obj-2fbb6bcd", { nodes: { a: node("a", "pending") } });
   objectiveFixture(root, "lifemaxing", "obj-done", { status: "complete", nodes: { a: node("a", "pending") } });
+  // The production shape: blocked build node, integration pending behind it.
   objectiveFixture(root, "hq", "obj-blocked", {
     status: "blocked", nodes: { a: node("a", "blocked") },
-    integration: { id: "obj-blocked-integration", status: "blocked" },
+    integration: { id: "obj-blocked-integration", status: "pending", dependsOn: ["a"] },
   });
 
   const calls = [];

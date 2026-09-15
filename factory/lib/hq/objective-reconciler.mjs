@@ -29,6 +29,7 @@
 import { existsSync, readdirSync, readFileSync } from "fs";
 import { join } from "path";
 import { readObjState, CANCELLED } from "../objective/orchestrator.mjs";
+import { readyNodes, GATE_SATISFIED } from "../objective/graph.mjs";
 
 // objectives live at <stateRoot>/<project>/objectives/<id>/objective-state.json
 function findObjectiveStates(stateRoot, out = []) {
@@ -48,11 +49,6 @@ function findObjectiveStates(stateRoot, out = []) {
   return out;
 }
 
-// A node in one of these states is being driven by a runner — and at boot there
-// are no runners. `blocked` and `failed` are deliberately absent: those are
-// decisions, not interruptions, and re-running them is the founder's call.
-const STRANDED_NODE_STATES = new Set(["pending", "running"]);
-
 const FINISHED_OBJECTIVE_STATES = new Set([CANCELLED, "complete", "completed", "superseded"]);
 
 /**
@@ -70,13 +66,40 @@ export function strandedNodes(objective) {
     return { stranded: false, reason: `objective is ${objective.status}`, nodeIds: [] };
   }
 
-  const nodes = Object.values(objective.nodes || {});
-  // The integration node is a node too, and it strands exactly the same way.
-  if (objective.integration?.id) nodes.push(objective.integration);
+  const nodes = objective.nodes || {};
+  // READY, not merely `pending`. A node whose dependencies are blocked or
+  // failed is `pending` because it is correctly waiting its turn, and handing
+  // that objective to runObjective would schedule nothing — but runObjective
+  // re-asserts `status = "active"` unconditionally, so a genuinely blocked
+  // objective would be relabelled as running work that does not exist.
+  //
+  // Eight of the ten objectives on this machine on 2026-09-15 were exactly
+  // that shape: week-old, `blocked`, every build node blocked or failed, and an
+  // integration node sitting `pending` behind them. Resuming those would have
+  // corrupted the founder's view of what the company is doing.
+  //
+  // readyNodes is the orchestrator's own scheduling predicate, imported rather
+  // than restated so the two can never disagree about what "ready" means.
+  const ready = readyNodes(objective);
 
-  const nodeIds = nodes.filter((node) => STRANDED_NODE_STATES.has(node?.status)).map((node) => node.id);
-  if (!nodeIds.length) return { stranded: false, reason: "no node is waiting for a runner", nodeIds: [] };
-  return { stranded: true, reason: `${nodeIds.length} node(s) with no runner`, nodeIds };
+  // The integration node is a node too, and it strands the same way — but it
+  // lives beside `nodes`, so readyNodes cannot see it.
+  const integration = objective.integration;
+  if (integration?.id && integration.status === "pending"
+      && (integration.dependsOn || []).every((dep) => nodes[dep]?.status === GATE_SATISFIED)) {
+    ready.push(integration.id);
+  }
+
+  // A node left `running` is owned by a process that no longer exists — at boot
+  // nothing can be running. This is the one state readyNodes does not cover,
+  // because mid-run is not a thing the scheduler ever needs to ask about.
+  const abandoned = [...Object.values(nodes), ...(integration?.id ? [integration] : [])]
+    .filter((node) => node?.status === "running")
+    .map((node) => node.id);
+
+  const nodeIds = [...new Set([...ready, ...abandoned])];
+  if (!nodeIds.length) return { stranded: false, reason: "no node is ready to run", nodeIds: [] };
+  return { stranded: true, reason: `${nodeIds.length} node(s) ready with no runner`, nodeIds };
 }
 
 /**
