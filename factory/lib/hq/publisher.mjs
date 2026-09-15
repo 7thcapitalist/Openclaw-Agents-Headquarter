@@ -23,6 +23,7 @@ import { buildCompanyState } from "./company-state.mjs";
 import { buildDecisionHistory } from "./decision-history.mjs";
 import { buildDeploymentsSnapshot } from "./deployments.mjs";
 import { buildGoalsSnapshot } from "./goals.mjs";
+import { buildLaunchSnapshot } from "./launch.mjs";
 import { buildOperationsSnapshot } from "./operations.mjs";
 import { buildReadinessSnapshot } from "./readiness.mjs";
 import { buildWorkProposals } from "./proposer.mjs";
@@ -71,6 +72,10 @@ export async function collectSources({ hqRoot, tasks = [], now = new Date() } = 
     // 2026-09-14 incident was visible to `/api/system/readiness` and to
     // nothing the founder could actually look at — least of all from a phone.
     gather("readiness", () => buildReadinessSnapshot({ hqRoot })),
+    // What can be handed work, and what is already planned for tonight.
+    // Read-only: the console enqueues intents against these lists, and the
+    // machine is what acts on them.
+    gather("launch", () => buildLaunchSnapshot({ hqRoot })),
   ]);
 
   return Object.fromEntries(panels.map(({ name, value }) => [name, value]));

@@ -19,7 +19,8 @@
 // `peek` exists for the same reason the publisher has `dry-run`: the
 // interesting question is not "did it run" but "what is it about to run".
 
-import { dirname, resolve } from "node:path";
+import { existsSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { executeBatch } from "../factory/lib/hq/intent-worker.mjs";
@@ -73,6 +74,26 @@ async function call(path, { method = "GET", body = null } = {}) {
 // Imported lazily, and from dashboard/backend/lib, because these are the same
 // entry points the local dashboard uses. Loading them at module scope would
 // make `peek` — which executes nothing — drag in the whole dashboard.
+// The gates the local dashboard applies before it will spend anything, in one
+// place so the two money-spending intents cannot drift apart from it or from
+// each other. Every failure is a throw, which the worker records as `failed`
+// with this reason — the founder sees why nothing happened.
+function requireRunnableProject(control, projectId) {
+  const id = String(projectId || "").trim();
+  if (!id) throw new Error("a project is required");
+  const repo = control.resolveProjectRepo(hqRoot, id);
+  if (!repo) throw new Error(`no such project: ${id}`);
+  if (!existsSync(join(repo, ".git"))) throw new Error(`${id} does not point at a git working tree`);
+  if (control.isProjectPaused(hqRoot, id)) throw new Error(`${id} is paused — resume it before starting work`);
+  return { repo };
+}
+
+// An objective can be a thousand characters. A result detail is read in a list.
+function summarize(text) {
+  const line = String(text || "").trim().replace(/\s+/g, " ");
+  return line.length > 120 ? `${line.slice(0, 117)}…` : line;
+}
+
 async function handlers() {
   const control = await import("../dashboard/backend/lib/founderControlPlane.mjs");
 
@@ -89,6 +110,45 @@ async function handlers() {
       const { runObjective } = await import("../factory/lib/objective/orchestrator.mjs");
       const result = await control.handleObjectiveRetry({ root: hqRoot, hqRoot, objectiveId, runObjective });
       return `retried ${objectiveId}: ${result?.status || "started"}`;
+    },
+
+    // Starting an objective is the one intent that spends real money
+    // unattended, so it runs through the SAME gates the local dashboard
+    // applies — a registered project, a real git tree, and not paused — and
+    // refuses rather than improvising when any of them fails.
+    //
+    // It spawns `scripts/factory-objective.mjs`, exactly as the overnight
+    // queue does. The objective text is an argv VALUE, never part of a shell
+    // string: `spawn` is called without a shell, and the protocol has already
+    // rejected any argument carrying a shell shape. Nothing here builds a
+    // command out of founder text.
+    //
+    // The child is detached. Decomposing and running an objective takes hours,
+    // and the intent worker's job is to start it and say so, not to hold the
+    // poller open until it finishes.
+    "objective.start": async ({ objective, projectId }) => {
+      const { repo } = requireRunnableProject(control, projectId);
+      const { spawn } = await import("node:child_process");
+      const child = spawn(
+        process.execPath,
+        [join(hqRoot, "scripts", "factory-objective.mjs"), "start",
+          "--objective", objective, "--project", projectId, "--repo", repo],
+        { cwd: hqRoot, stdio: "ignore", detached: true },
+      );
+      child.unref();
+      return `started an objective for ${projectId} (pid ${child.pid}): ${summarize(objective)}`;
+    },
+
+    // Planning the night only writes to the queue. It never starts the run —
+    // that is a separate, deliberate act, and an intent that both queued work
+    // and began spending on it would make "plan tomorrow" indistinguishable
+    // from "go now".
+    "overnight.add": async ({ objective, projectId }) => {
+      const { repo } = requireRunnableProject(control, projectId);
+      const { addOvernightItem } = await import("../dashboard/backend/lib/overnightQueue.mjs");
+      const queue = addOvernightItem(hqRoot, { objective, projectId, repo });
+      const added = queue.items[queue.items.length - 1];
+      return `queued for tonight on ${projectId} (${queue.items.length} of 8): ${summarize(objective)} [${added?.id || "?"}]`;
     },
 
     "decision.resolve": async ({ decisionId, choice }) => {
