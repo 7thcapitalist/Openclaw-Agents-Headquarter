@@ -11,6 +11,7 @@
 // is the DOM and the fetching.
 
 import { answerableDecisions, freshness, intentsPanel, panelsFor, statsFrom } from "/render.mjs";
+import { renderHome } from "/home.mjs";
 
 const TIMEOUT_MS = 12_000;
 
@@ -33,6 +34,7 @@ const els = {
   title: document.getElementById("state-title"),
   body: document.getElementById("state-body"),
   mirror: document.getElementById("mirror"),
+  home: document.getElementById("home"),
   staleBanner: document.getElementById("stale-banner"),
   stats: document.getElementById("stats"),
   panels: document.getElementById("panels"),
@@ -222,6 +224,14 @@ function renderMirror(snapshot) {
       : `This snapshot is ${age.label}. The factory machine may be offline, or the publisher stopped — everything below is as of then, not now.`;
   }
 
+  // Home first, and on its own terms. Everything the other four views will
+  // eventually show stays below it, so nothing is lost while Home is the only
+  // view that has been designed.
+  renderHome(els.home, snapshot, {
+    onAnswer: (decision, choice, button) =>
+      submitIntent("decision.resolve", { decisionId: decision.id, choice }, button),
+  });
+
   renderStats(statsFrom(snapshot?.panels));
   renderPanels(panelsFor(snapshot));
 
@@ -310,10 +320,16 @@ els.signinForm.addEventListener("submit", async (event) => {
       startPolling();
       return;
     }
+    // 503 is the control plane saying a credential is not configured on the
+    // SERVER. Reporting that as "that password was not accepted" sends the
+    // founder hunting for a typo in a password that was never going to be
+    // checked. Say what is actually wrong.
     showSignIn(
-      response.status === 429
-        ? "Too many attempts. Wait a minute and try again."
-        : "That password was not accepted.",
+      response.status === 503
+        ? "This deployment is missing HQ_VIEW_PASSWORD or HQ_SESSION_SECRET. Nothing typed here can work until they are set."
+        : response.status === 429
+          ? "Too many attempts. Wait a minute and try again."
+          : "That password was not accepted.",
     );
   } catch {
     showSignIn("Could not reach the control plane.");
@@ -337,6 +353,16 @@ els.refresh.addEventListener("click", () => loadMirror());
 async function main() {
   try {
     const response = await request("/api/session");
+    // The same defect on the boot path: an unconfigured deployment answered 503
+    // and fell through to the sign-in form, making a server misconfiguration
+    // indistinguishable from "please log in".
+    if (response.status === 503) {
+      return showState({
+        eyebrow: "Not configured",
+        title: "This deployment is missing a credential.",
+        body: "HQ_VIEW_PASSWORD and HQ_SESSION_SECRET must be set on the deployment before anyone can sign in. The factory machine is unaffected.",
+      });
+    }
     const { authenticated } = await response.json();
     if (authenticated) {
       await loadMirror();

@@ -322,3 +322,173 @@ body {
   letter-spacing: 0.08em;
   margin-bottom: 0.2rem;
 }
+
+/* ── Home ──────────────────────────────────────────────────────────────────
+   Mobile first. Every rule below is written for a 375px phone and only widens
+   at the breakpoint; the founder said they will use this on a phone more than
+   a laptop, so the narrow case is the design, not the fallback. */
+
+.home {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  /* No fixed widths and no min-widths anywhere in this block: that is what
+     keeps 375px free of horizontal scroll. */
+  max-width: 100%;
+}
+
+.home-age {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+  color: var(--muted, #8a8f98);
+}
+.home-age-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #2ea043;
+  flex: 0 0 auto;
+}
+.home-age--stale { color: #d29922; }
+.home-age--stale .home-age-dot { background: #d29922; }
+
+/* Loud, because an 11-hour-old mirror once looked exactly like a live one. */
+.home-stale {
+  border: 1px solid #d29922;
+  border-left-width: 4px;
+  border-radius: 8px;
+  background: rgba(210, 153, 34, 0.08);
+  color: #e3b341;
+  padding: 12px 14px;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+.home-stale strong { display: block; margin-bottom: 4px; }
+
+.home-calm {
+  margin: 0;
+  padding: 20px 0;
+  font-size: 1.05rem;
+  color: var(--muted, #8a8f98);
+}
+
+.home-heading {
+  margin: 8px 0 0;
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.home-cards { display: flex; flex-direction: column; gap: 12px; }
+
+.home-card {
+  border: 1px solid var(--line, #262b33);
+  border-radius: 10px;
+  padding: 14px;
+  background: var(--panel, #12151a);
+  /* Long task ids and URLs must wrap rather than widen the page. */
+  overflow-wrap: anywhere;
+}
+.home-card--decision { border-left: 3px solid #388bfd; }
+
+.home-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.home-chip {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(56, 139, 253, 0.15);
+  color: #79c0ff;
+}
+.home-chip--risk { background: rgba(248, 81, 73, 0.15); color: #ff7b72; }
+
+.home-question { margin: 0 0 8px; font-size: 1rem; line-height: 1.45; font-weight: 600; }
+.home-why, .home-rec { margin: 0 0 8px; font-size: 0.88rem; line-height: 1.5; color: var(--muted, #8a8f98); }
+.home-rec strong { color: var(--text, #e6edf3); }
+
+.home-actions { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.home-option {
+  /* 44px is the smallest reliably tappable target. */
+  min-height: 44px;
+  width: 100%;
+  padding: 10px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--line, #262b33);
+  background: var(--raise, #1b2027);
+  color: var(--text, #e6edf3);
+  font: inherit;
+  font-size: 0.9rem;
+  text-align: left;
+  line-height: 1.4;
+  cursor: pointer;
+}
+.home-option:hover:not(:disabled) { border-color: #388bfd; }
+.home-option:disabled { opacity: 0.6; cursor: default; }
+.home-freetext {
+  min-height: 44px;
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line, #262b33);
+  background: var(--bg, #0d1117);
+  color: var(--text, #e6edf3);
+  font: inherit;
+  /* 16px stops iOS Safari zooming the page on focus, which is what actually
+     produces horizontal scroll on a phone. */
+  font-size: 16px;
+}
+
+.home-meta { font-size: 0.78rem; color: var(--muted, #8a8f98); }
+.home-foot { margin: 10px 0 0; }
+
+.home-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.home-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  border: 1px solid var(--line, #262b33);
+  border-radius: 8px;
+  background: var(--panel, #12151a);
+}
+.home-row-body { min-width: 0; }
+.home-row-title { font-size: 0.9rem; font-weight: 500; overflow-wrap: anywhere; }
+.home-dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 6px; flex: 0 0 auto; }
+.home-dot--bad { background: #f85149; }
+.home-dot--warn { background: #d29922; }
+
+.home-pulse {
+  margin: 4px 0 0;
+  padding-top: 14px;
+  border-top: 1px solid var(--line, #262b33);
+  font-size: 0.82rem;
+  color: var(--muted, #8a8f98);
+  line-height: 1.5;
+}
+
+.everything-else { margin-top: 28px; }
+.everything-else > summary {
+  cursor: pointer;
+  font-size: 0.85rem;
+  color: var(--muted, #8a8f98);
+  padding: 10px 0;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+}
+
+@media (min-width: 720px) {
+  .home-actions { flex-direction: row; flex-wrap: wrap; }
+  .home-option { width: auto; min-width: 0; flex: 1 1 220px; }
+  .home-freetext { flex: 1 1 260px; width: auto; }
+  .home-cards { gap: 14px; }
+}
