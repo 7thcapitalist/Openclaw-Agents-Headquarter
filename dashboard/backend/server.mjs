@@ -88,6 +88,7 @@ import {
   askFounderQuestion,
   answerFounderQuestion,
   listPendingQuestions,
+  postTaskComment,
   resolveFounderDecision,
   resumeObjectiveAfterDecision,
   resolveProjectRepo,
@@ -959,45 +960,17 @@ app.get("/api/founder/tasks/:id/interactions", (req, res) => {
 // wakeup queue rejects any item carrying a command or payload.
 app.post("/api/founder/tasks/:id/interactions", (req, res) => {
   try {
-    const statePath = findTaskStatePath(ROOT, req.params.id);
-    if (!statePath) return res.status(404).json({ error: "No such factory task." });
-
-    const interaction = createInteraction({
+    // Shared with the console's `task.comment` intent so the two cannot drift.
+    const result = postTaskComment({
+      root: ROOT, hqRoot: ROOT,
       taskId: req.params.id,
       kind: req.body?.kind || "comment",
-      // The author is the authenticated founder, never a value from the body.
-      author: { type: "human", id: "founder" },
       body: req.body?.body,
       idempotencyKey: req.body?.idempotencyKey,
     });
-
-    const taskDir = dirname(statePath);
-    // hqRoot threaded so interaction.post is checked. The author here is always
-    // the authenticated founder, whose authority is superior, so this route is
-    // never refused — the check matters for the agent callers that come later.
-    const result = appendInteraction(interactionsPath(taskDir), interaction, { hqRoot: ROOT });
-
-    const wakeups = [];
-    if (result.accepted) {
-      let cfg = {};
-      try { cfg = JSON.parse(readFileSync(join(ROOT, "factory", "factory.config.json"), "utf8")); } catch { /* defaults */ }
-      const knownAgents = [...new Set(Object.values(cfg.openclawIntegration?.agentIds || {}).filter((value) => typeof value === "string"))];
-      const queuePath = join(dirname(dirname(taskDir)), "wakeups.json");
-      for (const wakeup of mentionWakeups({ interactions: [interaction], knownAgents, objectiveId: interaction.objectiveId })) {
-        // Best effort: failing to announce a mention must not lose the comment.
-        try { enqueueWakeup(queuePath, wakeup, { hqRoot: ROOT }); wakeups.push(wakeup.actorId); }
-        catch { /* the thread is the record; the wakeup is a hint */ }
-      }
-    }
-
-    res.status(result.accepted ? 201 : 200).json({
-      accepted: result.accepted, duplicate: result.duplicate,
-      interactionId: result.interaction.interactionId,
-      mentions: result.interaction.mentions, notified: wakeups,
-      redactions: result.interaction.redactions,
-    });
+    res.status(result.accepted ? 201 : 200).json(result);
   } catch (e) {
-    res.status(400).json({ error: String(e.message || e) });
+    res.status(e.statusCode || 400).json({ error: String(e.message || e) });
   }
 });
 

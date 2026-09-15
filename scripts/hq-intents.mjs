@@ -133,6 +133,29 @@ export async function handlers() {
       return `started ${result.objectiveId}: ${result.nodeCount} node(s) planned and running`;
     },
 
+    // Dismissing an inbox item is presentation only: it writes a flag in
+    // control-plane.json and touches no task state, no decision and no run.
+    // Fully reversible from the dashboard.
+    "inbox.dismiss": async ({ itemId }) => {
+      const id = String(itemId || "").trim();
+      if (!id) throw new Error("an inbox item id is required");
+      control.setInboxItemDismissed(hqRoot, id, true, { reason: "dismissed from the console" });
+      return `dismissed inbox item ${id}`;
+    },
+
+    // A comment is UNTRUSTED DATA and is treated as such all the way down: it
+    // is stored, redacted, bounded and attributed, and never interpolated into
+    // a prompt, a handoff or a command. The author is fixed to the founder here
+    // — the intent protocol does not carry an author and must not start to.
+    // A mention can cause a wakeup carrying an identifier and nothing else.
+    "task.comment": async ({ taskId, body }) => {
+      const result = control.postTaskComment({ root: hqRoot, hqRoot, taskId: String(taskId || ""), body });
+      if (result.duplicate) return `comment already recorded on ${taskId}`;
+      const notified = result.notified?.length ? `, notified ${result.notified.join(", ")}` : "";
+      const redacted = result.redactions?.length ? `, ${result.redactions.length} redaction(s)` : "";
+      return `commented on ${taskId}${notified}${redacted}`;
+    },
+
     // The overnight plan. `repo` is resolved here rather than accepted as an
     // argument: the allowlist declares only `objective` and `projectId`, and a
     // path arriving from the network is exactly what the protocol forbids.
