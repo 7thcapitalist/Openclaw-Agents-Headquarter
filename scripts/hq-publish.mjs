@@ -18,6 +18,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { discoverFactoryTasks } from "../dashboard/backend/lib/founderControlPlane.mjs";
+import { overnightLimit, readOvernightQueue } from "../dashboard/backend/lib/overnightQueue.mjs";
 import { readState } from "../factory/lib/task-workflow.mjs";
 import { buildSnapshot, buildTaskDetails, publishSnapshot, publishTaskDetail } from "../factory/lib/hq/publisher.mjs";
 import { DEFAULTS, failureAlert, nextDelayMs, shouldPublish, snapshotFingerprint } from "../factory/lib/hq/publish-cadence.mjs";
@@ -42,6 +43,19 @@ function taskStates() {
       .filter(Boolean);
   } catch {
     return [];
+  }
+}
+
+// Tonight's plan, injected into the snapshot for the same reason `tasks` is:
+// the reader lives in dashboard/backend/lib and factory/ must not import from
+// there. Returning null rather than throwing keeps a broken queue file to one
+// missing panel — `buildOvernightPanel` renders that as unavailable-with-reason.
+function overnight() {
+  try {
+    return { queue: readOvernightQueue(hqRoot), limit: overnightLimit };
+  } catch (error) {
+    console.warn(`overnight plan unavailable: ${String(error?.message || error).slice(0, 200)}`);
+    return null;
   }
 }
 
@@ -76,7 +90,7 @@ function report(result) {
 async function attempt(state) {
   let snapshot;
   try {
-    snapshot = await buildSnapshot({ hqRoot, tasks: tasks() });
+    snapshot = await buildSnapshot({ hqRoot, tasks: tasks(), readOvernight: overnight });
   } catch (error) {
     return { ok: false, reason: `snapshot build failed: ${String(error?.message || error).slice(0, 200)}` };
   }
@@ -128,7 +142,7 @@ async function once() {
 }
 
 async function dryRun() {
-  const snapshot = await buildSnapshot({ hqRoot, tasks: tasks() });
+  const snapshot = await buildSnapshot({ hqRoot, tasks: tasks(), readOvernight: overnight });
   console.log(
     JSON.stringify(
       {

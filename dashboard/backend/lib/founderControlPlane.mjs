@@ -8,7 +8,7 @@ import { writeHandoff } from "../../../factory/lib/handoff.mjs";
 import { listProjectBriefs } from "../../../factory/lib/intel/project-brief.mjs";
 import { buildCompanyBriefing } from "../../../factory/lib/intel/founder-briefing.mjs";
 import { toTaskRecord } from "../../../factory/lib/learning/evidence.mjs";
-import { classifyBlocker, classifyObjectiveNodeBlocker } from "../../../factory/lib/hq/blocker-class.mjs";
+import { classifyBlocker, classifyObjectiveNodeBlocker, founderApprovalSetupBlocker } from "../../../factory/lib/hq/blocker-class.mjs";
 import { buildOutcome } from "../../../factory/lib/failure-outcome.mjs";
 import { resumeObjectiveNodes, setObjectiveRecoveryInFlight, readObjState } from "../../../factory/lib/objective/orchestrator.mjs";
 import { defaultStateRoot } from "../../../factory/lib/natural-language-intake.mjs";
@@ -642,6 +642,151 @@ export async function handleObjectiveRetry({
     try { if (lockFd !== undefined) closeSync(lockFd); } catch { /* best-effort cleanup */ }
     try { if (lockFd !== undefined && existsSync(lockPath)) unlinkSync(lockPath); } catch { /* stale-lock reclamation handles host interruptions */ }
   }
+}
+
+/**
+ * Start one founder objective, from the local dashboard or from a console
+ * intent. The sibling of `handleObjectiveRetry` above, and it exists for the
+ * same reason: two callers need this sequence and neither should own it.
+ *
+ * WHAT IS AWAITED AND WHAT IS NOT. Decomposition is awaited, the pipeline is
+ * not. This is deliberate and it is the difference between this function and
+ * a fire-and-forget:
+ *
+ *   - Planning is where a start usually dies (a bad project, a paused project,
+ *     a repo that is not a git tree, a decomposition call that fails). It takes
+ *     seconds. Awaiting it means the caller's acknowledgement reports what
+ *     actually happened rather than what was hoped.
+ *   - The pipeline takes minutes to hours. The intent worker runs its batch
+ *     SEQUENTIALLY, so awaiting a full objective there would block every other
+ *     founder request behind it for the duration.
+ *
+ * The run is therefore detached, but never silently: its terminal status lands
+ * on the founder job through `saveFounderJob`, which is published, so a failure
+ * after this function returns is still something a screen can show.
+ *
+ * @returns {{objectiveId, status, nodeCount, jobId, blocked?: boolean}}
+ */
+export async function handleObjectiveStart({
+  root,
+  hqRoot,
+  objective,
+  projectId,
+  repo: repoInput = null,
+  decompose,
+  runObjective,
+  now = () => new Date().toISOString(),
+  readConfig = () => {
+    try { return JSON.parse(readFileSync(join(hqRoot || root, "factory", "factory.config.json"), "utf8")); }
+    catch { return {}; }
+  },
+}) {
+  const hq = hqRoot || root;
+  const text = String(objective || "").trim();
+  if (!text) {
+    const err = new Error("An objective is required.");
+    err.statusCode = 400; throw err;
+  }
+  const project = String(projectId || "").trim();
+  if (!project) {
+    const err = new Error("A project is required.");
+    err.statusCode = 400; throw err;
+  }
+
+  const repo = repoInput ? resolveRepoInput(root, repoInput) : resolveProjectRepo(root, project);
+  if (!repo) {
+    const err = new Error(`No repository is registered for project "${project}".`);
+    err.statusCode = 400; throw err;
+  }
+  if (isProjectPaused(root, project)) {
+    const err = new Error("Resume this project before starting an objective.");
+    err.statusCode = 409; throw err;
+  }
+  if (!existsSync(join(repo, ".git"))) {
+    const err = new Error("That project's repository is not a git working tree.");
+    err.statusCode = 400; throw err;
+  }
+
+  const startedAt = now();
+  const jobId = `founder-${Date.now().toString(36)}`;
+  const job = {
+    id: jobId, kind: "objective", projectId: project, objective: text, repo,
+    status: "decomposing", createdAt: startedAt, updatedAt: startedAt,
+  };
+  saveFounderJob(root, job);
+
+  const cfg = readConfig();
+
+  let graph;
+  try {
+    graph = await decompose({
+      hqRoot: hq, objective: text, project, repo,
+      decomposeAgentId: cfg.openclawIntegration?.agentIds?.decompose,
+    });
+  } catch (error) {
+    // Decomposition is the one failure with no objective state file behind it,
+    // so this record is the only thing standing between the founder and a
+    // request that vanished.
+    saveFounderJob(root, Object.assign(job, {
+      status: "error", error: String(error?.message || error), updatedAt: now(),
+    }));
+    throw error;
+  }
+
+  const dir = join(defaultStateRoot(hq, repo), "objectives", graph.objectiveId);
+  mkdirSync(dir, { recursive: true });
+  const objectivePath = join(dir, "objective-state.json");
+
+  // Preflight: a high-risk node cannot initialize without the founder approval
+  // key. Block the objective here, with the remediation on it, rather than
+  // letting the orchestrator hard-fail on the first node.
+  const highRisk = Object.values(graph.nodes || {}).filter((n) => n.contract?.risk === "high");
+  if (highRisk.length && !process.env.FACTORY_FOUNDER_PUBLIC_KEY) {
+    const at = now();
+    for (const n of highRisk) {
+      n.status = "blocked"; n.finishedAt = at;
+      n.blocker = founderApprovalSetupBlocker({ at });
+    }
+    for (const n of Object.values(graph.nodes || {})) {
+      if (n.status === "pending" && (n.dependsOn || []).some((d) => highRisk.find((h) => h.id === d))) {
+        n.status = "blocked-by-dep";
+      }
+    }
+    graph.status = "blocked";
+    (graph.events ||= []).push({ at, type: "objective-blocked", detail: "high-risk objective needs founder approval key" });
+    writeFileSync(objectivePath, `${JSON.stringify(graph, null, 2)}\n`, "utf8");
+    saveFounderJob(root, Object.assign(job, {
+      status: "blocked", objectiveId: graph.objectiveId, nodeCount: Object.keys(graph.nodes || {}).length,
+      note: "High-risk objective — configure FACTORY_FOUNDER_PUBLIC_KEY, then continue it from the Founder Inbox.",
+      updatedAt: at,
+    }));
+    return { objectiveId: graph.objectiveId, status: "blocked", blocked: true, nodeCount: highRisk.length, jobId };
+  }
+
+  writeFileSync(objectivePath, `${JSON.stringify(graph, null, 2)}\n`, "utf8");
+  const nodeCount = Object.keys(graph.nodes || {}).length;
+  saveFounderJob(root, Object.assign(job, {
+    status: "running", objectiveId: graph.objectiveId, nodeCount, updatedAt: now(),
+  }));
+
+  Promise.resolve()
+    .then(() => runObjective({
+      hqRoot: hq,
+      objectivePath,
+      agentIds: cfg.openclawIntegration?.agentIds || {},
+      maxAttemptsPerStage: cfg.openclawIntegration?.maxAttemptsPerStage || 3,
+      maxInfraAttemptsPerStage: cfg.openclawIntegration?.maxInfraAttemptsPerStage || 6,
+      concurrentGroups: cfg.openclawIntegration?.concurrentGroups,
+      stateRoot: defaultStateRoot(hq, repo),
+    }))
+    .then((r) => {
+      saveFounderJob(root, Object.assign(job, { status: r?.status || "complete", updatedAt: new Date().toISOString() }));
+    })
+    .catch((error) => {
+      saveFounderJob(root, Object.assign(job, { status: "error", error: String(error?.message || error), updatedAt: new Date().toISOString() }));
+    });
+
+  return { objectiveId: graph.objectiveId, status: "running", nodeCount, jobId };
 }
 
 // The founder-readable objective summary the orchestrator writes to
