@@ -415,9 +415,9 @@ import { permissionsPanel } from "/lib/permissionsView.mjs";
           </section>
 
           <section class="activity-panel">
-            <div class="panel-heading"><div><span class="eyebrow">Machine events</span><h2>Recent activity</h2></div><span class="muted small">raw workflow events</span></div>
+            <div class="panel-heading"><div><span class="eyebrow">Activity</span><h2>What the factory has done</h2></div><span class="muted small">most recent ${(state.activityFeed || []).length}, newest first</span></div>
             <div class="company-feed">
-              ${(state.activityFeed || []).slice(0, 10).map((e) => `<div class="company-event"><span>${esc(String(e.type || "event").replaceAll("-", " "))}</span><strong>${esc(e.taskId)}</strong>${e.stage ? ` <span class="muted small">${esc(e.stage)}</span>` : ""}<time>${esc(fmtTime(e.at))}</time></div>`).join("") || `<div class="empty-state">No factory task has run in this environment yet.</div>`}
+              ${(state.activityFeed || []).map((e) => `<div class="company-event"><span>${esc(String(e.type || "event").replaceAll("-", " "))}</span><strong>${esc(e.taskId)}</strong>${e.actor ? ` <span class="company-actor">${esc(e.actor)}</span>` : ""}${e.stage ? ` <span class="muted small">${esc(STAGE_LABEL[e.stage] || e.stage)}</span>` : ""}<time>${esc(fmtTime(e.at))}</time></div>`).join("") || `<div class="empty-state">No factory task has run in this environment yet.</div>`}
             </div>
           </section>
 
