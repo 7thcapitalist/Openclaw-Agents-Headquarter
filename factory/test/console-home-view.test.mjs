@@ -6,7 +6,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { ageLine, homeAttention, homeDecisions, homeModel, homePulse } from "../../control-plane/public/home.mjs";
+import { ageLine, homeAttention, homeDecisions, homeModel, homePulse, splitQuestion } from "../../control-plane/public/home.mjs";
 
 const NOW = Date.parse("2026-09-15T03:00:00.000Z");
 
@@ -143,4 +143,42 @@ test("an empty snapshot does not throw", () => {
     assert.equal(model.calm, true);
     assert.equal(model.age.stale, true, "no timestamp means not live");
   }
+});
+
+test("a wall-of-text question is clamped to a headline without losing a word", () => {
+  // The live mirror's recovery escalation writes 558 characters of dispatch ids
+  // and redacted paths into `question`. Rendered as a heading it is a wall of
+  // bold text harder to read than the raw JSON.
+  const long =
+    "Recovery could not continue after 1 bounded attempt(s): product dispatch wrote no result file "
+    + "(session agent:architect:factory-obj-74ffa4cc-control-plane-app-shell-recovery-1-diagnose); "
+    + "redacted executor output captured at evidence/obj-74ffa4cc-recovery-1-diagnose-missing-result.md.";
+  const { question, why } = splitQuestion(long, "The product stage cannot continue without founder direction.");
+
+  assert.ok(question.length <= 165, `headline should be scannable, got ${question.length}`);
+  assert.match(question, /^Recovery could not continue/);
+  // Nothing is discarded — the remainder leads the detail line.
+  assert.match(why, /redacted executor output|session agent:architect/);
+  assert.match(why, /cannot continue without founder direction/);
+});
+
+test("a short question is left exactly as written", () => {
+  const q = "How should the team verify the remaining production risk?";
+  const { question, why } = splitQuestion(q, "Because the reviewer cannot.");
+  assert.equal(question, q);
+  assert.equal(why, "Because the reviewer cannot.");
+});
+
+test("spend is read from a panel that is actually up", () => {
+  // budgets.available goes false for an ordinary warning (two unpriced events),
+  // and unavailable() treats that as a dead panel — which rendered a real $0.09
+  // as "$0.00 spend to date".
+  const panels = {
+    operations: { summary: { tasks: 21, activeRuns: 0, blockedRuns: 1 }, costs: { totals: { costMicros: 85068, unpricedEvents: 2 } }, tasks: [], objectives: [] },
+    budgets: { available: false, reason: "2 cost event(s) have no provider price", totals: { costMicros: 85068, unpricedEvents: 2 } },
+    company: { summary: { projects: 2 }, decisions: [] },
+  };
+  const pulse = homePulse(panels);
+  assert.equal(pulse.spendLabel, "$0.09", "a real cost must not render as $0.00");
+  assert.equal(pulse.unpricedEvents, 2);
 });

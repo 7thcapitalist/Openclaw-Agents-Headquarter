@@ -38,14 +38,42 @@ export function homeDecisions(panels) {
       id: text(decision?.id, ""),
       taskId: text(decision?.taskId, ""),
       project: text(decision?.project, ""),
-      question: text(decision?.question || decision?.summary, "A decision is needed."),
-      why: text(decision?.why, ""),
+      ...splitQuestion(text(decision?.question || decision?.summary, "A decision is needed."), text(decision?.why, "")),
       recommendation: text(decision?.recommendation, ""),
       options: list(decision?.options).map((o) => String(o)).filter(Boolean),
       since: text(decision?.requestedAt, ""),
       risk: text(decision?.risk, ""),
     }))
     .filter((decision) => decision.id !== "");
+}
+
+// A headline the founder can scan, without losing a word of the original.
+//
+// Not every decision arrives with a crafted question. A recovery escalation
+// writes its whole prose summary into the field — 558 characters of dispatch
+// ids and redacted paths in the live mirror — and rendering that as an <h3>
+// turned the card into a wall of bold text that is harder to read than the raw
+// JSON. So: clamp the headline at a sentence boundary where there is one, and
+// push the remainder into the detail line that sits under it.
+const HEADLINE_MAX = 120;
+
+export function splitQuestion(question, why) {
+  if (question.length <= HEADLINE_MAX) return { question, why };
+
+  // Prefer a real sentence break inside the budget; fall back to a word break.
+  const window = question.slice(0, HEADLINE_MAX + 40);
+  const sentence = window.search(/[.?!]\s/);
+  const cut = sentence > 40 && sentence <= HEADLINE_MAX + 20
+    ? sentence + 1
+    : (window.lastIndexOf(" ", HEADLINE_MAX) > 40 ? window.lastIndexOf(" ", HEADLINE_MAX) : HEADLINE_MAX);
+
+  const head = question.slice(0, cut).trim();
+  const rest = question.slice(cut).trim();
+  return {
+    question: /[.?!]$/.test(head) ? head : `${head}…`,
+    // Nothing is discarded: the remainder leads the detail line.
+    why: rest && why ? `${rest} — ${why}` : rest || why,
+  };
 }
 
 const BROKEN = new Set(["blocked", "failed"]);
@@ -90,8 +118,14 @@ export function homePulse(panels) {
   // Deliberately "spend to date", not "today": the snapshot carries no per-day
   // cost bucket, and labelling an all-time total as today's would be a lie the
   // viewer cannot detect. Adding `byDay` to the snapshot is a builder change.
-  const micros = num(budgets?.totals?.costMicros, 0);
-  const unpriced = num(budgets?.totals?.unpricedEvents, 0);
+  //
+  // Read from operations first. `budgets.available` goes false for an ordinary
+  // warning — two unpriced events is enough — and `unavailable()` treats that
+  // as a dead panel, which rendered a real $0.09 as "$0.00 spend to date". The
+  // two panels carry identical totals now, so prefer the one that is up.
+  const totals = ops?.costs?.totals || budgets?.totals || null;
+  const micros = num(totals?.costMicros, 0);
+  const unpriced = num(totals?.unpricedEvents, 0);
 
   return {
     running: num(ops?.summary?.activeRuns, 0),
