@@ -270,10 +270,62 @@ export function homeActivity(panels, { limit = 60 } = {}) {
   }));
 }
 
+/**
+ * Is the machine healthy?
+ *
+ * Item 8 of the founder's list, and the half that was missing: cost was on
+ * this page and correct, health was not on it at all. `/api/system/readiness`
+ * existed, worked, and had no surface on either screen — so the 2026-09-14
+ * outage was noticed by a founder feeling that something was wrong.
+ *
+ * A check this process could not run is `unknown`, never a failure. Reporting
+ * "pm2 is not reachable" as an outage would teach the founder to ignore this
+ * panel, which is the one outcome worse than not having it.
+ */
+export function homeHealth(panels) {
+  const readiness = panels?.readiness;
+  if (unavailable(readiness)) {
+    return { available: false, status: "unknown", line: "Machine health was not published in this snapshot.", checks: [], warnings: [] };
+  }
+  const order = { fail: 0, warn: 1, degraded: 2, unknown: 3, ok: 4 };
+  const checks = Object.entries(readiness.checks || {})
+    .map(([key, check]) => ({
+      key,
+      name: CHECK_NAMES[key] || key,
+      status: text(check?.status, "unknown"),
+      detail: text(check?.detail, ""),
+    }))
+    .sort((a, b) => (order[a.status] ?? 9) - (order[b.status] ?? 9) || a.name.localeCompare(b.name));
+  const status = text(readiness.status, "unknown");
+  const bad = checks.filter((check) => check.status === "fail" || check.status === "warn");
+  return {
+    available: true,
+    status,
+    checks,
+    warnings: list(readiness.warnings).map((warning) => text(warning, "")).filter(Boolean),
+    // One line the founder reads without opening anything.
+    line: status === "ok"
+      ? "The machine is healthy."
+      : bad.length
+        ? bad.map((check) => `${check.name}: ${check.detail}`).join(" · ")
+        : "Some checks could not be run on the machine.",
+  };
+}
+
+// Human names, because a key is not a name. `stateStores` is the thing that
+// reached 399 GiB; "State stores" is what the founder calls it.
+const CHECK_NAMES = {
+  disk: "Disk",
+  stateStores: "State stores",
+  services: "Services",
+  gateway: "Gateway",
+};
+
 export function homeModel(snapshot, now = Date.now()) {
   const panels = snapshot?.panels || {};
   const decisions = homeDecisions(panels);
   const attention = homeAttention(panels);
+  const health = homeHealth(panels);
   return {
     age: ageLine(snapshot?.publishedAt, now),
     decisions,
@@ -282,7 +334,11 @@ export function homeModel(snapshot, now = Date.now()) {
     finished: homeFinished(panels),
     activity: homeActivity(panels),
     activityTotal: unavailable(panels?.company) ? 0 : list(panels.company.activityFeed).length,
-    calm: decisions.length === 0 && attention.length === 0,
+    health,
+    // "Nothing needs you right now" is a lie on a machine that is failing a
+    // check. A degraded machine is something that needs the founder, even
+    // when the task queue is quiet.
+    calm: decisions.length === 0 && attention.length === 0 && health.status !== "fail" && health.status !== "warn",
   };
 }
 
@@ -293,6 +349,44 @@ function el(tag, className, textContent) {
   if (className) node.className = className;
   if (textContent != null) node.textContent = String(textContent);
   return node;
+}
+
+// Health reads as one line when the machine is fine and opens to the checks
+// when it is not — the founder should not have to expand anything to learn
+// that nothing is wrong, and should not have to hunt when something is.
+function healthBlock(health) {
+  const tone = health.status === "fail" ? " home-health--fail"
+    : health.status === "warn" ? " home-health--warn"
+      : health.status === "ok" ? " home-health--ok" : " home-health--unknown";
+  const box = el("details", `home-health${tone}`);
+  box.open = health.status === "fail" || health.status === "warn";
+
+  const head = el("summary", "home-health-head");
+  head.append(el("span", "home-health-dot"));
+  const label = health.status === "ok" ? "Machine healthy"
+    : health.status === "fail" ? "Machine needs attention"
+      : health.status === "warn" ? "Machine has a warning"
+        : "Machine health unknown";
+  head.append(el("strong", null, label));
+  head.append(el("span", "home-meta", health.line));
+  box.append(head);
+
+  if (!health.available) {
+    box.append(el("p", "home-meta home-meta--dim",
+      "The machine did not publish a health report in this snapshot, so this says nothing about whether it is healthy."));
+    return box;
+  }
+
+  const rows = el("ul", "home-health-list");
+  for (const check of health.checks) {
+    const row = el("li", `home-health-row home-health-row--${check.status}`);
+    row.append(el("span", "home-health-name", check.name));
+    row.append(el("span", "home-health-status", check.status));
+    if (check.detail) row.append(el("span", "home-meta", check.detail));
+    rows.append(row);
+  }
+  box.append(rows);
+  return box;
 }
 
 function decisionCard(decision, onAnswer, intentState) {
@@ -493,6 +587,8 @@ export function renderHome(root, snapshot, { onAnswer = () => {}, intentStateFor
     ));
     root.append(warn);
   }
+
+  root.append(healthBlock(model.health));
 
   if (model.calm) {
     root.append(el("p", "home-calm", "Nothing needs you right now."));

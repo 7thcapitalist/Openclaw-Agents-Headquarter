@@ -722,3 +722,61 @@ body {
 .home-feed-body { min-width: 0; flex: 1; }
 .home-feed-line { font-size: 0.83rem; line-height: 1.45; overflow-wrap: anywhere; }
 .home-feed-body .home-meta { font-size: 0.76rem; margin-top: 2px; overflow-wrap: anywhere; }
+
+/* Machine health. Quiet when healthy — the founder should not have to expand
+   anything to learn nothing is wrong — and open by default when it is not. */
+.home-health {
+  border: 1px solid var(--line, #30363d);
+  border-left-width: 4px;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 0.9rem;
+}
+.home-health-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  list-style: none;
+}
+.home-health-head::-webkit-details-marker { display: none; }
+.home-health-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: var(--muted, #8a8f98);
+}
+.home-health--ok { border-left-color: #2ea043; }
+.home-health--ok .home-health-dot { background: #2ea043; }
+.home-health--warn { border-left-color: #d29922; background: rgba(210, 153, 34, 0.06); }
+.home-health--warn .home-health-dot { background: #d29922; }
+.home-health--fail { border-left-color: #f85149; background: rgba(248, 81, 73, 0.07); }
+.home-health--fail .home-health-dot { background: #f85149; }
+
+.home-health-list {
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 6px;
+}
+.home-health-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line, #30363d);
+}
+.home-health-name { font-weight: 600; }
+.home-health-status {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted, #8a8f98);
+}
+.home-health-row--fail .home-health-status { color: #f85149; }
+.home-health-row--warn .home-health-status { color: #d29922; }
+.home-health-row--ok .home-health-status { color: #2ea043; }
