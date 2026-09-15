@@ -492,3 +492,20 @@ body {
   .home-freetext { flex: 1 1 260px; width: auto; }
   .home-cards { gap: 14px; }
 }
+
+/* The top bar was a single non-wrapping flex row, so at 375px the "Sign out"
+   button pushed the document 14px past the viewport and the whole page scrolled
+   sideways — measured at 375px: scrollWidth 389 vs clientWidth 375. Home can be
+   as careful as it likes; one element overflowing anywhere scrolls everything.
+   Let it wrap, and let the brand take the first line on its own. */
+@media (max-width: 480px) {
+  .topbar {
+    flex-wrap: wrap;
+    padding: 0.75rem 1rem;
+    row-gap: 0.5rem;
+  }
+  .brand { flex: 1 1 100%; min-width: 0; }
+  .brand-title, .brand-sub { overflow-wrap: anywhere; }
+  .topbar .btn-ghost { margin-left: 0; }
+  .topbar .freshness { flex: 1 1 auto; min-width: 0; }
+}
