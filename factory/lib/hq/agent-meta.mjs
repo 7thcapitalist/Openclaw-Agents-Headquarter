@@ -1,3 +1,14 @@
+// Every spelling of a cached-input counter this factory has seen. Anthropic
+// splits it in two; other harnesses fold it into one.
+const CACHED_INPUT_KEYS = Object.freeze([
+  "cache_read_input_tokens",
+  "cache_creation_input_tokens",
+  "cacheReadInputTokens",
+  "cacheCreationInputTokens",
+  "cachedInputTokens",
+  "cached_input_tokens",
+]);
+
 function pickString(...values) {
   for (const value of values) {
     if (typeof value === "string" && value.trim()) return value.trim();
@@ -49,6 +60,13 @@ export function parseAgentMeta(source, { durationMsFallback = null } = {}) {
   const tokensIn = pickInteger(
     usage?.tokensIn,
     usage?.input,
+    // Anthropic's own spelling. The Claude CLI writes `input_tokens` /
+    // `output_tokens` verbatim into its transcripts, and this chain did not
+    // read either, so the native shape only ever parsed by luck.
+    usage?.inputTokens,
+    usage?.input_tokens,
+    usage?.promptTokens,
+    usage?.prompt_tokens,
     envelope.tokensIn,
     envelope.inputTokens,
     envelope.result?.tokensIn,
@@ -58,12 +76,29 @@ export function parseAgentMeta(source, { durationMsFallback = null } = {}) {
   const tokensOut = pickInteger(
     usage?.tokensOut,
     usage?.output,
+    usage?.outputTokens,
+    usage?.output_tokens,
+    usage?.completionTokens,
+    usage?.completion_tokens,
     envelope.tokensOut,
     envelope.outputTokens,
     envelope.result?.tokensOut,
     envelope.result?.outputTokens,
     nested?.tokensOut,
   );
+  // Cached input, which is where nearly all of a long context actually lives.
+  //
+  // With prompt caching on, `input_tokens` is NOT the size of the prompt — it
+  // counts only the uncached remainder. A 162k-token reviewer context reports
+  // `input_tokens: 2` alongside `cache_creation_input_tokens: 12548` and
+  // `cache_read_input_tokens: 31388`. Reading only the first was never a
+  // placeholder bug; it was an accounting omission that under-reported input by
+  // about four orders of magnitude. `cachedInputTokens` has been in the ledger
+  // schema all along and nothing ever populated it.
+  // `nested` is a DERIVED record that already carries its own summed
+  // cachedInputTokens, so it is a fallback, never an addend — adding it to the
+  // raw counters it was computed from double-counts.
+  const cachedInputTokens = sumCachedInput(usage, envelope) ?? pickInteger(nested?.cachedInputTokens);
   if (!provider || !model || tokensIn == null || tokensOut == null) return null;
 
   let durationMs = pickInteger(meta?.durationMs, envelope.durationMs, envelope.result?.durationMs);
@@ -72,8 +107,31 @@ export function parseAgentMeta(source, { durationMsFallback = null } = {}) {
   }
 
   const record = { provider, model, tokensIn, tokensOut };
+  if (cachedInputTokens != null) record.cachedInputTokens = cachedInputTokens;
   if (durationMs != null) record.durationMs = durationMs;
   return record;
+}
+
+// Cache-read and cache-creation are separate counters and both are input the
+// request actually carried, so they add. Returns null when neither is present,
+// so a harness that reports no caching is distinguishable from one reporting 0.
+function sumCachedInput(...sources) {
+  // The same object arrives more than once — `usage` IS `envelope.usage`, and
+  // the nested fallback often resolves to it too — so sum over a DEDUPED set of
+  // candidate objects. Summing the argument list directly triple-counted.
+  const seen = new Set();
+  for (const source of sources) {
+    if (asObject(source)) seen.add(source);
+    if (asObject(source?.usage)) seen.add(source.usage);
+  }
+  let total = null;
+  for (const candidate of seen) {
+    for (const key of CACHED_INPUT_KEYS) {
+      const value = pickInteger(candidate[key]);
+      if (value != null) total = (total ?? 0) + value;
+    }
+  }
+  return total;
 }
 
 function findUsageEnvelope(value, depth = 0) {
@@ -82,9 +140,12 @@ function findUsageEnvelope(value, depth = 0) {
   if (usage) {
     const provider = pickString(value.provider, value.modelProvider, value.model?.provider);
     const model = pickString(value.model, value.modelId, value.modelName);
-    const tokensIn = pickInteger(usage.tokensIn, usage.input, usage.inputTokens, usage.promptTokens, usage.prompt_tokens);
-    const tokensOut = pickInteger(usage.tokensOut, usage.output, usage.outputTokens, usage.completionTokens, usage.completion_tokens);
-    if (provider && model && tokensIn != null && tokensOut != null) return { provider, model, tokensIn, tokensOut };
+    const tokensIn = pickInteger(usage.tokensIn, usage.input, usage.inputTokens, usage.input_tokens, usage.promptTokens, usage.prompt_tokens);
+    const tokensOut = pickInteger(usage.tokensOut, usage.output, usage.outputTokens, usage.output_tokens, usage.completionTokens, usage.completion_tokens);
+    const cachedInputTokens = sumCachedInput(usage);
+    if (provider && model && tokensIn != null && tokensOut != null) {
+      return { provider, model, tokensIn, tokensOut, ...(cachedInputTokens != null ? { cachedInputTokens } : {}) };
+    }
   }
   for (const child of Object.values(value)) {
     const found = findUsageEnvelope(child, depth + 1);

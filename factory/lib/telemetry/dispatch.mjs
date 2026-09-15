@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, renameSync, writeFileSync } from "fs";
 import { dirname, join, resolve } from "path";
 import { appendAuditEvent, createAuditEvent, readAuditEvents } from "../audit/envelope.mjs";
 import { createCostEvent, appendCostEvent } from "../hq/cost-ledger.mjs";
+import { loadPricing, priceUsage } from "../hq/cost.mjs";
 import { createRunLiveness } from "../liveness/run-liveness.mjs";
 import { readState } from "../task-workflow.mjs";
 
@@ -50,6 +51,34 @@ export function observeDispatchState({ hqRoot, statePath, phase, dispatchId = nu
 
     const usage = agentMeta || dispatch.usage;
     if (usage?.provider && usage?.model && Number.isFinite(Number(usage.tokensIn)) && Number.isFinite(Number(usage.tokensOut))) {
+      // Price here, at write time, with the pricer that already exists.
+      //
+      // Nothing ever priced on this path: `costMicros: usage.costMicros ?? null`
+      // was always null because sanitizeUsage dropped the field and no lookup
+      // ran. Read-time pricing still backfills older events, but an event that
+      // knows its own cost when it is written is the one that cannot drift.
+      //
+      // Cached input is billable input, so it is included in the quote. A model
+      // with no entry in factory/pricing.json stays null and is marked
+      // `unpriced` — never zero, because a missing price must not read as free.
+      const cachedIn = Number(usage.cachedInputTokens || 0);
+      let costMicros = usage.costMicros ?? null;
+      let costConfidence = costMicros == null ? "unpriced" : "provider-reported";
+      let pricingVersion = null;
+      if (costMicros == null) {
+        const pricing = loadPricing(hqRoot);
+        const quote = priceUsage({
+          provider: usage.provider,
+          model: usage.model,
+          tokensIn: Number(usage.tokensIn || 0) + cachedIn,
+          tokensOut: usage.tokensOut,
+        }, pricing);
+        if (quote && quote.costUsd != null) {
+          costMicros = Math.round(quote.costUsd * 1_000_000);
+          costConfidence = "calculated";
+          pricingVersion = pricing?.updatedAt || null;
+        }
+      }
       appendCostEvent(paths.costs, createCostEvent({
         eventId: `cost:${dispatch.id}`,
         source: "openclaw-factory",
@@ -58,11 +87,12 @@ export function observeDispatchState({ hqRoot, statePath, phase, dispatchId = nu
         provider: usage.provider,
         model: usage.model,
         inputTokens: usage.tokensIn,
-        cachedInputTokens: usage.cachedInputTokens || 0,
+        cachedInputTokens: cachedIn,
         outputTokens: usage.tokensOut,
-        costMicros: usage.costMicros ?? null,
+        costMicros,
+        pricingVersion,
         usageConfidence: "provider-reported",
-        costConfidence: usage.costMicros == null ? "unavailable" : "provider-reported",
+        costConfidence,
         agentId: dispatch.agentId || dispatch.actor,
         projectId: state.task.project || state.task.projectId || null,
         objectiveId: state.task.objectiveId || null,

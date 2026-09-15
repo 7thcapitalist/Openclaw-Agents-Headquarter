@@ -78,6 +78,51 @@ export function priceUsage(usage, pricing) {
   };
 }
 
+/**
+ * Fill in costMicros for ledger events that were written without one.
+ *
+ * Lives here, beside the pricer, rather than in budget-snapshot.mjs where it
+ * used to: `operations` and `budgets` read the SAME ledger, but only budgets
+ * called this, so the same snapshot reported costMicros 0 with 48 unpriced
+ * events in one panel and 85,068 with 2 in another. Same source, same function,
+ * one answer.
+ *
+ * Cached input is priced at the input rate. factory/pricing.json carries no
+ * cache-specific rates, and inventing them here would be the "build a second
+ * pricer" mistake — so this is explicitly an approximation, marked `calculated`
+ * rather than `provider-reported`, and it is still enormously closer than
+ * ignoring a 162k-token context entirely.
+ *
+ * An event with no price stays null and is marked `unpriced`. It is never
+ * zeroed: a missing price must not read as free.
+ */
+export function priceCostEvents(events, pricing) {
+  let derived = 0;
+  let stillUnpriced = 0;
+  const priced = (events || []).map((event) => {
+    if (event.costMicros != null) return event;
+    const billableInput = (event.inputTokens || 0) + (event.cachedInputTokens || 0);
+    const quote = priceUsage({
+      provider: event.provider,
+      model: event.model,
+      tokensIn: billableInput,
+      tokensOut: event.outputTokens,
+    }, pricing);
+    if (!quote || quote.costUsd == null) {
+      stillUnpriced += 1;
+      return { ...event, costConfidence: "unpriced" };
+    }
+    derived += 1;
+    return {
+      ...event,
+      costMicros: Math.round(quote.costUsd * 1_000_000),
+      costConfidence: "calculated",
+      pricingVersion: event.pricingVersion || pricing?.updatedAt || null,
+    };
+  });
+  return { events: priced, derived, stillUnpriced };
+}
+
 export function summarizeCosts({ hqRoot, stateRoot = null, pricing = null, now = new Date().toISOString() } = {}) {
   const resolvedPricing = pricing ? normalizePricing(pricing) : loadPricing(hqRoot);
   const views = discoverTaskViews({ hqRoot, stateRoot: stateRoot || defaultStateRoot(hqRoot) });
