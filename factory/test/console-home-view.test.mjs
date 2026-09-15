@@ -262,3 +262,32 @@ test("the spend line names its window and admits when it is a floor", () => {
   assert.equal(partial.spendComplete, false);
   assert.equal(partial.unpricedEvents, 2);
 });
+
+test("the console renders the activity the snapshot has always carried", async () => {
+  const { homeActivity } = await import("../../control-plane/public/home.mjs");
+  const panels = {
+    company: {
+      activityFeed: [
+        { at: "2026-09-15T00:00:00.000Z", type: "stage-pass", actor: "claude", stage: "reviewer", taskId: "obj-a", objective: "Rebuild the frontend.", project: "lifemaxing" },
+        { at: "2026-09-14T00:00:00.000Z", type: "task-resumed", actor: "founder", stage: "product", taskId: "obj-b", objective: "Ship the thing." },
+      ],
+    },
+  };
+  const feed = homeActivity(panels);
+  assert.equal(feed.length, 2);
+  // Which agent acted — the field that was in the data and not on the screen.
+  assert.equal(feed[0].actor, "claude");
+  // A verb a person reads, not a machine event type.
+  assert.equal(feed[0].verb, "finished");
+  assert.equal(feed[1].verb, "resumed");
+  // A real stage name, never the raw key.
+  assert.equal(feed[0].stage, "Independent review");
+  // Named by outcome, not id.
+  assert.equal(feed[0].title, "Rebuild the frontend.");
+});
+
+test("an unknown event type degrades to readable words, not a raw key", async () => {
+  const { homeActivity } = await import("../../control-plane/public/home.mjs");
+  const feed = homeActivity({ company: { activityFeed: [{ at: "x", type: "some-new-event", taskId: "t" }] } });
+  assert.equal(feed[0].verb, "some new event");
+});
