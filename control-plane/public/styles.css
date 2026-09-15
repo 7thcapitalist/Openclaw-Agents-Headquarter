@@ -656,3 +656,54 @@ body {
    `.home { display: flex }` out-specified the attribute, so switching tabs left
    Home's content stacked above the tab's content instead of replacing it. */
 [hidden] { display: none !important; }
+
+/* Task detail. A bottom sheet on a phone, a centred panel on a desktop —
+   a modal that fills a 375px screen edge to edge is unreadable. */
+.sheet { position: fixed; inset: 0; z-index: 50; display: flex; align-items: flex-end; justify-content: center; }
+.sheet-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,0.65); }
+.sheet-card {
+  position: relative;
+  width: 100%;
+  max-height: 92vh;
+  overflow-y: auto;
+  background: var(--panel, #12151a);
+  border: 1px solid var(--line, #262b33);
+  border-radius: 14px 14px 0 0;
+  padding: 20px 16px 32px;
+  padding-bottom: calc(32px + env(safe-area-inset-bottom, 0px));
+}
+.sheet-close {
+  position: sticky; top: 0; float: right;
+  min-width: 44px; min-height: 44px;
+  border: 0; background: transparent; color: var(--muted, #8a8f98);
+  font-size: 1.5rem; line-height: 1; cursor: pointer;
+}
+.sheet-body { display: flex; flex-direction: column; gap: 14px; }
+
+.task-head h2 { margin: 6px 0 4px; font-size: 1.05rem; line-height: 1.4; overflow-wrap: anywhere; }
+.task-section { margin: 6px 0 0; font-size: 0.95rem; }
+.task-callout {
+  border: 1px solid #d29922; border-left-width: 3px; border-radius: 8px;
+  background: rgba(210,153,34,0.08); padding: 12px 14px; font-size: 0.88rem; line-height: 1.5;
+}
+.task-callout strong { display: block; margin: 4px 0; }
+.task-callout p { margin: 0; color: var(--muted, #8a8f98); }
+
+.task-lane { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.task-step { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--line, #262b33); border-radius: 8px; }
+.task-step-body { min-width: 0; flex: 1; }
+.task-step-name { font-size: 0.9rem; font-weight: 600; }
+.task-mark { flex: 0 0 auto; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-size: 0.75rem; background: var(--raise, #1b2027); color: var(--muted, #8a8f98); }
+.task-step--pass .task-mark, .task-step--completed .task-mark { background: rgba(46,160,67,0.18); color: #3fb950; }
+.task-step--fail .task-mark, .task-step--failed .task-mark { background: rgba(248,81,73,0.18); color: #ff7b72; }
+.task-step--decision-required .task-mark { background: rgba(210,153,34,0.18); color: #e3b341; }
+.task-summary { margin: 6px 0 0; font-size: 0.82rem; color: var(--muted, #8a8f98); line-height: 1.5; }
+.task-failure { margin: 6px 0 0; font-size: 0.82rem; line-height: 1.5; color: #ff9b95; overflow-wrap: anywhere; }
+.task-evidence { margin-top: 6px; font-size: 0.75rem; overflow-wrap: anywhere; }
+.task-evidence code { color: #79c0ff; }
+.task-foot { display: flex; flex-wrap: wrap; gap: 10px; }
+
+@media (min-width: 720px) {
+  .sheet { align-items: center; padding: 24px; }
+  .sheet-card { max-width: 720px; border-radius: 14px; padding: 24px 28px 28px; }
+}

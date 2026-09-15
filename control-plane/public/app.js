@@ -13,6 +13,7 @@
 import { answerableDecisions, freshness, intentsPanel, panelsFor, statsFrom } from "/render.mjs";
 import { renderHome } from "/home.mjs";
 import { renderAgents, renderBoard, renderProjects } from "/views.mjs";
+import { renderTaskDetail } from "/task-detail.mjs";
 
 const TIMEOUT_MS = 12_000;
 
@@ -38,6 +39,8 @@ const els = {
   home: document.getElementById("home"),
   tabs: document.getElementById("tabs"),
   view: document.getElementById("view"),
+  sheet: document.getElementById("sheet"),
+  sheetBody: document.getElementById("sheet-body"),
   staleBanner: document.getElementById("stale-banner"),
   stats: document.getElementById("stats"),
   panels: document.getElementById("panels"),
@@ -291,6 +294,36 @@ const TABS = [
   ["agents", "Agents"],
 ];
 
+// Task detail, reachable from anywhere a task appears.
+async function openTask(taskId) {
+  if (!taskId) return;
+  els.sheet.hidden = false;
+  els.sheetBody.replaceChildren();
+  const loading = document.createElement("p");
+  loading.className = "home-meta";
+  loading.textContent = "Loading the execution record…";
+  els.sheetBody.append(loading);
+  try {
+    const response = await request(`/api/task?id=${encodeURIComponent(taskId)}`);
+    if (response.status === 404) {
+      loading.textContent = "No detail has been published for this task yet.";
+      return;
+    }
+    if (!response.ok) {
+      loading.textContent = `The control plane answered ${response.status}.`;
+      return;
+    }
+    renderTaskDetail(els.sheetBody, await response.json());
+  } catch {
+    loading.textContent = "The control plane could not be reached.";
+  }
+}
+
+function closeTask() {
+  els.sheet.hidden = true;
+  els.sheetBody.replaceChildren();
+}
+
 function drawTabs() {
   els.tabs.replaceChildren();
   for (const [id, label] of TABS) {
@@ -316,7 +349,7 @@ function drawHome(snapshot) {
   els.view.hidden = !onTab;
   if (onTab) {
     if (activeTab === "board") {
-      renderBoard(els.view, snapshot, { project: boardProject, onTask: () => {} });
+      renderBoard(els.view, snapshot, { project: boardProject, onTask: openTask });
     } else if (activeTab === "projects") {
       renderProjects(els.view, snapshot, {
         onProject: (key) => { boardProject = key; activeTab = "board"; drawHome(snapshot); },
@@ -471,6 +504,9 @@ els.signOut.addEventListener("click", async () => {
 });
 
 els.refresh.addEventListener("click", () => loadMirror());
+els.sheet.addEventListener("click", (event) => { if (event.target.dataset.sheetClose) closeTask(); });
+document.getElementById("sheet-close").addEventListener("click", closeTask);
+document.addEventListener("keydown", (event) => { if (event.key === "Escape" && !els.sheet.hidden) closeTask(); });
 
 async function main() {
   try {
