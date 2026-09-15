@@ -1,12 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createState, readState, writeState } from "../lib/task-workflow.mjs";
 import { readObjState } from "../lib/objective/orchestrator.mjs";
-import { clearObjectiveNodeAfterDecision, resolveFounderDecision } from "../../dashboard/backend/lib/founderControlPlane.mjs";
+import { clearObjectiveNodeAfterDecision, resolveFounderDecision, resumeObjectiveAfterDecision } from "../../dashboard/backend/lib/founderControlPlane.mjs";
 
 // hqRoot is the repo, not the fixture: writeHandoff reads factory/prompts/<stage>.md
 // from it. Only the DATA root is temporary.
@@ -125,4 +125,94 @@ test("the helper ignores a task id that names no objective", () => {
   const { root } = fixture();
   assert.equal(clearObjectiveNodeAfterDecision(root, "issue-77"), null);
   assert.equal(clearObjectiveNodeAfterDecision(root, "obj-deadbeef-missing"), null, "an unknown objective is not an error");
+});
+
+// ── releasing the node is half the job; somebody has to run it ───────────────
+//
+// A released node is `pending`, which is READY — and ready is not running. The
+// orchestrator is a function, not a daemon, so unless a caller invokes it the
+// answered objective sits exactly as still as it did while blocked.
+//
+// That is the second half of the same production failure. obj-d4e18cad was
+// answered from the hosted console at 18:42:04Z on 2026-09-15; the task
+// recorded `founder-decision-recorded`, `recovery-incident-closed` and
+// `task-resumed`; the objective node went back to `pending`; and 42 minutes
+// later nothing had run, because the intent worker discarded the
+// `objectiveResume` the dashboard route acts on.
+
+test("resolving then resuming actually starts the objective run", async () => {
+  const { root, statePath, objectivePath } = fixture();
+  const calls = [];
+
+  const view = resolveFounderDecision({ root, hqRoot: HQ_ROOT, statePath, direction: "continue" });
+  assert.ok(view.objectiveResume, "precondition: the decision released a node");
+
+  const resumed = resumeObjectiveAfterDecision({
+    root, hqRoot: HQ_ROOT,
+    objectiveResume: view.objectiveResume,
+    runObjective: async (opts) => { calls.push(opts); return { status: "complete" }; },
+    readConfig: () => ({ openclawIntegration: { agentIds: { builder: "codex" }, maxAttemptsPerStage: 5 } }),
+  });
+
+  assert.ok(resumed, "the resume reports itself");
+  assert.equal(resumed.objectiveId, OBJECTIVE_ID);
+  await resumed.run;
+
+  assert.equal(calls.length, 1, "the orchestrator ran exactly once");
+  assert.equal(calls[0].objectivePath, objectivePath, "against the objective that was released");
+  assert.equal(calls[0].maxAttemptsPerStage, 5, "with the factory's configured budgets");
+  assert.deepEqual(calls[0].agentIds, { builder: "codex" });
+  // <stateRoot>/objectives/<id>/objective-state.json
+  assert.equal(calls[0].stateRoot, join(root, "dashboard/backend/data/factory", PROJECT),
+    "and a state root the orchestrator can find the tasks under");
+});
+
+test("a decision that released nothing starts nothing", () => {
+  let ran = false;
+  const resumed = resumeObjectiveAfterDecision({
+    root: "/tmp", hqRoot: HQ_ROOT, objectiveResume: undefined,
+    runObjective: () => { ran = true; },
+  });
+  assert.equal(resumed, null);
+  assert.equal(ran, false, "a standalone task must not spin up an objective run");
+});
+
+test("a failing run is reported, never thrown at the caller", async () => {
+  const { root, statePath } = fixture();
+  const seen = [];
+  const view = resolveFounderDecision({ root, hqRoot: HQ_ROOT, statePath, direction: "continue" });
+
+  const resumed = resumeObjectiveAfterDecision({
+    root, hqRoot: HQ_ROOT,
+    objectiveResume: view.objectiveResume,
+    runObjective: async () => { throw new Error("orchestrator exploded"); },
+    readConfig: () => ({}),
+    onError: (error, ctx) => seen.push([error.message, ctx.objectiveId]),
+  });
+
+  // The founder's answer is already durably recorded. A run that cannot start
+  // must not un-record it, and must not take the intent worker's poll loop down.
+  await resumed.run;
+  assert.deepEqual(seen, [["orchestrator exploded", OBJECTIVE_ID]]);
+});
+
+// ── the wiring guard ─────────────────────────────────────────────────────────
+//
+// The bug was not in either path's logic. It was that there were two paths and
+// only one of them resumed: the dashboard route had the resume inline, and the
+// intent worker — the one the hosted console uses — never had it at all. A
+// second copy is how they diverged, so the invariant worth holding is that
+// neither caller has its own copy.
+test("both the dashboard route and the intent worker resume through the shared helper", () => {
+  const read = (p) => readFileSync(join(HQ_ROOT, p), "utf8");
+
+  for (const file of ["dashboard/backend/server.mjs", "scripts/hq-intents.mjs"]) {
+    assert.match(read(file), /resumeObjectiveAfterDecision\(/,
+      `${file} must resume an answered objective through the shared helper`);
+  }
+
+  // And neither may rebuild the run options itself — that is the divergence.
+  const worker = read("scripts/hq-intents.mjs");
+  assert.ok(!/objectiveResume[\s\S]{0,400}?runObjective\(\{/.test(worker),
+    "the intent worker must not hand-roll its own runObjective call");
 });

@@ -95,13 +95,25 @@ export async function handlers() {
       return `retried ${objectiveId}: ${result?.status || "started"}`;
     },
 
+    // Answering releases the objective node AND starts the run. Recording the
+    // answer alone is what this handler used to do, and it is indistinguishable
+    // from working: the console said `done`, the task said `task-resumed`, and
+    // the objective sat there. The dashboard route never had that bug because
+    // the resume was inline in it — so both now call the one shared function.
     "decision.resolve": async ({ decisionId, choice }) => {
       // decisionId is "<taskId>:<decision>" — the same id the inbox renders.
       const taskId = String(decisionId).split(":")[0];
       const statePath = control.findTaskStatePath(hqRoot, taskId);
       if (!statePath) throw new Error(`no such task: ${taskId}`);
-      control.resolveFounderDecision({ root: hqRoot, hqRoot, statePath, direction: choice });
-      return `recorded decision on ${taskId}`;
+      const task = control.resolveFounderDecision({ root: hqRoot, hqRoot, statePath, direction: choice });
+      if (!task?.objectiveResume) return `recorded decision on ${taskId}`;
+      const { runObjective } = await import("../factory/lib/objective/orchestrator.mjs");
+      const resumed = control.resumeObjectiveAfterDecision({
+        root: hqRoot, hqRoot, objectiveResume: task.objectiveResume, runObjective,
+      });
+      return resumed
+        ? `recorded decision on ${taskId} and resumed ${resumed.objectiveId}`
+        : `recorded decision on ${taskId}`;
     },
 
     // Start an outcome from the console. `handleObjectiveStart` awaits planning
