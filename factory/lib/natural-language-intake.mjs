@@ -5,6 +5,9 @@ import { basename, dirname, join, resolve } from "path";
 import { randomUUID } from "crypto";
 import { fileURLToPath } from "url";
 import { classifyDecision, loadDecisionProtocol } from "./intel/classify.mjs";
+// One definition of the blocking rule, shared with task-initializer.mjs so the
+// two intake paths cannot drift into disagreeing about what blocks.
+import { isAdvisoryOnly } from "./hq/classify-task.mjs";
 import { validateTaskContract } from "./task-workflow.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -75,35 +78,6 @@ function normalizeQuestions(value) {
   })).filter((item) => item.question && item.options.length >= 2);
 }
 
-// Whether a surfaced decision may be downgraded to advisory — i.e. recorded but
-// NOT allowed to stop the task.
-//
-// The default is blocking, and deliberately so. The costs are not symmetric: a
-// decision wrongly marked blocking costs the founder ten seconds of reading, and
-// a decision wrongly marked advisory cost five days, a product that shipped
-// without them knowing, and a 447 GB file. Fail loud, not silent.
-//
-// Previously every surfaced classification was hardcoded `advisory: true,
-// blocksDispatch: false` with no condition at all, so
-// `[decision-advisory] task-ca3c3cdf: decision-request / risk:high — advisory
-// only, not blocking` was the system working as written.
-//
-// Two conditions, both required, to opt out:
-//   1. The task is LOW risk. Medium and high never qualify.
-//   2. The matched protocol rule explicitly set `advisory: true`. Silence is
-//      not consent — an unset flag means blocking.
-//
-// A `risk:high` classification comes from riskBinding, not from a trigger rule,
-// so it can never satisfy (2) and can never be advisory. That is checked
-// explicitly below rather than left to fall out of the rule lookup, because it
-// is the guarantee that matters most.
-function isAdvisoryOnly(classification, contract, protocol) {
-  if (contract.risk === "high") return false;
-  if (classification.trigger === "risk:high") return false;
-  if (contract.risk !== "low") return false;
-  const rule = (protocol.triggers || []).find((t) => t.id === classification.trigger);
-  return rule?.advisory === true;
-}
 
 function findMatchedRule(classification, protocol) {
   const trigger = protocol.triggers?.find((rule) => rule.id === classification.trigger);

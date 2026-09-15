@@ -4,6 +4,7 @@ import { basename, dirname, join, resolve } from "path";
 import { createState, taskStatePath, validateTaskContract, writeState } from "./task-workflow.mjs";
 import { writeHandoff } from "./handoff.mjs";
 import { checkCapability } from "./hq/capability-check.mjs";
+import { classifyTaskContract } from "./hq/classify-task.mjs";
 
 // The public half of the founder approval authority embedded into every
 // high-risk task at creation. Prefer the key the founder enrolled from
@@ -34,7 +35,20 @@ export function initializeTask({ hqRoot, contractPath, repo: repoInput, branch: 
   if (existsSync(worktree)) throw new Error(`Worktree path already exists: ${worktree}`);
   let maxRecoveryAttempts = 3;
   try { maxRecoveryAttempts = JSON.parse(readFileSync(join(hqRoot, "factory", "factory.config.json"), "utf8")).openclawIntegration?.maxRecoveryAttempts || 3; } catch { /* safe default */ }
-  const state = createState({ task, repo, branch, worktree, founderPublicKey: resolveFounderPublicKey(hqRoot), maxRecoveryAttempts });
+  // Classify HERE, because this is the one chokepoint every creation path goes
+  // through — the objective orchestrator, factory-task, the smoke runs and
+  // openclaw-factory all call initializeTask. Classifying only at
+  // natural-language intake left 20 of 21 tasks unclassified, so the
+  // blocking-by-default rule was correct and almost entirely unreachable.
+  //
+  // The model-supplied namespace is never trusted: it is dropped and replaced
+  // by the deterministic classifier's own verdict.
+  const classified = { ...task };
+  delete classified.advisory;
+  const advisory = classifyTaskContract({ contract: classified, hqRoot });
+  if (advisory) classified.advisory = advisory;
+
+  const state = createState({ task: classified, repo, branch, worktree, founderPublicKey: resolveFounderPublicKey(hqRoot), maxRecoveryAttempts });
   if (git(repo, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], { allowFailure: true }).ok) {
     throw new Error(`Branch already exists: ${branch}`);
   }
