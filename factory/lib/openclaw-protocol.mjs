@@ -523,6 +523,27 @@ export function validateAgentResult(result) {
       throw new Error("Evidence exitStatus must be an integer.");
     }
   }
+  // An optional record of something the release stage deployed. Validated
+  // here so a malformed value is refused at ingest, where the agent can be
+  // told, rather than becoming a dead href on the founder's console.
+  if (result.deployment !== undefined && result.deployment !== null) {
+    if (typeof result.deployment !== "object" || Array.isArray(result.deployment)) {
+      throw new Error("Agent result deployment must be an object.");
+    }
+    if (result.stage !== "release") {
+      throw new Error("Only the release stage may report a deployment.");
+    }
+    const url = result.deployment.url;
+    if (typeof url !== "string" || !url.trim()) throw new Error("Agent result deployment requires a url.");
+    let parsed;
+    try { parsed = new URL(url); } catch { throw new Error("Agent result deployment url must be an absolute URL."); }
+    if (parsed.protocol !== "https:") throw new Error("Agent result deployment url must use https.");
+    if (parsed.username || parsed.password) throw new Error("Agent result deployment url must not embed credentials.");
+    if (result.deployment.environment !== undefined
+      && !["production", "preview"].includes(result.deployment.environment)) {
+      throw new Error("Agent result deployment environment must be production or preview.");
+    }
+  }
   if (result.criteria !== undefined) {
     if (!Array.isArray(result.criteria)) throw new Error("Agent result criteria must be an array.");
     for (const entry of result.criteria) {

@@ -50,6 +50,36 @@
     "diagnosis": {
       "type": "object"
     },
+    "deployment": {
+      "type": "object",
+      "description": "Set by the release stage only, to record a deployment that already happened. This never causes a deploy; it is written down so 'open what it produced' has a target. A production url becomes the project's deployment record; a preview url stays on this task.",
+      "required": [
+        "url"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "url": {
+          "type": "string",
+          "pattern": "^https://",
+          "description": "Absolute https URL. No embedded credentials."
+        },
+        "environment": {
+          "enum": [
+            "production",
+            "preview"
+          ],
+          "default": "production"
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1
+        },
+        "providerDeploymentId": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
     "decision": {
       "type": "object",
       "required": [

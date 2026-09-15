@@ -10,6 +10,7 @@
       "status": "active",
       "owner": "founder",
       "mission": "Give every project in the factory a durable, isolated intelligence layer and feed it into every agent handoff, without changing the workflow engine.",
+      "productionUrl": "https://openclaw-agents-headquarter.vercel.app",
       "github": { "owner": "7thcapitalist", "repo": "Openclaw-Agents-Headquarter" },
       "responsibleAgents": ["architect", "backend-builder", "learning-agent"]
     },
@@ -21,6 +22,7 @@
       "status": "active",
       "owner": "founder",
       "mission": "Get LifeMax's real backend (auth, persistence, onboarding, core game loop) running well enough to use daily for a week, privacy-first, before considering any external integration.",
+      "productionUrl": "https://lifemax-umber.vercel.app",
       "github": { "owner": "7thcapitalist", "repo": "lifemax" },
       "responsibleAgents": ["architect", "backend-builder", "frontend-builder"]
     }

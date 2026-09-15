@@ -8,6 +8,7 @@ import { PROTOCOL_VERSION, blockDispatch, computeDispatchPaths, failDispatch, in
 import { describeAgentCompletion, parseAgentMeta } from "./hq/agent-meta.mjs";
 import { DEFAULT_MAX_INFRA_ATTEMPTS, STAGES, readState } from "./task-workflow.mjs";
 import { mutateTransactionalState, peekRevision } from "./store/transactional-json.mjs";
+import { recordReleaseDeployment } from "./deploy/record-release.mjs";
 import { writeHandoff } from "./handoff.mjs";
 import { publishMergeReadyTask } from "./hq/github-publish.mjs";
 import { buildCompletionReport } from "./hq/completion-report.mjs";
@@ -116,8 +117,12 @@ export async function runOneStage({ hqRoot, statePath, agentIds = {}, maxAttempt
   // orphaned dispatch after its stale-work threshold.
   if (owned?.status === "running" && !owned.yieldedAt) {
     if (existsSync(prepared.resultPath)) {
-      const resumed = ingestResult({ statePath, result: readResultFile(prepared.resultPath), maxAttemptsPerStage, maxInfraAttemptsPerStage });
-      if (resumed.status === "merge-ready") resumed.githubPublish = publishAndRecord({ hqRoot, statePath, publish });
+      const resumedResult = readResultFile(prepared.resultPath);
+      const resumed = ingestResult({ statePath, result: resumedResult, maxAttemptsPerStage, maxInfraAttemptsPerStage });
+      if (resumed.status === "merge-ready") {
+        resumed.deployment = recordDeploymentIfReported({ hqRoot, statePath, result: resumedResult });
+        resumed.githubPublish = publishAndRecord({ hqRoot, statePath, publish });
+      }
       if (["merge-ready", "blocked"].includes(resumed.status)) writeCompletionReport({ statePath });
       return resumed;
     }
@@ -125,8 +130,12 @@ export async function runOneStage({ hqRoot, statePath, agentIds = {}, maxAttempt
   }
   if (owned?.status === "running" && owned.yieldedAt) {
     if (!existsSync(prepared.resultPath)) return { ...prepared, waiting: true };
-    const resumed = ingestResult({ statePath, result: readResultFile(prepared.resultPath), maxAttemptsPerStage, maxInfraAttemptsPerStage });
-    if (resumed.status === "merge-ready") resumed.githubPublish = publishAndRecord({ hqRoot, statePath, publish });
+    const yieldedResult = readResultFile(prepared.resultPath);
+    const resumed = ingestResult({ statePath, result: yieldedResult, maxAttemptsPerStage, maxInfraAttemptsPerStage });
+    if (resumed.status === "merge-ready") {
+      resumed.deployment = recordDeploymentIfReported({ hqRoot, statePath, result: yieldedResult });
+      resumed.githubPublish = publishAndRecord({ hqRoot, statePath, publish });
+    }
     if (["merge-ready", "blocked"].includes(resumed.status)) writeCompletionReport({ statePath });
     return resumed;
   }
@@ -180,9 +189,11 @@ export async function runOneStage({ hqRoot, statePath, agentIds = {}, maxAttempt
       response = failDispatch({ statePath, dispatchId: prepared.dispatchId, error: diagnostic.summary, maxAttemptsPerStage, maxInfraAttemptsPerStage });
       observeDispatchState({ hqRoot, statePath, phase: "failed", dispatchId: prepared.dispatchId, agentMeta, error: diagnostic.summary });
     } else {
-      response = ingestResult({ statePath, result: readResultFile(prepared.resultPath), agentMeta, maxAttemptsPerStage, maxInfraAttemptsPerStage });
+      const ingested = readResultFile(prepared.resultPath);
+      response = ingestResult({ statePath, result: ingested, agentMeta, maxAttemptsPerStage, maxInfraAttemptsPerStage });
       observeDispatchState({ hqRoot, statePath, phase: "completed", dispatchId: prepared.dispatchId, agentMeta });
       if (response.status === "merge-ready") {
+        response.deployment = recordDeploymentIfReported({ hqRoot, statePath, result: ingested });
         response.githubPublish = publishAndRecord({ hqRoot, statePath, publish });
       }
     }
@@ -295,6 +306,21 @@ export function publishAndRecord({ hqRoot, statePath, publish = publishMergeRead
     },
   });
   return result;
+}
+
+// Write down a deployment the release stage reported, so "open what it
+// produced" has a target.
+//
+// Runs before publishAndRecord so the completion report, written after both,
+// already carries the URL. Like publishAndRecord it never throws: the task has
+// already reached merge-ready, and a bookkeeping failure must not undo work
+// that shipped.
+function recordDeploymentIfReported({ hqRoot, statePath, result }) {
+  try {
+    return recordReleaseDeployment({ hqRoot, statePath, state: readState(statePath), result });
+  } catch (error) {
+    return { recorded: false, reason: summarizeError(error) };
+  }
 }
 
 // How many consecutive iterations may commit nothing before the loop is

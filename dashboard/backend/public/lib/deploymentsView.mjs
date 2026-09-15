@@ -58,6 +58,10 @@ function renderRow(row, esc, fmtTime) {
     ${url ? `<p class="deploy-url">${url}</p>` : ""}
     <p class="deploy-meta">${[
       row.founderActionRequired ? `<strong class="status-warn">${stateLabel}, waiting on a founder action</strong>` : null,
+      // A URL the registry declares is the founder's own note of where a
+      // project lives; it is not evidence that anything was deployed. Saying
+      // so is the difference between a useful link and a false claim.
+      row.productionUrlSource === "registry" ? "URL declared in the registry, not observed from a deploy" : null,
       row.health ? `health ${esc(String(row.health))}` : null,
       row.lastDeploymentAt ? `last deployed ${esc(fmtTime(row.lastDeploymentAt))}` : null,
     ].filter(Boolean).join(" · ") || "No deployment recorded yet."}</p>
