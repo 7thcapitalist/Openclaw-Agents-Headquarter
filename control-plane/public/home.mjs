@@ -11,6 +11,7 @@
 // DOM-API only — no innerHTML anywhere near snapshot data.
 
 import { freshness, list, money, num, text, unavailable } from "./render.mjs";
+import { stageLabel, taskOutcomeLine, taskTitle } from "./stage-vocabulary.mjs";
 
 // ─── model ───────────────────────────────────────────────────────────────────
 
@@ -34,16 +35,27 @@ export function ageLine(publishedAt, now = Date.now()) {
 export function homeDecisions(panels) {
   if (unavailable(panels?.company)) return [];
   return list(panels.company.decisions)
-    .map((decision) => ({
-      id: text(decision?.id, ""),
-      taskId: text(decision?.taskId, ""),
-      project: text(decision?.project, ""),
-      ...splitQuestion(text(decision?.question || decision?.summary, "A decision is needed."), text(decision?.why, "")),
-      recommendation: text(decision?.recommendation, ""),
-      options: list(decision?.options).map((o) => String(o)).filter(Boolean),
-      since: text(decision?.requestedAt, ""),
-      risk: text(decision?.risk, ""),
-    }))
+    .map((decision) => {
+      const raw = text(decision?.question || decision?.summary, "");
+      const split = splitQuestion(raw, text(decision?.why, ""));
+      return {
+        id: text(decision?.id, ""),
+        taskId: text(decision?.taskId, ""),
+        project: text(decision?.project, ""),
+        // The question in plain language, as the title (A4). Machine prose —
+        // session keys, evidence paths, gateway diagnostics — never leads.
+        question: plainQuestion(split.question),
+        context: plainContext(split.why, split.question),
+        // The work this blocks, BY NAME (A3).
+        blocks: taskTitle({ outcome: decision?.taskOutcome, taskId: decision?.taskId }),
+        recommendation: text(decision?.recommendation, ""),
+        options: list(decision?.options).map((o) => String(o)).filter(Boolean),
+        since: text(decision?.requestedAt, ""),
+        risk: text(decision?.risk, ""),
+        // Kept, not deleted — folded behind "Show technical detail".
+        technical: technicalOf(raw, split.why),
+      };
+    })
     .filter((decision) => decision.id !== "");
 }
 
@@ -76,6 +88,56 @@ export function splitQuestion(question, why) {
   };
 }
 
+// Machine prose that must never be a headline (A4). These are the shapes that
+// turned a decision card into a wall of dispatch ids: session keys, evidence
+// paths, gateway diagnostics, and the stack-trace-ish tail of a recovery error.
+const MACHINE = [
+  /\bsession [a-z-]*:?[a-z0-9:-]*factory-[a-z0-9-]+/gi,
+  /\bevidence\/[\w./-]+/gi,
+  /\bagent:[a-z-]+:[a-z0-9-]+/gi,
+  /\bobj-[0-9a-f]{6,}[a-z0-9-]*/gi,
+  /\btask-[0-9a-f]{6,}/gi,
+  /`[^`]+`/g,
+];
+
+/** Strip machine shapes and keep the first plain sentence or two. */
+function plainOf(text, max = 240) {
+  let out = String(text || "");
+  for (const re of MACHINE) out = out.replace(re, "");
+  out = out.replace(/\(\s*[;,.]?\s*\)/g, "").replace(/\s{2,}/g, " ").replace(/\s+([.;,])/g, "$1").trim();
+  out = out.replace(/^[;:,.\s-]+/, "").trim();
+  if (out.length <= max) return out;
+  const cut = out.lastIndexOf(" ", max);
+  return `${out.slice(0, cut > 40 ? cut : max)}…`;
+}
+
+/**
+ * A question a person can answer, as the card's title.
+ *
+ * A recovery escalation writes its whole prose summary into this field. Leading
+ * with that is what made the card unreadable, so the machine shapes come out
+ * and, when nothing human survives, the card says what it actually is instead
+ * of showing the wreckage.
+ */
+export function plainQuestion(question) {
+  const cleaned = plainOf(question, 150);
+  if (cleaned.length >= 25) return cleaned;
+  return "The factory needs a decision before it can continue.";
+}
+
+/** One or two sentences of context, never repeating the title. */
+export function plainContext(why, question) {
+  const cleaned = plainOf(why, 260);
+  if (!cleaned || cleaned === plainOf(question, 260)) return "";
+  return cleaned;
+}
+
+/** Everything technical, preserved verbatim for the fold. */
+export function technicalOf(...parts) {
+  const text = parts.map((p) => String(p || "").trim()).filter(Boolean).join("\n\n").trim();
+  return text || "";
+}
+
 const BROKEN = new Set(["blocked", "failed"]);
 
 /** Anything blocked or failed — after decisions, because it is not a question. */
@@ -87,9 +149,12 @@ export function homeAttention(panels) {
       if (!BROKEN.has(status)) continue;
       out.push({
         kind: "task",
-        id: text(task?.taskId, "unknown"),
+        id: text(task?.taskId, ""),
+        title: taskTitle({ outcome: task?.outcome, taskId: task?.taskId }),
         status,
-        stage: text(task?.stage, "—"),
+        stage: task?.stage || null,
+        // "Failed before it started" instead of "failed at —".
+        outcomeLine: taskOutcomeLine({ status, stage: task?.stage || null }),
         since: text(task?.updatedAt, ""),
       });
     }
@@ -98,9 +163,11 @@ export function homeAttention(panels) {
       const findings = list(objective.findings);
       out.push({
         kind: "objective",
-        id: text(objective?.objectiveId, "unknown"),
+        id: text(objective?.objectiveId, ""),
+        title: taskTitle({ outcome: objective?.objective, taskId: objective?.objectiveId }),
         status: "unhealthy",
-        stage: text(findings[0]?.code, "—"),
+        stage: null,
+        outcomeLine: "Objective needs attention",
         detail: text(findings[0]?.message, ""),
         since: text(objective?.recordedAt, ""),
       });
@@ -126,6 +193,7 @@ export function homePulse(panels) {
   const totals = ops?.costs?.totals || budgets?.totals || null;
   const micros = num(totals?.costMicros, 0);
   const unpriced = num(totals?.unpricedEvents, 0);
+  const events = num(totals?.events, 0);
 
   return {
     running: num(ops?.summary?.activeRuns, 0),
@@ -134,7 +202,44 @@ export function homePulse(panels) {
     projects: num(company?.summary?.projects, 0),
     spendLabel: money(micros),
     unpricedEvents: unpriced,
+    // Name the window precisely rather than implying "today".
+    //
+    // The ledger has no per-day bucket, so this is everything it has ever
+    // recorded — and saying "today" would be a lie the page cannot detect. It
+    // also says when it is incomplete: an unpriced event is usage with no rate
+    // in factory/pricing.json, and reporting it as free is how $128 of work
+    // read as $0.09.
+    spendWindow: events ? `across all ${events} recorded runs` : "no runs recorded yet",
+    spendComplete: unpriced === 0,
   };
+}
+
+const FINISHED = new Set(["merged", "complete", "completed", "merge-ready"]);
+
+/**
+ * What finished recently, newest first.
+ *
+ * Its absence is what cost five days: PRs #2-#5 merged to main and nothing on
+ * any founder-facing surface said so. A console that only shows problems tells
+ * you the factory is broken and never that it delivered.
+ */
+export function homeFinished(panels, { limit = 6 } = {}) {
+  if (unavailable(panels?.operations)) return [];
+  const costByTask = panels.operations.costs?.byTask || {};
+  return list(panels.operations.tasks)
+    .filter((task) => FINISHED.has(String(task?.status || "").toLowerCase()))
+    .map((task) => ({
+      id: text(task?.taskId, ""),
+      title: taskTitle({ outcome: task?.outcome, taskId: task?.taskId }),
+      project: text(task?.projectId, ""),
+      status: String(task?.status || ""),
+      finishedAt: text(task?.updatedAt, ""),
+      cost: costByTask[task?.taskId] || null,
+      prUrl: text(task?.prUrl, "") || null,
+      previewUrl: text(task?.previewUrl, "") || null,
+    }))
+    .sort((a, b) => String(b.finishedAt).localeCompare(String(a.finishedAt)))
+    .slice(0, limit);
 }
 
 export function homeModel(snapshot, now = Date.now()) {
@@ -146,6 +251,7 @@ export function homeModel(snapshot, now = Date.now()) {
     decisions,
     attention,
     pulse: homePulse(panels),
+    finished: homeFinished(panels),
     calm: decisions.length === 0 && attention.length === 0,
   };
 }
@@ -168,8 +274,17 @@ function decisionCard(decision, onAnswer) {
   if (decision.risk === "high") head.append(el("span", "home-chip home-chip--risk", "high risk"));
   card.append(head);
 
+  // 1. the question, in plain language
   card.append(el("h3", "home-question", decision.question));
-  if (decision.why) card.append(el("p", "home-why", decision.why));
+  // 2. context: what the work was, what went wrong
+  if (decision.context) card.append(el("p", "home-why", decision.context));
+  // 3. what it blocks, by name
+  if (decision.blocks && decision.blocks !== "Untitled task") {
+    const blocks = el("p", "home-blocks");
+    blocks.append(el("span", "home-blocks-label", "Blocking: "));
+    blocks.append(document.createTextNode(decision.blocks));
+    card.append(blocks);
+  }
   if (decision.recommendation) {
     const rec = el("p", "home-rec");
     rec.append(el("strong", null, "Recommended: "));
@@ -177,6 +292,7 @@ function decisionCard(decision, onAnswer) {
     card.append(rec);
   }
 
+  // 4. the options
   const actions = el("div", "home-actions");
   if (decision.options.length) {
     for (const option of decision.options) {
@@ -196,9 +312,16 @@ function decisionCard(decision, onAnswer) {
   }
   card.append(actions);
 
-  const foot = el("p", "home-meta home-foot");
-  foot.textContent = decision.taskId ? `${decision.taskId}` : decision.id;
-  card.append(foot);
+  // 5. everything technical, kept but folded away, closed by default
+  if (decision.technical) {
+    const fold = el("details", "home-technical");
+    fold.append(el("summary", null, "Show technical detail"));
+    fold.append(el("pre", "home-pre", decision.technical));
+    card.append(fold);
+  }
+
+  // The id is for copying, never the name.
+  if (decision.taskId) card.append(el("p", "home-id", decision.taskId));
   return card;
 }
 
@@ -207,10 +330,53 @@ function attentionRow(item) {
   const tone = item.status === "failed" || item.status === "unhealthy" ? "bad" : "warn";
   row.append(el("span", `home-dot home-dot--${tone}`));
   const body = el("div", "home-row-body");
-  body.append(el("div", "home-row-title", item.id));
-  body.append(el("div", "home-meta", item.detail ? item.detail : `${item.status} at ${item.stage}`));
+  // The one-line outcome is the title; the id goes underneath, muted, for
+  // copying. A slug is a fallback, never the answer (A3).
+  body.append(el("div", "home-row-title", item.title));
+  body.append(el("div", "home-meta", item.detail ? item.detail : item.outcomeLine));
+  if (item.id && item.id !== item.title) body.append(el("div", "home-id", item.id));
   row.append(body);
   return row;
+}
+
+function finishedRow(item) {
+  const row = el("li", "home-row home-row--done");
+  row.append(el("span", "home-dot home-dot--good"));
+  const body = el("div", "home-row-body");
+  body.append(el("div", "home-row-title", item.title));
+
+  const bits = [];
+  if (item.project) bits.push(item.project);
+  if (item.finishedAt) bits.push(agoLabel(item.finishedAt));
+  if (item.cost && item.cost.costMicros != null) bits.push(money(item.cost.costMicros));
+  body.append(el("div", "home-meta", bits.join(" · ") || "delivered"));
+
+  if (item.prUrl || item.previewUrl) {
+    const links = el("div", "home-links");
+    if (item.prUrl) links.append(link(item.prUrl, "Pull request ↗"));
+    if (item.previewUrl) links.append(link(item.previewUrl, "Preview ↗"));
+    body.append(links);
+  }
+  if (item.id) body.append(el("div", "home-id", item.id));
+  row.append(body);
+  return row;
+}
+
+function link(href, label) {
+  const a = el("a", "home-link", label);
+  a.href = href;
+  a.target = "_blank";
+  a.rel = "noreferrer";
+  return a;
+}
+
+function agoLabel(at) {
+  const then = Date.parse(at);
+  if (Number.isNaN(then)) return "";
+  const s = Math.max(0, Math.round((Date.now() - then) / 1000));
+  if (s < 5400) return `${Math.max(1, Math.round(s / 60))}m ago`;
+  if (s < 172_800) return `${Math.round(s / 3600)}h ago`;
+  return `${Math.round(s / 86_400)}d ago`;
 }
 
 /**
@@ -258,12 +424,22 @@ export function renderHome(root, snapshot, { onAnswer = () => {}, now = Date.now
     root.append(listEl);
   }
 
+  // What finished recently. Its absence is what cost five days.
+  root.append(el("h2", "home-heading", "What finished recently"));
+  if (model.finished.length) {
+    const done = el("ul", "home-list");
+    for (const item of model.finished) done.append(finishedRow(item));
+    root.append(done);
+  } else {
+    root.append(el("p", "home-calm home-calm--small", "Nothing has finished yet."));
+  }
+
   const p = model.pulse;
   const pulse = el("p", "home-pulse");
   pulse.textContent =
     `${p.running} running of ${p.tasks} tasks across ${p.projects} project${p.projects === 1 ? "" : "s"}` +
-    ` · ${p.spendLabel} spend to date` +
-    (p.unpricedEvents ? ` (${p.unpricedEvents} unpriced)` : "");
+    ` · ${p.spendLabel} ${p.spendWindow}` +
+    (p.spendComplete ? "" : ` · ${p.unpricedEvents} run${p.unpricedEvents === 1 ? "" : "s"} have no price yet, so this is a floor`);
   root.append(pulse);
 
   return model;

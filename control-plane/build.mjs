@@ -33,7 +33,7 @@ const apiDir = join(root, "api");
 
 // Every file that must reach the deployment. Adding an asset means adding it
 // here; an asset absent from this list is not protected by the check.
-const REQUIRED = ["index.html", "styles.css", "app.js", "render.mjs", "home.mjs"];
+const REQUIRED = ["index.html", "styles.css", "app.js", "render.mjs", "home.mjs", "stage-vocabulary.mjs"];
 
 // An asset can exist, be non-empty, and still be unreachable because nothing
 // links to it. These are the references index.html must carry.

@@ -509,3 +509,55 @@ body {
   .topbar .btn-ghost { margin-left: 0; }
   .topbar .freshness { flex: 1 1 auto; min-width: 0; }
 }
+
+/* Home: names, links and the technical fold (A3/A4). */
+.home-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.72rem;
+  color: var(--muted, #8a8f98);
+  opacity: 0.75;
+  margin: 6px 0 0;
+  overflow-wrap: anywhere;
+  /* Selectable on a phone: this line exists to be copied. */
+  user-select: all;
+}
+.home-blocks { margin: 0 0 8px; font-size: 0.85rem; line-height: 1.5; }
+.home-blocks-label { color: var(--muted, #8a8f98); }
+
+.home-technical { margin-top: 12px; }
+.home-technical > summary {
+  cursor: pointer;
+  font-size: 0.8rem;
+  color: var(--muted, #8a8f98);
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+}
+.home-pre {
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--bg, #0d1117);
+  border: 1px solid var(--line, #262b33);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  /* The one place horizontal scroll is allowed, and it is contained. */
+  overflow-x: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 260px;
+}
+
+.home-dot--good { background: #2ea043; }
+.home-row--done { opacity: 0.92; }
+.home-links { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 6px; }
+.home-link {
+  font-size: 0.8rem;
+  color: #79c0ff;
+  text-decoration: none;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+}
+.home-link:hover { text-decoration: underline; }
+.home-calm--small { padding: 8px 0; font-size: 0.9rem; }
