@@ -1,4 +1,5 @@
 import { STAGE_LABEL } from "/lib/stage-vocabulary.mjs";
+import { BOARD_COLUMNS, buildBoard, filterByProject } from "/lib/board.mjs";
 import * as objectiveRecovery from "/lib/objectiveRecovery.mjs";
 import * as founderApproval from "/lib/founderApproval.mjs";
 import * as objectiveView from "/lib/objectiveView.mjs";
@@ -26,7 +27,6 @@ import { permissionsPanel } from "/lib/permissionsView.mjs";
   const modalTitle = document.getElementById("modal-title");
   const modalBody = document.getElementById("modal-body");
 
-  const BOARD_COLUMNS = ["Inbox", "Assigned", "In Progress", "Review", "Done", "Blocked"];
   const SEVERITY_RANK = { high: 0, medium: 1, low: 2, unspecified: 3 };
 
   // Objectives from the last Today render, keyed by objectiveId, so the
@@ -208,7 +208,7 @@ import { permissionsPanel } from "/lib/permissionsView.mjs";
       ["#/today", "today", "Today"],
       ["#/agents", "agents", "Agents"],
       ["#/projects", "projects", "Projects"],
-      ["#/tasks", "tasks", "Task Board"],
+      ["#/tasks", "tasks", "Board"],
       ["#/sops", "sops", "SOPs"],
       ["#/logs", "logs", "Logs"],
       ["#/reports", "reports", "Reports"],
@@ -1552,28 +1552,51 @@ import { permissionsPanel } from "/lib/permissionsView.mjs";
 
   // ── Task Board / SOPs / Reports — legacy example data ──────────
 
+  // The Task Board, on the REAL factory pipeline.
+  //
+  // It used to read /api/hq -> data/hq/tasks.json, a 3-byte file, and showed
+  // zero in all six columns while 21 real tasks were running. The mapping is
+  // shared with the hosted console so both boards group identically.
   async function renderTasks() {
-    const d = await loadHq();
+    const ops = await apiJson("/api/hq/operations").catch(() => ({ tasks: [] }));
+    const project = new URLSearchParams(location.hash.split("?")[1] || "").get("project");
+    const board = buildBoard(filterByProject(ops.tasks || [], project));
+
     app.innerHTML = `
-      ${demoBanner()}
       <div class="page-head">
         <div>
-          <h1 class="page-title">Task Board</h1>
-          <p class="muted">Inbox, Assigned, In Progress, Review, Done, and Blocked. Example data seeded by scripts/seed-hq.sh — not the real factory task pipeline.</p>
+          <h1 class="page-title">Board</h1>
+          <p class="muted">Where every piece of work sits right now${project ? ` · ${esc(project)}` : ""} — ${board.total} task${board.total === 1 ? "" : "s"} from the live factory.</p>
         </div>
-        <button class="btn secondary" id="edit-tasks">Edit tasks JSON</button>
+        ${project ? `<a class="btn secondary" href="#/tasks">All projects</a>` : ""}
       </div>
       <div class="kanban">
-        ${BOARD_COLUMNS.map((col) => {
-          const tasks = d.tasks.filter((t) => t.status === col);
-          return `
-            <section class="kanban-col">
-              <div class="kanban-head"><span>${esc(col)}</span><b>${tasks.length}</b></div>
-              ${tasks.map((t) => taskCard(t, d.projects, d.agents)).join("") || `<p class="muted small">No tasks.</p>`}
-            </section>`;
-        }).join("")}
+        ${BOARD_COLUMNS.map((col) => `
+          <section class="kanban-col">
+            <div class="kanban-head"><span>${esc(col)}</span><b>${board.counts[col]}</b></div>
+            ${board.columns[col].map(boardCard).join("") || `<p class="muted small">Nothing here.</p>`}
+          </section>`).join("")}
       </div>`;
-    document.getElementById("edit-tasks").onclick = () => editCollection("tasks", d.tasks);
+
+    app.querySelectorAll("[data-board-task]").forEach((el) => {
+      el.addEventListener("click", () => openTaskExecutionView(el.dataset.boardTask));
+    });
+  }
+
+  // A card leads with what the work is FOR. The id is small and muted, for
+  // copying — never the name.
+  function boardCard(card) {
+    return `
+      <article class="kanban-card" data-board-task="${esc(card.id)}" role="button" tabindex="0">
+        <h4>${esc(card.title)}</h4>
+        <div class="kanban-meta">${esc(card.outcomeLine)}</div>
+        <div class="kanban-foot">
+          ${card.project ? `<span class="badge badge-type">${esc(card.project)}</span>` : ""}
+          ${card.assignee ? `<span class="badge">${esc(card.assignee)}</span>` : ""}
+          ${card.risk === "high" ? `<span class="badge badge-warn">high risk</span>` : ""}
+        </div>
+        <div class="kanban-id">${esc(card.id)}</div>
+      </article>`;
   }
 
   async function renderSops() {
