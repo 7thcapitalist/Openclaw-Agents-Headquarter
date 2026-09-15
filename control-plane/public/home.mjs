@@ -265,7 +265,7 @@ function el(tag, className, textContent) {
   return node;
 }
 
-function decisionCard(decision, onAnswer) {
+function decisionCard(decision, onAnswer, intentState) {
   const card = el("article", "home-card home-card--decision");
 
   const head = el("div", "home-card-head");
@@ -292,7 +292,16 @@ function decisionCard(decision, onAnswer) {
     card.append(rec);
   }
 
-  // 4. the options
+  // 4. the options — or, once acted on, what became of the answer.
+  //
+  // No control may look actionable and do nothing: once an answer is sent the
+  // options stop being buttons, because pressing one again cannot help.
+  if (intentState) {
+    card.append(intentStatus(intentState));
+    if (decision.taskId) card.append(el("p", "home-id", decision.taskId));
+    return card;
+  }
+
   const actions = el("div", "home-actions");
   if (decision.options.length) {
     for (const option of decision.options) {
@@ -323,6 +332,42 @@ function decisionCard(decision, onAnswer) {
   // The id is for copying, never the name.
   if (decision.taskId) card.append(el("p", "home-id", decision.taskId));
   return card;
+}
+
+/**
+ * What became of an answer, stated honestly.
+ *
+ * The machine polls on its own cadence and this page only changes when a new
+ * snapshot is published, so "sent" is never reported as "done". Naming the
+ * staleness is the difference between a page that is waiting and a page that
+ * looks broken.
+ */
+export function intentStatus(state) {
+  const box = el("div", `home-intent home-intent--${state.state}`);
+  if (state.state === "queued") {
+    box.append(el("strong", null, "Sending…"));
+    return box;
+  }
+  if (state.state === "waiting") {
+    box.append(el("strong", null, "Sent. Waiting for the machine."));
+    box.append(el("p", null,
+      "The factory machine picks up queued work about every 30 seconds, and this page changes when it next publishes. "
+      + "Nothing has been applied until this says so."));
+    return box;
+  }
+  if (state.state === "slow") {
+    box.append(el("strong", null, "Still waiting."));
+    box.append(el("p", null, "The machine has not reported back yet. It may be offline — the page is not stuck."));
+    return box;
+  }
+  if (state.state === "done") {
+    box.append(el("strong", null, "Done."));
+    if (state.detail) box.append(el("p", null, state.detail));
+    return box;
+  }
+  box.append(el("strong", null, "That did not work."));
+  box.append(el("p", null, state.detail || "The machine refused it and gave no reason."));
+  return box;
 }
 
 function attentionRow(item) {
@@ -384,7 +429,7 @@ function agoLabel(at) {
  * founder picks an option; it is the caller's job to queue the intent and to be
  * honest that queueing is not the same as done.
  */
-export function renderHome(root, snapshot, { onAnswer = () => {}, now = Date.now() } = {}) {
+export function renderHome(root, snapshot, { onAnswer = () => {}, intentStateFor = () => null, now = Date.now() } = {}) {
   const model = homeModel(snapshot, now);
   root.replaceChildren();
 
@@ -413,7 +458,7 @@ export function renderHome(root, snapshot, { onAnswer = () => {}, now = Date.now
   if (model.decisions.length) {
     root.append(el("h2", "home-heading", model.decisions.length === 1 ? "1 decision needs you" : `${model.decisions.length} decisions need you`));
     const wrap = el("div", "home-cards");
-    for (const decision of model.decisions) wrap.append(decisionCard(decision, onAnswer));
+    for (const decision of model.decisions) wrap.append(decisionCard(decision, onAnswer, intentStateFor(`decision:${decision.id}`)));
     root.append(wrap);
   }
 

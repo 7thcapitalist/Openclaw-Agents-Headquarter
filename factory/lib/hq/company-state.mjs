@@ -296,8 +296,20 @@ function groupTasksByProject(tasks, unifiedProjects) {
   return map;
 }
 
+// Statuses from which no founder answer can change anything. `merge-ready` is
+// deliberately absent: those carry deferred decisions, handled below.
+const TERMINAL_TASK = new Set(["failed", "merged", "complete", "completed"]);
+
 function deriveTaskDecisions(tasks) {
+  // A decision on a task that has already stopped is not a decision, it is a
+  // record. task-ca3c3cdf was closed on 2026-09-15 and kept its blocker, so the
+  // console went on offering its two options; the founder clicked one, the
+  // intent was enqueued and claimed, and the worker correctly refused with
+  // "Task is not waiting for a founder decision." The button looked live
+  // because this filter only ever looked at the blocker, never at whether the
+  // task was still running.
   const blocked = tasks
+    .filter((t) => !TERMINAL_TASK.has(String(t.status || "")))
     .filter((t) => t.blocker?.outcome === "decision-required" || t.decisionCard)
     .map((t) => ({
       kind: "task-blocker",

@@ -561,3 +561,23 @@ body {
 }
 .home-link:hover { text-decoration: underline; }
 .home-calm--small { padding: 8px 0; font-size: 0.9rem; }
+
+/* What became of an answer. Persistent, because Home repaints on every publish. */
+.home-intent {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--line, #262b33);
+  border-left-width: 3px;
+  background: var(--raise, #1b2027);
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+.home-intent strong { display: block; margin-bottom: 4px; }
+.home-intent p { margin: 0; color: var(--muted, #8a8f98); }
+.home-intent--queued { border-left-color: #8a8f98; }
+.home-intent--waiting { border-left-color: #388bfd; }
+.home-intent--slow { border-left-color: #d29922; }
+.home-intent--done { border-left-color: #2ea043; }
+.home-intent--failed { border-left-color: #f85149; }
+.home-option:disabled { opacity: 0.5; cursor: not-allowed; }
