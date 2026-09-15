@@ -33,16 +33,16 @@ const apiDir = join(root, "api");
 
 // Every file that must reach the deployment. Adding an asset means adding it
 // here; an asset absent from this list is not protected by the check.
-const REQUIRED = ["index.html", "styles.css", "app.js", "render.mjs"];
+const REQUIRED = ["index.html", "styles.css", "app.js", "render.mjs", "home.mjs", "stage-vocabulary.mjs"];
 
 // An asset can exist, be non-empty, and still be unreachable because nothing
 // links to it. These are the references index.html must carry.
 const REQUIRED_REFERENCES = ["/styles.css", "/app.js"];
 
-// render.mjs is imported by app.js rather than referenced from the HTML, so the
-// entry-point check above cannot see it. It is listed in REQUIRED so that its
-// absence still fails the build instead of producing a page that loads and then
-// throws on its first import.
+// render.mjs and home.mjs are imported by app.js rather than referenced from
+// the HTML, so the entry-point check above cannot see them. They are listed in
+// REQUIRED so that their absence still fails the build instead of producing a
+// page that loads and then throws on its first import.
 
 const failures = [];
 
