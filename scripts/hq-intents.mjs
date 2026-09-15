@@ -258,19 +258,36 @@ async function loop() {
 // Run only when invoked as a command. Without this guard, importing the module
 // to inspect the handler map — which is exactly what the wiring test does —
 // would start polling the control plane as a side effect of the import.
-const invokedDirectly = process.argv[1]
-  && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+//
+// The guard is on the MODE, not on argv[1], because argv[1] is not this file
+// when it matters most. pm2 in fork mode loads the script inside its own
+// wrapper, so the running worker sees:
+//
+//   argv = ["/usr/bin/node", ".../pm2/lib/ProcessContainerFork.js", "loop"]
+//
+// An argv[1] comparison is false there, which meant the worker under pm2 parsed
+// its arguments, matched nothing, ran nothing and printed nothing — while pm2's
+// IPC channel held the process open and `online` with an empty log. Every
+// founder intent queued in that window was claimed by nobody.
+//
+// The mode is the honest signal: `once`, `loop` and `peek` are only ever passed
+// by a human or a process manager invoking this as a command. A test importing
+// the module for its handler map passes none of them — under `node --test` the
+// test file is argv[1] and argv[2] is undefined — so the import stays inert,
+// which is the property the guard was added for.
+const mode = process.argv[2];
+const invokedAsCommand = mode === "once" || mode === "loop" || mode === "peek";
 
-if (invokedDirectly) {
-  const mode = process.argv[2] || "once";
+// A mode that is present but unrecognised is a typo at a command line, not an
+// import, and saying so beats doing nothing quietly.
+if (mode !== undefined && !invokedAsCommand) {
+  console.error(`unknown mode: ${mode}. Use once, loop or peek.`);
+  process.exitCode = 2;
+} else if (invokedAsCommand) {
   try {
     if (mode === "once") await once();
     else if (mode === "loop") await loop();
-    else if (mode === "peek") await peek();
-    else {
-      console.error(`unknown mode: ${mode}. Use once, loop or peek.`);
-      process.exitCode = 2;
-    }
+    else await peek();
   } catch (error) {
     console.error(`intent poller error: ${String(error?.message || error).slice(0, 300)}`);
     process.exitCode = 1;
