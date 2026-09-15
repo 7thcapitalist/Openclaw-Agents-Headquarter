@@ -896,6 +896,10 @@ function readDecisionCard(state) {
 // finished history vs. what the founder explicitly dismissed. Pure: derived
 // from the presenter's 6-value status, the objective's own freshness, its
 // pending recovery, and the founder's archive flag. Adds no state.
+// Statuses that are the objective's final word about itself. Node evidence can
+// refine a non-terminal objective's status; it cannot overturn one of these.
+const TERMINAL_OBJECTIVE_STATUSES = new Set(["cancelled", "complete"]);
+
 const OBJ_ACTIVE_STALE_MS = Number(process.env.HQ_OBJECTIVE_ACTIVE_STALE_MS) || 12 * 60 * 60 * 1000;
 const OBJ_RECENT_COMPLETE_MS = Number(process.env.HQ_OBJECTIVE_RECENT_COMPLETE_MS) || 72 * 60 * 60 * 1000;
 
@@ -979,7 +983,16 @@ export function buildObjectivesView(root, { now = Date.now() } = {}) {
         ? (task.events || []).filter((e) => e.type === "stage-pass").map((e) => e.stage)
         : [];
     }
-    if (allNodes.some((n) => n.taskStatus === "active")) obj.status = "active";
+    // A live task means the objective is live — EXCEPT when the objective
+    // already reached a terminal state the founder declared. Cancelling
+    // deliberately leaves node and task statuses alone, so the record of what
+    // each part reached survives; without this guard that untouched `active`
+    // task rewrote the objective back to `active` and the cancelled card
+    // reappeared on Today as "Running". Cancelling something and watching it
+    // come back is precisely the failure the cancel control exists to end.
+    if (!TERMINAL_OBJECTIVE_STATUSES.has(obj.status) && allNodes.some((n) => n.taskStatus === "active")) {
+      obj.status = "active";
+    }
     obj.prUrl = obj.integration?.githubPublish?.prUrl || null;
     // Only genuine founder decisions / non-infra blocks — infra goes to recovery.
     obj.blockedOn = allNodes.find((n) => {
