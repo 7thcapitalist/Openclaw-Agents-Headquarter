@@ -18,7 +18,8 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { discoverFactoryTasks } from "../dashboard/backend/lib/founderControlPlane.mjs";
-import { buildSnapshot, publishSnapshot } from "../factory/lib/hq/publisher.mjs";
+import { readState } from "../factory/lib/task-workflow.mjs";
+import { buildSnapshot, buildTaskDetails, publishSnapshot, publishTaskDetail } from "../factory/lib/hq/publisher.mjs";
 import { DEFAULTS, failureAlert, nextDelayMs, shouldPublish, snapshotFingerprint } from "../factory/lib/hq/publish-cadence.mjs";
 
 const hqRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -31,6 +32,18 @@ const hqRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // heartbeat, and backing off when the store refuses.
 const FLOOR_MS = Number(process.env.HQ_PUBLISH_INTERVAL_MS || DEFAULTS.floorMs);
 const HEARTBEAT_MS = Number(process.env.HQ_PUBLISH_HEARTBEAT_MS || DEFAULTS.heartbeatMs);
+
+// Task states, read once per attempt and reused for both the mirror and the
+// per-task detail documents.
+function taskStates() {
+  try {
+    return discoverFactoryTasks(hqRoot)
+      .map((view) => { try { return readState(view.statePath); } catch { return null; } })
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
 
 function tasks() {
   try {
@@ -78,7 +91,25 @@ async function attempt(state) {
   if (!decision.publish) return { ok: true, skipped: true, fingerprint };
 
   const result = await publishSnapshot({ snapshot });
+
+  // Per-task detail, each blob fingerprinted on its own so one task changing
+  // does not rewrite the other twenty. Skipping this would multiply the write
+  // volume by N and recreate the quota problem the cadence change just solved.
+  let taskWrites = 0;
+  if (result.ok) {
+    for (const { taskId, detail } of buildTaskDetails({ hqRoot, states: taskStates(), costs: snapshot.panels?.operations?.costs || null })) {
+      const fingerprint = snapshotFingerprint(detail);
+      if (state.taskFingerprints?.get(taskId) === fingerprint) continue;
+      const wrote = await publishTaskDetail({ taskId, detail });
+      if (wrote.ok) {
+        state.taskFingerprints?.set(taskId, fingerprint);
+        taskWrites += 1;
+      }
+    }
+  }
+
   return {
+    taskWrites,
     ...result,
     fingerprint,
     reason: result.reason,
@@ -90,7 +121,7 @@ async function attempt(state) {
 }
 
 async function once() {
-  const state = { lastFingerprint: null, lastPublishedAtMs: null };
+  const state = { lastFingerprint: null, lastPublishedAtMs: null, taskFingerprints: new Map() };
   const result = await attempt(state);
   report(result);
   return result;
@@ -127,7 +158,7 @@ async function loop() {
     });
   }
 
-  const state = { lastFingerprint: null, lastPublishedAtMs: null, failureStreak: 0, firstFailureAtMs: null };
+  const state = { lastFingerprint: null, lastPublishedAtMs: null, failureStreak: 0, firstFailureAtMs: null, taskFingerprints: new Map() };
 
   // Sequential rather than on a timer: overlapping publishes would race to
   // overwrite the same document, and the newest writer would not reliably win.

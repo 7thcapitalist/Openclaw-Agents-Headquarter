@@ -224,14 +224,21 @@ export function publishMergeReadyTask({ hqRoot, state, exec = defaultExec, ghAva
 
   const title = truncate(state.task.outcome || state.task.id, 120);
   const body = buildPrBody(state);
-  try {
-    const url = execFileSync(
-      "gh",
-      ["pr", "create", "--repo", slug, "--head", branch, "--title", title, "--body", body],
-      { cwd: worktree, encoding: "utf8" }
-    ).trim();
+  // Through the injected `exec`, like every other command in this function.
+  //
+  // This one call used execFileSync directly, which made the publish path only
+  // half-injectable: a caller could stub `gh pr list` and still shell out to the
+  // real `gh` to create a pull request. That is why the hermetic objective smoke
+  // had to declare gh unavailable altogether, which then classified a
+  // successfully-pushed node as a publication failure and blocked the whole
+  // objective. A test that cannot reach the success path stops testing it.
+  const created = exec(worktree, ["gh", "pr", "create", "--repo", slug, "--head", branch, "--title", title, "--body", body]);
+  if (created.ok) {
+    const url = String(created.out || "").trim();
     return { published: true, pushed: true, prUrl: url || null, ...audit };
-  } catch (error) {
+  }
+  {
+    const error = { stderr: created.out, message: created.out };
     // `gh pr create` refuses when a pull request for this branch already
     // exists — and names it in the refusal. That happens routinely: the
     // existence check above only looks at OPEN pull requests, so a release
