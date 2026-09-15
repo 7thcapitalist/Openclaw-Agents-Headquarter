@@ -25,6 +25,17 @@
       "productionUrl": "https://lifemax-umber.vercel.app",
       "github": { "owner": "7thcapitalist", "repo": "lifemax" },
       "responsibleAgents": ["architect", "backend-builder", "frontend-builder"]
+    },
+    {
+      "key": "ai4logistics",
+      "name": "AI4Logistics",
+      "repo": "~/projects/ai4logistics",
+      "status": "active",
+      "owner": "founder",
+      "mission": "Help small Brazilian transportadoras manage trip compliance and operations, preventing costly missed MDF-e closures.",
+      "productionUrl": "https://ai-4-logistics-web.vercel.app",
+      "github": { "owner": "7thcapitalist", "repo": "AI4Logistics" },
+      "responsibleAgents": ["architect", "backend-builder", "frontend-builder"]
     }
   ]
 }
