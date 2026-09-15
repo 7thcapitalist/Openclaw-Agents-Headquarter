@@ -1043,3 +1043,18 @@ body {
   .cc-row .btn-primary,
   .cc-row .btn-ghost { flex: 1 1 100%; }
 }
+
+/* The second, quieter choice on a proposal card: "add it to tonight" is a
+   smaller commitment than "start it now", and should not read as the default. */
+.home-option--quiet {
+  background: transparent;
+  color: var(--muted);
+}
+
+.home-option--quiet:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--border);
+}
+
+/* Goal rows stack their title over their numbers, like the attention rows. */
+.home-row-body > .home-meta--dim { display: block; margin-top: 2px; }
