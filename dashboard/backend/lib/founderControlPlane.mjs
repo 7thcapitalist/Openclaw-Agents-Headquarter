@@ -204,7 +204,11 @@ function taskView(path) {
     completionReport: state.completionReport
       ? { generatedAt: state.completionReport.generatedAt || null, status: state.completionReport.status || state.status }
       : null,
-    events: (state.events || []).slice(-5).reverse(),
+    // The activity feed is built from these, so five per task was the real
+    // ceiling on "everything the factory has done": 21 tasks x 5 = 105 events,
+    // whatever limit the feed asked for. Forty matches the objective slice
+    // below and gives the feed something to actually select from.
+    events: (state.events || []).slice(-40).reverse(),
     founderApprovalRequest: state.founderApprovalRequest || null,
     awaitingFounderApproval: isAwaitingFounderApproval(state),
     decisionCard: readDecisionCard(state),

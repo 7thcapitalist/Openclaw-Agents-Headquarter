@@ -13,6 +13,10 @@ import { buildCompanyBriefing } from "../intel/founder-briefing.mjs";
 import { listCompanyProjects } from "./registry.mjs";
 import { listAgents } from "./agents.mjs";
 import { buildAgentActivity, buildActivityFeed } from "./activity.mjs";
+
+// How much history crosses to the console. Exported so a view can say
+// "the most recent N" rather than implying it is everything.
+export const ACTIVITY_FEED_LIMIT = 200;
 import { readHqConfig } from "./config.mjs";
 import { readRepoAwareness, summariseRepoAwareness } from "./github.mjs";
 import { readOpenclawRuntime, readOpenclawActivity, reconcileRoster } from "./runtime.mjs";
@@ -225,7 +229,10 @@ export async function buildCompanyState({
   // ---- a real, non-invented "what happened recently" feed — flattened from
   // structured task events already carried on `tasks[]`. Empty until a task
   // actually produces one.
-  const activityFeed = buildActivityFeed(taskList, { limit: 30 });
+  // The most recent 200. Thirty was a third of one screen of history for a
+  // factory with 1,272 recorded events, and the console had no way to see
+  // further back. At ~492 bytes a record this is ~98 KB, 2.3% of the 4 MiB cap.
+  const activityFeed = buildActivityFeed(taskList, { limit: ACTIVITY_FEED_LIMIT });
 
   // ---- unregistered repositories the founder hasn't told the system about
   // yet (cheap, local, read-only filesystem scan; never writes) ----
