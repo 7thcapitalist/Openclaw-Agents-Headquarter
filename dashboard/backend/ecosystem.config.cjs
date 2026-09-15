@@ -16,11 +16,15 @@
  *   locally through the existing gates. Outbound only. The closed handler map
  *   in scripts/hq-intents.mjs is the whole of what a founder intent can cause
  *   on this machine; `node scripts/hq-intents.mjs peek` prints it.
- * - hq-tunnel    : a Cloudflare *quick* tunnel (cloudflared) that publishes the
- *   dashboard on an ephemeral https://<random>.trycloudflare.com URL. The URL
- *   changes every time this process restarts; find the current one with:
- *       curl -s http://127.0.0.1:20241/quicktunnel
- *       pm2 logs hq-tunnel --lines 50 --nostream | grep trycloudflare.com
+ * - hq-tunnel    : the cloudflared tunnel that publishes the dashboard on the
+ *   public internet. Two modes, chosen by CLOUDFLARE_TUNNEL_NAME in <repo-root>/.env:
+ *     unset -> a *quick* tunnel on an ephemeral https://<random>.trycloudflare.com
+ *              URL that changes every time this process restarts. Recover it with:
+ *                  curl -s http://127.0.0.1:20241/quicktunnel
+ *     set   -> a *named* tunnel on a stable hostname, reading ingress rules from
+ *              ~/.cloudflared/config.yml. Survives restarts and reboots, and can
+ *              serve several hostnames from the one tunnel.
+ *   Setup for the named mode: docs/mini-pc/CLOUDFLARE_TUNNEL.md
  *
  * No secrets live in this file — it is safe to commit.
  */
@@ -58,6 +62,43 @@ const env = readEnvFile(ENV_FILE);
 const PORT = env.DASHBOARD_PORT || "3211";
 const METRICS_PORT = env.CLOUDFLARED_METRICS_PORT || "20241";
 const CLOUDFLARED = path.join(process.env.HOME || "/home/joao-vitor", ".local/bin/cloudflared");
+
+// Named tunnel vs quick tunnel.
+//
+// Set CLOUDFLARE_TUNNEL_NAME in .env once `cloudflared tunnel login` and
+// `cloudflared tunnel create <name>` have run and the hostname is routed. Until
+// then this stays empty and the quick tunnel keeps working exactly as before —
+// so this file is safe to merge before the domain exists.
+//
+// The named tunnel reads its ingress rules from config.yml (see
+// docs/mini-pc/CLOUDFLARE_TUNNEL.md) rather than taking an origin on the command
+// line, which is what lets one tunnel serve several hostnames later.
+const TUNNEL_NAME = env.CLOUDFLARE_TUNNEL_NAME || "";
+const TUNNEL_CONFIG =
+  env.CLOUDFLARE_TUNNEL_CONFIG ||
+  path.join(process.env.HOME || "/home/joao-vitor", ".cloudflared", "config.yml");
+
+// --metrics is kept in BOTH modes: scripts/hq-status.mjs reads that port, and in
+// quick-tunnel mode it is also the only way to recover the random hostname.
+const tunnelArgs = TUNNEL_NAME
+  ? [
+      "tunnel",
+      "--no-autoupdate",
+      "--config",
+      TUNNEL_CONFIG,
+      "--metrics",
+      `127.0.0.1:${METRICS_PORT}`,
+      "run",
+      TUNNEL_NAME,
+    ]
+  : [
+      "tunnel",
+      "--no-autoupdate",
+      "--url",
+      `http://127.0.0.1:${PORT}`,
+      "--metrics",
+      `127.0.0.1:${METRICS_PORT}`,
+    ];
 
 module.exports = {
   apps: [
@@ -123,16 +164,10 @@ module.exports = {
       name: "hq-tunnel",
       script: CLOUDFLARED,
       interpreter: "none",
-      // Quick tunnel to the dashboard's real port (from .env, default 3211).
-      // Origin host is loopback because the dashboard binds 127.0.0.1.
-      args: [
-        "tunnel",
-        "--no-autoupdate",
-        "--url",
-        `http://127.0.0.1:${PORT}`,
-        "--metrics",
-        `127.0.0.1:${METRICS_PORT}`,
-      ],
+      // Quick tunnel by default; named tunnel when CLOUDFLARE_TUNNEL_NAME is set
+      // in .env. Either way the origin is loopback, because the dashboard binds
+      // 127.0.0.1 and the tunnel is the only path in from the internet.
+      args: tunnelArgs,
       autorestart: true,
       max_restarts: 50,
       restart_delay: 3000,

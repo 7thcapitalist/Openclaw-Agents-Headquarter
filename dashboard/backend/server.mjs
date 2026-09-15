@@ -12,6 +12,7 @@ import {
   securityHeaders,
 } from "./lib/httpSecurity.mjs";
 import { auditFromRequest } from "./lib/securityAudit.mjs";
+import { requestLog } from "./lib/requestLog.mjs";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
@@ -182,6 +183,16 @@ setInterval(() => sessionStore.pruneExpired(), 60 * 60 * 1000).unref();
 
 const app = express();
 if (TRUST_PROXY) app.set("trust proxy", 1);
+
+// First in the chain so nothing is invisible: 401s, 404s and static assets all
+// get recorded. `authed` is read when the response finishes, by which point the
+// session middleware below has run.
+app.use(
+  requestLog({
+    file: process.env.DASHBOARD_REQUEST_LOG || join(dataDir, "requests.ndjson"),
+    stdout: process.env.DASHBOARD_REQUEST_LOG_STDOUT !== "0",
+  })
+);
 
 // Security headers go on every response, including static assets and errors.
 app.use(securityHeaders());
