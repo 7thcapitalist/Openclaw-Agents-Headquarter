@@ -89,6 +89,7 @@ import {
   answerFounderQuestion,
   listPendingQuestions,
   resolveFounderDecision,
+  resumeObjectiveAfterDecision,
   resolveProjectRepo,
   resolveRepoInput,
   saveFounderJob,
@@ -390,10 +391,34 @@ app.get("/api/founder/tasks/:id/execution", (req, res) => {
 // Additive: composes the unified project registry, the agent registry + live
 // activity, founder decisions, risks, and (with ?github=1) read-only GitHub
 // awareness. Writes nothing.
+// Cached because the enrichments are slow and the Today tab is chatty. Measured
+// 2026-09-15: the local build is 17ms, but `?github=1&runtime=1` — which is what
+// app.js asks for — cost 7,544ms before the reads were parallelised and ~2,700ms
+// after. Today polls every 15s and re-renders on navigation, so that was being
+// paid over and over for data that does not move that fast.
+//
+// 45s is set against what the enrichments actually report: GitHub commits/PRs/
+// issues and the openclaw roster. A founder who needs the current instant has
+// ?force=1, and every response says how old it is.
+const COMPANY_CACHE_TTL_MS = Number(process.env.DASHBOARD_COMPANY_TTL_MS || 45_000);
+const companyCache = new Map();
+
 app.get("/api/hq/company", async (req, res) => {
   try {
     const withGithub = req.query.github === "1" || req.query.github === "true";
     const withRuntime = req.query.runtime === "1" || req.query.runtime === "true";
+    const force = req.query.force === "1" || req.query.force === "true";
+
+    // The flags change the payload, so they are part of the key — a cheap
+    // no-enrichment read must never be served to a caller that asked for GitHub.
+    const key = `${withGithub ? "g" : ""}${withRuntime ? "r" : ""}` || "plain";
+    const now = Date.now();
+    const hit = companyCache.get(key);
+    if (!force && hit && now - hit.builtAt < COMPANY_CACHE_TTL_MS) {
+      res.json({ ...hit.value, cache: "fresh", cachedAt: new Date(hit.builtAt).toISOString() });
+      return;
+    }
+
     const state = await buildCompanyState({
       hqRoot: ROOT,
       tasks: discoverFactoryTasks(ROOT),
@@ -401,7 +426,8 @@ app.get("/api/hq/company", async (req, res) => {
       withGithub,
       withRuntime,
     });
-    res.json(state);
+    companyCache.set(key, { builtAt: now, value: state });
+    res.json({ ...state, cache: "miss", cachedAt: new Date(now).toISOString() });
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
   }
@@ -762,17 +788,9 @@ app.post("/api/founder/decisions/resolve", (req, res) => {
     // nothing happen. Detached and after the response, exactly like the
     // recovery-retry route: the orchestrator runs for as long as the pipeline
     // takes and must never hold the HTTP request open.
-    if (task?.objectiveResume?.objectivePath) {
-      let cfg = {};
-      try { cfg = JSON.parse(readFileSync(join(ROOT, "factory", "factory.config.json"), "utf8")); } catch { /* defaults */ }
-      Promise.resolve()
-        .then(() => runObjectiveJob(null, {
-          objectivePath: task.objectiveResume.objectivePath,
-          cfg,
-          stateRoot: dirname(dirname(dirname(task.objectiveResume.objectivePath))),
-        }))
-        .catch((error) => console.error(`[decisions/resolve] objective ${task.objectiveResume.objectiveId} did not resume:`, error?.message || error));
-    }
+    // Shared with the intent worker so the hosted console and this route
+    // resume identically — see resumeObjectiveAfterDecision.
+    resumeObjectiveAfterDecision({ root: ROOT, hqRoot: ROOT, objectiveResume: task?.objectiveResume, runObjective });
   } catch (e) {
     res.status(400).json({ error: String(e.message || e) });
   }

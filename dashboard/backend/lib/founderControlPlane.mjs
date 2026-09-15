@@ -1713,6 +1713,63 @@ export function resolveFounderDecision({ root, hqRoot, statePath, direction }) {
   return released ? { ...view, objectiveResume: released } : view;
 }
 
+// Run the objective that a resolved decision just released.
+//
+// `resolveFounderDecision` returns `objectiveResume` when it put a blocked node
+// back to `pending`. A pending node is READY — but nothing is running to pick it
+// up. The orchestrator is not a daemon; it is a function somebody has to call.
+// So the answer released the node and the objective still went nowhere.
+//
+// This logic lived inline in the dashboard's POST /api/founder/decisions/resolve
+// and nowhere else. Answering the same decision from the hosted console went
+// through the intent worker instead, which dropped the return value on the
+// floor: the console reported `done`, the task state said `task-resumed`, and
+// no work ran. obj-d4e18cad sat resumable-but-dead for 42 minutes that way on
+// 2026-09-15, with the auto-retry sweep off and nothing else to catch it.
+//
+// Both callers now share this one function. That is the point of extracting it:
+// a second copy is how the two paths diverged in the first place.
+//
+// Detached on purpose. An objective run is measured in tens of minutes and
+// neither an HTTP response nor an intent acknowledgement may be held open for
+// one — the same line `handleObjectiveStart` draws after planning.
+export function resumeObjectiveAfterDecision({
+  root,
+  hqRoot,
+  objectiveResume,
+  runObjective,
+  maxConcurrent = Number(process.env.FACTORY_MAX_CONCURRENT) || 3,
+  readConfig = () => {
+    try { return JSON.parse(readFileSync(join(hqRoot || root, "factory", "factory.config.json"), "utf8")); }
+    catch { return {}; }
+  },
+  onError = (error, ctx) => console.error(`[decision-resume] objective ${ctx.objectiveId} did not resume:`, error?.message || error),
+}) {
+  const objectivePath = objectiveResume?.objectivePath;
+  if (!objectivePath || typeof runObjective !== "function") return null;
+
+  const hq = hqRoot || root;
+  const cfg = readConfig();
+  // <stateRoot>/objectives/<objectiveId>/objective-state.json — the state root
+  // is three levels up, which is also how the dashboard route derived it.
+  const stateRoot = dirname(dirname(dirname(objectivePath)));
+
+  const run = Promise.resolve()
+    .then(() => runObjective({
+      hqRoot: hq,
+      objectivePath,
+      maxConcurrent,
+      agentIds: cfg.openclawIntegration?.agentIds || {},
+      maxAttemptsPerStage: cfg.openclawIntegration?.maxAttemptsPerStage || 3,
+      maxInfraAttemptsPerStage: cfg.openclawIntegration?.maxInfraAttemptsPerStage || 6,
+      concurrentGroups: cfg.openclawIntegration?.concurrentGroups,
+      stateRoot,
+    }))
+    .catch((error) => onError(error, objectiveResume));
+
+  return { ...objectiveResume, stateRoot, started: true, run };
+}
+
 // ── asking the factory a question ────────────────────────────────────────────
 //
 // Both surfaces need this: the local dashboard's POST /api/founder/questions
