@@ -79,6 +79,17 @@ module.exports = {
         HQ_AUTO_RETRY: "0",
         HQ_AUTO_RETRY_INTERVAL_MS: "90000",
         HQ_AUTO_RETRY_MAX: "3",
+        // The orchestrator runs inside THIS process and every node it schedules
+        // becomes a live agent session on the gateway. On 2026-09-15 the gateway
+        // was OOM-killed twice in twenty minutes (status=9/KILL, peaks of 5.5G
+        // and 4.3G against MemoryHigh=5G/MemoryMax=6G) while running the default
+        // of 3. Each kill severs every in-flight dispatch, which the factory
+        // records as "wrote no result file" and charges to recovery budget — two
+        // objectives burned eleven attempts between them on work that was fine.
+        // Dropped to 1 (with agents.defaults.maxConcurrent 4->2 in the OpenClaw
+        // config); the gateway then held at 1-3G across both objectives running
+        // to merge-ready. Raise it only with the gateway's memory in view.
+        FACTORY_MAX_CONCURRENT: "1",
       },
     },
     {

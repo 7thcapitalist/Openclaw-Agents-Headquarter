@@ -14,8 +14,9 @@
 //   objective decomposition/intake    configured to the architect agent, below
 //     (Claude primary -> Codex/OpenAI fallback), rather than failing when the
 //     Claude seat is exhausted.
-//   qa                                 github-copilot/gpt-4.1 -> Codex -> Claude
-//     (kept a different harness from the builder by default; both seats remain available)
+//   qa                                 anthropic/claude-sonnet-5 -> Copilot -> OpenAI
+//     (moved off Copilot 2026-09-15 on a hard 429; builders stay OpenAI-backed,
+//      so builder/QA independence survives)
 //   architect, reviewer, security,     anthropic/claude-sonnet-5 -> Codex -> gpt-4.1
 //   release, research, learning
 //     release moved off the shared OpenAI CLI seat (2026-09-07): it kept
@@ -59,7 +60,16 @@ const ROUTES = {
   security: { primary: CLAUDE, fallbacks: [LUNA, OPENAI_MAIN, COPILOT, MINI] },
   research: { primary: CLAUDE, fallbacks: [LUNA, OPENAI_MAIN, COPILOT, MINI] },
   learning: { primary: CLAUDE, fallbacks: [LUNA, OPENAI_MAIN, COPILOT, MINI] },
-  qa: { primary: COPILOT, fallbacks: [LUNA, OPENAI_MAIN, CLAUDE, MINI] },
+  // qa moved off Copilot on 2026-09-15: github-copilot/gpt-4.1 began returning
+  // 429 "exceeded your rate limit for utility models", which stops the stage
+  // dead rather than degrading it. Copilot stays first in the fallbacks so qa
+  // keeps a non-Anthropic seat once the limit resets.
+  //
+  // This narrows something the policy valued: qa deliberately ran on a
+  // different harness from the builder, so builder/reviewer/QA independence did
+  // not rest on one provider. Builders remain OpenAI-backed, so the separation
+  // survives — but revisit this once the Copilot limit clears.
+  qa: { primary: CLAUDE, fallbacks: [COPILOT, LUNA, OPENAI_MAIN, MINI] },
   // product moved off the shared OpenAI CLI seat onto Claude (2026-09-15), the
   // same move release made on 2026-09-07 and for the same reason: it kept
   // failing "wrote no result file" and blocking objectives before any code was
