@@ -13,6 +13,31 @@ function isNonEmptyString(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+// A declared production URL is the founder saying "this project lives here",
+// used when the release stage has never written a deployment record. It is
+// rendered as a link the founder will click, so a malformed value is worse
+// than an absent one: `https:` only, no credentials, and a real host.
+function assertProductionUrl(value, where) {
+  if (typeof value !== "string" || !value.trim()) {
+    throw new Error(`registry: ${where} must be a non-empty string.`);
+  }
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error(`registry: ${where} must be an absolute URL.`);
+  }
+  if (url.protocol !== "https:") {
+    throw new Error(`registry: ${where} must use https.`);
+  }
+  if (url.username || url.password) {
+    throw new Error(`registry: ${where} must not embed credentials.`);
+  }
+  if (!url.hostname.includes(".")) {
+    throw new Error(`registry: ${where} must have a fully qualified host.`);
+  }
+}
+
 export function validateRegistry(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("registry: must be a JSON object.");
@@ -66,6 +91,9 @@ export function validateRegistry(value) {
     }
     if (entry.kind !== undefined && !PROJECT_KIND.has(entry.kind)) {
       throw new Error(`registry: projects[${i}].kind is invalid (${[...PROJECT_KIND].join(", ")}).`);
+    }
+    if (entry.productionUrl !== undefined && entry.productionUrl !== null) {
+      assertProductionUrl(entry.productionUrl, `projects[${i}].productionUrl`);
     }
   }
   return value;

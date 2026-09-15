@@ -94,12 +94,21 @@ export function renderProjects(root, snapshot, { onProject = () => {} } = {}) {
     const deploy = deployByKey.get(project.key) || project.deployment || null;
     const meta = [];
     meta.push(spend != null ? `${money(spend)} spent` : "no spend recorded");
-    meta.push(deploy?.productionUrl ? "deployed" : `not deployed${deploy?.state ? ` (${deploy.state})` : ""}`);
+    // A URL alone is not a deployment. Before deployment records existed the
+    // only way to have a URL was to have deployed, so "has a URL" stood in for
+    // "deployed"; a founder-declared registry URL breaks that equivalence, and
+    // claiming "deployed" on the strength of a note in a config file is
+    // exactly the kind of wrong number this console must never show.
+    meta.push(deploy?.state === "deployed"
+      ? "deployed"
+      : deploy?.productionUrl
+        ? "URL declared, no deploy recorded"
+        : `not deployed${deploy?.state ? ` (${deploy.state})` : ""}`);
     card.append(el("p", "home-meta", meta.join(" · ")));
 
     if (deploy?.productionUrl) {
       const links = el("div", "home-links");
-      const a = el("a", "home-link", "Open the live site ↗");
+      const a = el("a", "home-link", deploy.state === "deployed" ? "Open the live site ↗" : "Open the declared URL ↗");
       a.href = deploy.productionUrl; a.target = "_blank"; a.rel = "noreferrer";
       a.addEventListener("click", (e) => e.stopPropagation());
       links.append(a);
