@@ -1620,3 +1620,11 @@ ul.timeline time { color: var(--muted); margin-right: 6px; }
   font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
   font-size:.68rem;color:#6d7b90;word-break:break-all
 }
+
+/* Movement, not activity: the last recorded state transition. An eight-day-old
+   card used to render identically to one that moved an hour ago. */
+.board-filter-line{display:flex;flex-wrap:wrap;align-items:center;gap:.6rem;margin:0 0 .8rem}
+.btn.tiny.is-on{border-color:#d29922;color:#e3b341}
+.kanban-moved{margin-top:.35rem;font-size:.68rem;color:#7d8a9e}
+.kanban-moved.is-stalled{color:#e3b341}
+.kanban-card--stalled{border-left:3px solid #d29922;background:rgba(210,153,34,.05)}

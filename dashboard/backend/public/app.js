@@ -1,5 +1,5 @@
 import { STAGE_LABEL } from "/lib/stage-vocabulary.mjs";
-import { BOARD_COLUMNS, buildBoard, filterByProject } from "/lib/board.mjs";
+import { BOARD_COLUMNS, buildBoard, filterByProject, filterStalled } from "/lib/board.mjs";
 import * as objectiveRecovery from "/lib/objectiveRecovery.mjs";
 import * as founderApproval from "/lib/founderApproval.mjs";
 import * as objectiveView from "/lib/objectiveView.mjs";
@@ -1561,17 +1561,28 @@ import { permissionsPanel } from "/lib/permissionsView.mjs";
   // shared with the hosted console so both boards group identically.
   async function renderTasks() {
     const ops = await apiJson("/api/hq/operations").catch(() => ({ tasks: [] }));
-    const project = new URLSearchParams(location.hash.split("?")[1] || "").get("project");
-    const board = buildBoard(filterByProject(ops.tasks || [], project));
+    const params = new URLSearchParams(location.hash.split("?")[1] || "");
+    const project = params.get("project");
+    const stalledOnly = params.get("stalled") === "1";
+    const scoped = filterByProject(ops.tasks || [], project);
+    // Built whole first, so the filter can offer an honest count while it is on.
+    const all = buildBoard(scoped);
+    const board = stalledOnly ? buildBoard(filterStalled(scoped)) : all;
+    const keep = project ? `project=${encodeURIComponent(project)}&` : "";
 
     app.innerHTML = `
       <div class="page-head">
         <div>
           <h1 class="page-title">Board</h1>
-          <p class="muted">Where every piece of work sits right now${project ? ` · ${esc(project)}` : ""} — ${board.total} task${board.total === 1 ? "" : "s"} from the live factory.</p>
+          <p class="muted">Where every piece of work sits right now${project ? ` · ${esc(project)}` : ""} — ${board.total} task${board.total === 1 ? "" : "s"}${stalledOnly ? ` with no movement in ${all.stalledAfterDays}+ days` : " from the live factory"}.</p>
         </div>
         ${project ? `<a class="btn secondary" href="#/tasks">All projects</a>` : ""}
       </div>
+      ${all.stalled || stalledOnly ? `<p class="board-filter-line">
+        <a class="btn secondary tiny${stalledOnly ? " is-on" : ""}" href="#/tasks?${keep}${stalledOnly ? "" : "stalled=1"}">${
+          stalledOnly ? "Show everything" : `Show only what has stopped (${all.stalled})`}</a>
+        <span class="muted small">no movement in ${all.stalledAfterDays}+ days</span>
+      </p>` : ""}
       <div class="kanban">
         ${BOARD_COLUMNS.map((col) => `
           <section class="kanban-col">
@@ -1589,7 +1600,7 @@ import { permissionsPanel } from "/lib/permissionsView.mjs";
   // copying — never the name.
   function boardCard(card) {
     return `
-      <article class="kanban-card" data-board-task="${esc(card.id)}" role="button" tabindex="0">
+      <article class="kanban-card${card.movement?.stalled ? " kanban-card--stalled" : ""}" data-board-task="${esc(card.id)}" role="button" tabindex="0">
         <h4>${esc(card.title)}</h4>
         <div class="kanban-meta">${esc(card.outcomeLine)}</div>
         <div class="kanban-foot">
@@ -1597,6 +1608,7 @@ import { permissionsPanel } from "/lib/permissionsView.mjs";
           ${card.assignee ? `<span class="badge">${esc(card.assignee)}</span>` : ""}
           ${card.risk === "high" ? `<span class="badge badge-warn">high risk</span>` : ""}
         </div>
+        ${card.movement ? `<div class="kanban-moved${card.movement.stalled ? " is-stalled" : ""}">${esc(card.movement.label)}</div>` : ""}
         <div class="kanban-id">${esc(card.id)}</div>
       </article>`;
   }

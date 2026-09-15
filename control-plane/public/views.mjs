@@ -2,7 +2,7 @@
 // as the local dashboard — a screen that exists in both is the same screen.
 
 import { list, money, num, text, unavailable } from "./render.mjs";
-import { BOARD_COLUMNS, buildBoard, filterByProject } from "./board.mjs";
+import { BOARD_COLUMNS, buildBoard, filterByProject, filterStalled } from "./board.mjs";
 import { stageLabel, taskTitle, taskOutcomeLine } from "./stage-vocabulary.mjs";
 import { intentStatus } from "./home.mjs";
 
@@ -19,13 +19,39 @@ function idLine(id) {
 
 // ─── Board ───────────────────────────────────────────────────────────────────
 
-export function renderBoard(root, snapshot, { project = null, onTask = () => {} } = {}) {
+export function renderBoard(root, snapshot, {
+  project = null, onTask = () => {}, stalledOnly = false, onStalledOnly = null, now = Date.now(),
+} = {}) {
   root.replaceChildren();
   const tasks = unavailable(snapshot?.panels?.operations) ? [] : list(snapshot.panels.operations.tasks);
-  const board = buildBoard(filterByProject(tasks, project));
+  const scoped = filterByProject(tasks, project);
+  // The whole board is built first so the filter has an honest count to offer
+  // even while it is on.
+  const all = buildBoard(scoped, { now });
+  const board = stalledOnly ? buildBoard(filterStalled(scoped, { now }), { now }) : all;
 
   root.append(el("p", "view-lede",
-    `Where every piece of work sits right now${project ? ` · ${project}` : ""} — ${board.total} task${board.total === 1 ? "" : "s"}.`));
+    `Where every piece of work sits right now${project ? ` · ${project}` : ""} — ${board.total} task${board.total === 1 ? "" : "s"}`
+    + `${stalledOnly ? ` with no movement in ${all.stalledAfterDays}+ days` : ""}.`));
+
+  if (onStalledOnly && (all.stalled || stalledOnly)) {
+    const bar = el("div", "board-filter");
+    const toggle = el("button", `board-filter-btn${stalledOnly ? " is-on" : ""}`,
+      stalledOnly ? "Showing only what has stopped" : `Show only what has stopped (${all.stalled})`);
+    toggle.type = "button";
+    toggle.setAttribute("aria-pressed", String(Boolean(stalledOnly)));
+    toggle.addEventListener("click", () => onStalledOnly(!stalledOnly));
+    bar.append(toggle);
+    // The threshold is stated, so "stopped" can never be read as a judgement
+    // the board made on its own terms.
+    bar.append(el("span", "home-meta home-meta--dim", `no movement in ${all.stalledAfterDays}+ days`));
+    root.append(bar);
+  }
+
+  if (stalledOnly && !board.total) {
+    root.append(el("p", "home-calm home-calm--small", "Everything has moved in the last few days."));
+    return board;
+  }
 
   const grid = el("div", "board-grid");
   for (const column of BOARD_COLUMNS) {
@@ -43,7 +69,7 @@ export function renderBoard(root, snapshot, { project = null, onTask = () => {} 
 }
 
 function boardCard(card, onTask) {
-  const node = el("article", "board-card");
+  const node = el("article", `board-card${card.movement?.stalled ? " board-card--stalled" : ""}`);
   node.tabIndex = 0;
   node.setAttribute("role", "button");
   node.append(el("h4", null, card.title));
@@ -53,6 +79,12 @@ function boardCard(card, onTask) {
   if (card.assignee) foot.append(el("span", "home-chip home-chip--muted", card.assignee));
   if (card.risk === "high") foot.append(el("span", "home-chip home-chip--risk", "high risk"));
   node.append(foot);
+  // MOVEMENT, not activity: this is the last recorded state transition, not
+  // the last time an agent worked on it. Eight days of silence looked exactly
+  // like an hour of it until this line existed.
+  if (card.movement) {
+    node.append(el("div", `board-card-moved${card.movement.stalled ? " is-stalled" : ""}`, card.movement.label));
+  }
   node.append(idLine(card.id));
   node.addEventListener("click", () => onTask(card.id));
   node.addEventListener("keydown", (e) => { if (e.key === "Enter") onTask(card.id); });

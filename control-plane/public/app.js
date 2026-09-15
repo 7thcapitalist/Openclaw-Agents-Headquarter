@@ -286,6 +286,10 @@ let lastSnapshot = null;
 // Home every thirty seconds.
 let activeTab = "today";
 let boardProject = null;
+// Held here, beside boardProject and for the same reason: a publish lands
+// every thirty seconds and repaints the current tab, and a filter that reset
+// itself on each one would be unusable.
+let boardStalledOnly = false;
 
 const TABS = [
   ["today", "Today"],
@@ -334,7 +338,7 @@ function drawTabs() {
     button.textContent = label;
     button.addEventListener("click", () => {
       activeTab = id;
-      if (id !== "board") boardProject = null;
+      if (id !== "board") { boardProject = null; boardStalledOnly = false; }
       if (lastSnapshot) drawHome(lastSnapshot);
     });
     els.tabs.append(button);
@@ -350,7 +354,12 @@ function drawHome(snapshot) {
   els.view.hidden = !onTab;
   if (onTab) {
     if (activeTab === "board") {
-      renderBoard(els.view, snapshot, { project: boardProject, onTask: openTask });
+      renderBoard(els.view, snapshot, {
+        project: boardProject,
+        onTask: openTask,
+        stalledOnly: boardStalledOnly,
+        onStalledOnly: (value) => { boardStalledOnly = value; drawHome(snapshot); },
+      });
     } else if (activeTab === "projects") {
       renderProjects(els.view, snapshot, {
         onProject: (key) => { boardProject = key; activeTab = "board"; drawHome(snapshot); },
