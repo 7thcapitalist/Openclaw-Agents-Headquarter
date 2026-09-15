@@ -80,12 +80,12 @@ function taskOperations(statePath, warnings) {
 // An objective's own first line, read from its state beside the health file.
 // Best-effort: a missing or unreadable objective costs the title, not the row.
 function objectiveTitle(dir) {
-  try {
-    const state = JSON.parse(readFileSync(join(dir, "objective-state.json"), "utf8"));
-    return firstSentence(state?.objective, 200);
-  } catch {
-    return null;
-  }
+  return firstSentence(readObjectiveState(dir)?.objective, 200);
+}
+
+function readObjectiveState(dir) {
+  try { return JSON.parse(readFileSync(join(dir, "objective-state.json"), "utf8")); }
+  catch { return null; }
 }
 
 // The first sentence of an outcome, bounded. A task's title has to fit a row.
@@ -112,6 +112,10 @@ function objectiveHealth(root, warnings) {
   for (const path of healthFiles(root)) {
     const objectiveId = basename(dirname(path));
     try {
+      // The founder cancelled this objective: the last graph health it recorded
+      // describes work that is over. Reporting it as needing attention is how a
+      // cancelled objective would keep pulling on the founder from Operations.
+      if (readObjectiveState(dirname(path))?.status === "cancelled") continue;
       const health = JSON.parse(readFileSync(path, "utf8"));
       const findings = Array.isArray(health.findings) ? health.findings : [];
       out.push({

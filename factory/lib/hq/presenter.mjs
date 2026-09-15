@@ -20,6 +20,7 @@ export const STATUS = {
   FAILED: "FAILED",
   WAITING_FOR_FOUNDER: "WAITING_FOR_FOUNDER",
   PENDING: "PENDING",
+  CANCELLED: "CANCELLED",
 };
 
 const STATUS_META = {
@@ -30,6 +31,7 @@ const STATUS_META = {
   FAILED: { label: "Failed", tone: "bad", icon: "✕" },
   WAITING_FOR_FOUNDER: { label: "Waiting for you", tone: "warn", icon: "◆" },
   PENDING: { label: "Pending", tone: "neutral", icon: "·" },
+  CANCELLED: { label: "Cancelled", tone: "neutral", icon: "⊘" },
 };
 
 export function statusMeta(status) {
@@ -355,6 +357,9 @@ export function presentObjective(obj) {
   let status;
   switch (obj?.status) {
     case "complete": status = STATUS.COMPLETE; break;
+    // Terminal and founder-declared: node evidence cannot argue a cancelled
+    // objective back into Running, which is the whole point of cancelling.
+    case "cancelled": status = STATUS.CANCELLED; break;
     case "active":
       // The objective flag means the orchestrator has not reached a terminal
       // state; it does not prove an agent is currently executing. Derive the
@@ -410,7 +415,8 @@ export function presentObjective(obj) {
 
   // headline: what the founder should take away in one line
   let headline;
-  if (status === STATUS.COMPLETE) headline = obj?.prUrl ? "Done — a PR is open for your review." : "Done — delivered on its branch.";
+  if (status === STATUS.CANCELLED) headline = "Cancelled by you — no further work will run on it.";
+  else if (status === STATUS.COMPLETE) headline = obj?.prUrl ? "Done — a PR is open for your review." : "Done — delivered on its branch.";
   else if (status === STATUS.WAITING_FOR_FOUNDER) headline = blockerBrief?.headline || "Needs a decision from you.";
   else if (status === STATUS.FAILED) headline = blockerBrief?.headline || "A part failed and can't continue on its own.";
   else if (status === STATUS.BLOCKED) headline = blockerBrief?.headline || "Stuck — needs a look.";
@@ -450,6 +456,12 @@ export function presentObjective(obj) {
 }
 
 function deriveNextAction({ status, blockerBrief, running, hasReport, prUrl }) {
+  // Nothing is owed on cancelled work; the report stays reachable as the record.
+  if (status === STATUS.CANCELLED) {
+    return hasReport
+      ? { kind: "view-report", label: "View report", primary: false }
+      : { kind: "none", label: null, primary: false };
+  }
   if (status === STATUS.WAITING_FOR_FOUNDER) {
     return { kind: "resolve-decision", label: "Resolve decision", primary: true };
   }

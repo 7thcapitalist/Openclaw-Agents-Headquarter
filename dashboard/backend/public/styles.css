@@ -439,6 +439,13 @@ textarea.tall {
   color: var(--muted);
 }
 
+/* Irreversible, so it reads that way — used by "Cancel this objective". */
+.btn.danger {
+  background: transparent;
+  border-color: var(--red);
+  color: var(--red);
+}
+
 .command-grid section,
 .live-feed {
   min-width: 0;

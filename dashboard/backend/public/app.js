@@ -844,8 +844,14 @@ import { permissionsPanel } from "/lib/permissionsView.mjs";
           ${o.lifecycle === "archived"
             ? `<button class="btn" data-unarchive-objective="${esc(o.objectiveId)}">Unarchive</button>`
             : `<button class="btn" data-archive-objective="${esc(o.objectiveId)}">Archive from Today</button>`}
+          ${objectiveView.canCancelObjective(o)
+            ? `<button class="btn danger" data-cancel-objective="${esc(o.objectiveId)}">Cancel this objective</button>`
+            : ""}
         </div>
         <p class="muted small">Archiving changes only where this appears — its state, report, evidence, metrics, and GitHub history are kept.</p>
+        ${objectiveView.canCancelObjective(o)
+          ? `<p class="muted small">Cancelling stops the work for good: no part is scheduled again, recovery and overnight wakeups skip it, and it stops counting as active. The report and history are still kept.</p>`
+          : ""}
       </div>`;
   }
 
@@ -1171,6 +1177,18 @@ import { permissionsPanel } from "/lib/permissionsView.mjs";
     } catch (e) { showToast(e.message, true); }
   }
 
+  // Terminal, and the founder said so: confirm once, because unlike archiving
+  // there is no one-click undo for a cancel.
+  async function cancelObjectiveById(id) {
+    if (!window.confirm("Cancel this objective?\n\nIt stops for good: no part runs again, recovery and overnight wakeups skip it, and it leaves Today. Its report and history are kept.")) return;
+    try {
+      await apiJson(`/api/founder/objectives/${id}/cancel`, { method: "POST" });
+      showToast("Cancelled. Nothing more will run on it — it's in Archived, with its report and history kept.");
+      closeModal();
+      route();
+    } catch (e) { showToast(e.message, true); }
+  }
+
   // Wire the objective card / history-row / details-modal controls within a
   // scope (the page, or the modal body after a re-render).
   function bindObjectiveControls(scope) {
@@ -1187,6 +1205,7 @@ import { permissionsPanel } from "/lib/permissionsView.mjs";
     });
     scope.querySelectorAll("[data-archive-objective]").forEach((btn) => btn.onclick = () => archiveObjective(btn.dataset.archiveObjective, true));
     scope.querySelectorAll("[data-unarchive-objective]").forEach((btn) => btn.onclick = () => archiveObjective(btn.dataset.unarchiveObjective, false));
+    scope.querySelectorAll("[data-cancel-objective]").forEach((btn) => btn.onclick = () => cancelObjectiveById(btn.dataset.cancelObjective));
   }
 
   // Read the report, then drill into timeline / evidence / GitHub — no terminal.

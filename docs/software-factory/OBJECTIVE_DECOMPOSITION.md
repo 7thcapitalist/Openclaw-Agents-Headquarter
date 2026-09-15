@@ -79,6 +79,25 @@ curl -s localhost:PORT/api/founder/objectives                # machine-readable
 - Two nodes never share a worktree; the orchestrator never runs two dispatches
   against one tree.
 
+## Cancelling
+
+`POST /api/founder/objectives/<id>/cancel` (the **Cancel** button on an objective
+card) writes `status: "cancelled"` into `objective-state.json` and archives the
+objective in one call. It is terminal and deliberately stronger than archiving,
+which only changes where a card appears:
+
+- `runObjective()` returns immediately instead of resuming the graph, and a run
+  already in flight stops launching new nodes at its next scheduling tick.
+- Integration never runs, the run does not overwrite the status with its own
+  outcome, and no durable wakeup is enqueued — so nothing restarts it overnight.
+- Recovery (`/retry`) refuses it, it stops counting as active work, its blocked
+  nodes leave the founder inbox, and Operations drops its graph health.
+
+Node statuses, `metrics.json`, `report.md`, evidence, and any pushed branch or PR
+are left exactly as they were: cancelling ends the work, it does not erase the
+record of what the run did. There is no un-cancel — the objective can be
+unarchived back into History, but it will not run again.
+
 ## Not yet
 
 - Node roles are limited to `backend-builder` / `frontend-builder`. Standalone

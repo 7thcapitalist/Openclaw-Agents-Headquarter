@@ -84,6 +84,20 @@ function archiveButton(o, { esc }) {
     : `<button class="btn secondary tiny" data-archive-objective="${esc(o.objectiveId)}">Archive</button>`;
 }
 
+// Cancelling is for work that should stop existing as work: a trial, a false
+// start, a duplicate. Offered on anything not already finished or cancelled —
+// including archived and history rows, because a stale "Running" objective the
+// founder pushed out of sight is exactly what still needs a terminal state.
+export function canCancelObjective(o) {
+  return Boolean(o) && o.status !== "invalid" && o.status6 !== "CANCELLED" && o.status6 !== "COMPLETE";
+}
+
+function cancelButton(o, { esc }) {
+  return canCancelObjective(o)
+    ? `<button class="btn secondary tiny" data-cancel-objective="${esc(o.objectiveId)}">Cancel</button>`
+    : "";
+}
+
 // Compact ACTIVE card: human title, one summary line, the headline, the recovery
 // affordance if any, and drill-down / report / archive controls. No raw prompt,
 // no node dump.
@@ -107,6 +121,7 @@ export function renderObjectiveCard(o, { esc }) {
       <button class="btn secondary tiny" data-report-objective="${esc(o.objectiveId)}">Report</button>
       ${o.prUrl ? `<a class="btn secondary tiny" href="${esc(o.prUrl)}" target="_blank" rel="noreferrer">PR ↗</a>` : ""}
       ${archiveButton(o, { esc })}
+      ${cancelButton(o, { esc })}
     </div>
   </article>`;
 }
@@ -124,6 +139,7 @@ export function renderObjectiveHistoryRow(o, { esc }) {
       <button class="btn secondary tiny" data-objective-details="${esc(o.objectiveId)}">Details</button>
       <button class="btn secondary tiny" data-report-objective="${esc(o.objectiveId)}">Report</button>
       ${archiveButton(o, { esc })}
+      ${cancelButton(o, { esc })}
     </div>
   </div>`;
 }
