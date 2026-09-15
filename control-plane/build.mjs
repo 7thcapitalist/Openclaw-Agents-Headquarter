@@ -33,16 +33,26 @@ const apiDir = join(root, "api");
 
 // Every file that must reach the deployment. Adding an asset means adding it
 // here; an asset absent from this list is not protected by the check.
-const REQUIRED = ["index.html", "styles.css", "app.js", "render.mjs", "home.mjs", "stage-vocabulary.mjs", "board.mjs", "views.mjs", "task-detail.mjs"];
+const REQUIRED = [
+  "index.html", "styles.css", "app.js",
+  "render.mjs", "home.mjs", "stage-vocabulary.mjs", "board.mjs", "views.mjs",
+  "task-detail.mjs", "money.mjs", "command-center.mjs",
+];
 
 // An asset can exist, be non-empty, and still be unreachable because nothing
 // links to it. These are the references index.html must carry.
 const REQUIRED_REFERENCES = ["/styles.css", "/app.js"];
 
-// render.mjs and home.mjs are imported by app.js rather than referenced from
-// the HTML, so the entry-point check above cannot see them. They are listed in
-// REQUIRED so that their absence still fails the build instead of producing a
-// page that loads and then throws on its first import.
+// Most of these are imported by app.js rather than referenced from the HTML, so
+// the entry-point check above cannot see them. They are listed in REQUIRED so
+// that their absence still fails the build instead of producing a page that
+// loads and then throws on its first import.
+//
+// money.mjs was missing from this list from the day Money shipped: it was
+// imported by app.js and unprotected here, so deleting it would have produced
+// exactly the green-but-broken deployment this file exists to prevent. Keeping
+// the list correct by hand is what failed, so a test now derives the imports
+// from app.js and asserts every one of them is listed.
 
 const failures = [];
 
