@@ -1504,6 +1504,7 @@ export function clearObjectiveNodeAfterDecision(root, taskId, { now = new Date()
 
   mutateTransactionalState(objectivePath, {
     commandId: `founder-decision-node:${taskId}:${randomUUID()}`,
+    replayable: false,
     mutate: (state) => {
       const next = structuredClone(state);
       const target = next.nodes?.[taskId] || (next.integration?.id === taskId ? next.integration : null);

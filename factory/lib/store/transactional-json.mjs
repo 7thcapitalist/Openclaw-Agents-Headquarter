@@ -111,7 +111,19 @@ export function peekRevision(jsonPath) {
 //                         brand-new entity that also has no legacy file
 //   expectedRevision   — optional optimistic-concurrency guard
 //   toResponse(state)  — optional; defaults to returning the next state
-export function mutateTransactionalState(jsonPath, { commandId, mutate, expectedRevision = null, toResponse = null, now }) {
+//   replayable         — false when `commandId` is generated fresh per call
+//                         (a UUID), so this command can never be presented a
+//                         second time. The ledger keeps the row and drops the
+//                         payload.
+//
+// A note on `toResponse`, because the default is a trap. Whatever this returns
+// is ALSO what gets stored in the idempotency ledger, one row per mutation,
+// forever. Defaulting to the whole state document meant every caller — none of
+// which passed a `toResponse` — wrote a full copy of the task's state on every
+// single mutation. At 195 KiB a copy that is 403 GiB per 2.21M mutations,
+// which is precisely what the 2026-09-14 write storm was made of. Pass the
+// small projection the caller actually consumes.
+export function mutateTransactionalState(jsonPath, { commandId, mutate, expectedRevision = null, toResponse = null, replayable = true, now }) {
   const handle = openStateDb(dbPathFor(jsonPath));
   ensureImported(handle, jsonPath);
   // Every existing caller's own `now` parameter defaults to a plain ISO
@@ -123,6 +135,7 @@ export function mutateTransactionalState(jsonPath, { commandId, mutate, expected
     entityId: ENTITY_ID,
     commandId,
     expectedRevision,
+    replayable,
     ...(nowFn ? { now: nowFn } : {}),
     mutate: (current) => {
       const nextState = mutate(current?.state ?? null);
