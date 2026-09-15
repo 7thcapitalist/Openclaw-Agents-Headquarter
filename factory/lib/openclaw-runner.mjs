@@ -304,6 +304,102 @@ export async function runToTerminal(options) {
   return response;
 }
 
+// A throw out of `runToTerminal` leaves the task exactly as it was.
+//
+// That is correct for the runner — it cannot know whether its caller will
+// retry — and catastrophic for every caller that does not settle the task
+// itself. Both of them did not:
+//
+//   * the dashboard's manual retry (server.mjs) runs the runner in a detached
+//     promise whose only handler is `console.error`. The 202 has already gone
+//     out, so the throw became one line on stdout and the task stayed `active`
+//     with no blocker, looking alive forever.
+//   * the auto-retry sweep recorded the error in its return value but left the
+//     task `active` with a fresh `updatedAt`, so the next sweep picked it up
+//     again, 90 minutes later, to fail identically — until the retry budget ran
+//     out and it was skipped in silence from then on.
+//
+// This is how the 2026-09-14 dispatch-id collision could stay invisible: #226
+// turned a silent 403 GiB write storm into a loud throw, and the throw landed
+// nowhere. So every caller that is not going to retry must settle the task
+// here instead.
+//
+// Two rules make this safe to call unconditionally on any escaped error:
+//
+//   1. A task already `blocked` is left alone. A control-flow error
+//      (`isControlFlowError`) has already parked its own dispatch with a
+//      specific reason via `blockDispatch`; overwriting that with the generic
+//      wrapper would lose the better message.
+//   2. `founderAction: true` is not decoration. An error that escapes the
+//      runner is deterministic by construction — the same state reproduces it
+//      on the next run — so it must never be classified as retriable
+//      infrastructure and swept forever. The tag makes `classifyBlocker`
+//      return "decision" without depending on what the message happens to say.
+//
+// `status: "blocked"` rather than "failed" is also deliberate. The Founder
+// Inbox's blocked-task item (founderControlPlane.mjs) reads
+// `status === "blocked" && blocker.outcome === "fail"`; a task marked "failed"
+// is rendered with a FAILED badge and reaches no founder surface at all. That
+// is why the store-size ceiling (#224) contains the disk but still loses the
+// task, and why a task already marked "failed" is promoted here rather than
+// left where it is.
+export function recordRunnerCrash({ statePath, error, now = new Date().toISOString() }) {
+  const summary = summarizeError(error);
+  // Opening the store creates its directory. A path with no task behind it has
+  // nothing to settle, so say so rather than leaving an empty database behind.
+  if (!statePath || !existsSync(dirname(statePath))) {
+    return { settled: false, reason: `no task state at ${statePath}` };
+  }
+  let settled = false;
+  try {
+    const next = mutateTransactionalState(statePath, {
+      commandId: `runner-crash:${randomUUID()}`,
+      now,
+      mutate: (state) => {
+        if (!state) return undefined;
+        if (state.status === "blocked") return undefined;
+        // A task that already finished is never re-opened by a late throw.
+        if (state.status === "merge-ready" || state.status === "verified") return undefined;
+        settled = true;
+        const next = structuredClone(state);
+        const stage = state.blocker?.stage || state.currentDispatch?.stage || state.currentStage || null;
+        next.status = "blocked";
+        next.blocker = {
+          stage,
+          outcome: "fail",
+          actor: "system",
+          // A task the ceiling already settled keeps its own, more specific
+          // reason; only its visibility changes.
+          summary: state.status === "failed" && state.blocker?.summary ? state.blocker.summary : summary,
+          founderAction: true,
+          runnerCrash: true,
+          at: now,
+        };
+        // The dispatch this died on is not owned by anyone any more. Leaving it
+        // in place makes the task look like it has a worker.
+        delete next.currentDispatch;
+        next.events.push({
+          at: now,
+          type: "runner-crash",
+          stage,
+          actor: "system",
+          outcome: "blocked",
+          error: summary,
+        });
+        next.updatedAt = now;
+        return next;
+      },
+    });
+    return settled
+      ? { settled: true, status: next.status, blocker: next.blocker }
+      : { settled: false, reason: `task is already ${next?.status ?? "absent"}`, status: next?.status ?? null };
+  } catch (settleError) {
+    // Settling must never replace the original failure with a worse one. The
+    // store being unwritable is exactly the case where this can happen.
+    return { settled: false, reason: summarizeError(settleError) };
+  }
+}
+
 // When the task is parked at the head of a concurrent group with the rest of the
 // group still pending, run every member's `openclaw agent` call at once (the
 // slow part), then feed each result back through the UNCHANGED engine one stage

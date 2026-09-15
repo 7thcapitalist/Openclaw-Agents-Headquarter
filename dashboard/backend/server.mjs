@@ -109,7 +109,7 @@ import { readAutonomy } from "../../factory/lib/hq/autonomy.mjs";
 import { retryStuckTasks } from "../../factory/lib/hq/auto-retry.mjs";
 import { reconcileMergedTasks } from "../../factory/lib/hq/merge-reconciler.mjs";
 import { resumeState as resumeTaskState, readState as readTaskState, writeState as writeTaskState } from "../../factory/lib/task-workflow.mjs";
-import { runToTerminal as runTaskToTerminal } from "../../factory/lib/openclaw-runner.mjs";
+import { runToTerminal as runTaskToTerminal, recordRunnerCrash } from "../../factory/lib/openclaw-runner.mjs";
 import { buildCompanyState } from "../../factory/lib/hq/company-state.mjs";
 import { readLearningFindings } from "../../factory/lib/hq/chief-of-staff.mjs";
 import { handleRequest as handleFactoryRequest } from "../../scripts/openclaw-factory.mjs";
@@ -1016,12 +1016,25 @@ app.post("/api/founder/tasks/:id/retry", (req, res) => {
   }
   let cfg = {};
   try { cfg = JSON.parse(readFileSync(join(ROOT, "factory", "factory.config.json"), "utf8")); } catch { /* defaults */ }
+  // Detached on purpose — the 202 below is the answer to this request, and the
+  // run outlives it. That is exactly why the failure path has to settle the
+  // task here: nothing downstream is waiting on this promise, so a throw that
+  // only reaches `console.error` leaves the task `active` with no blocker,
+  // looking alive to every founder surface, forever. `recordRunnerCrash` puts
+  // it in the Founder Inbox instead; the log line stays for the operator.
   runTaskToTerminal({
     hqRoot: ROOT, statePath,
     agentIds: cfg.openclawIntegration?.agentIds || {},
     maxAttemptsPerStage: cfg.openclawIntegration?.maxAttemptsPerStage || 3,
     concurrentGroups: cfg.openclawIntegration?.concurrentGroups,
-  }).catch((error) => console.error("[hq] manual retry failed:", error?.message || error));
+  }).catch((error) => {
+    console.error("[hq] manual retry failed:", error?.message || error);
+    try {
+      recordRunnerCrash({ statePath, error });
+    } catch (settleError) {
+      console.error("[hq] manual retry could not be settled:", settleError?.message || settleError);
+    }
+  });
   res.status(202).json({ taskId: req.params.id, status: "retrying" });
 });
 
