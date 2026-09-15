@@ -16,6 +16,7 @@ import { readinessPanel } from "/lib/readinessView.mjs";
 import { runTimelineSection } from "/lib/timelineView.mjs";
 import { decisionsPanel } from "/lib/decisionsView.mjs";
 import { searchPanel } from "/lib/searchView.mjs";
+import { threadListPanel, transcriptPanel } from "/lib/chatView.mjs";
 import { scorecardsPanel } from "/lib/scorecardsView.mjs";
 import { budgetPanel } from "/lib/budgetView.mjs";
 import { permissionsPanel } from "/lib/permissionsView.mjs";
@@ -216,6 +217,7 @@ import { buildLiveFloorRows, buildRunningNow, objectiveActivityLabel } from "/li
     const segs = raw.split("/").filter(Boolean);
     if (!segs.length || segs[0] === "today" || segs[0] === "home") return { name: "today" };
     if (["agents", "projects", "tasks"].includes(segs[0])) return { name: segs[0] };
+    if (segs[0] === "chat") return { name: "chat", id: segs[1] || null };
     // SOPs, Logs, Reports and Runs were retired. A bookmark to one of them
     // must say where its content went; falling through to Today would look
     // like the page had simply moved.
@@ -232,6 +234,7 @@ import { buildLiveFloorRows, buildRunningNow, objectiveActivityLabel } from "/li
       ["#/agents", "agents", "Agents"],
       ["#/projects", "projects", "Projects"],
       ["#/tasks", "tasks", "Board"],
+      ["#/chat", "chat", "Chat"],
     ];
     nav.innerHTML = items.map(([href, id, label]) => `<a href="${href}" data-nav="${id}">${esc(label)}</a>`).join("");
     nav.querySelectorAll("a").forEach((a) => {
@@ -1531,6 +1534,105 @@ import { buildLiveFloorRows, buildRunningNow, objectiveActivityLabel } from "/li
   // It used to read /api/hq -> data/hq/tasks.json, a 3-byte file, and showed
   // zero in all six columns while 21 real tasks were running. The mapping is
   // shared with the hosted console so both boards group identically.
+  // ── Chat: talking to an agent, and starting what it proposes ───
+  //
+  // Its own view rather than a Today panel, because a conversation is stateful
+  // and polls on its own clock. Today re-renders wholesale every 15s, which
+  // would throw away a half-typed message.
+
+  let chatTimer = null;
+
+  async function renderChat(route) {
+    if (chatTimer) { clearInterval(chatTimer); chatTimer = null; }
+    await paintChat(route.id);
+    // Poll only while a reply is outstanding. A conversation nobody is waiting
+    // on costs nothing, and a 3s poll against a live model call is the
+    // difference between "chat" and "check back later".
+    chatTimer = setInterval(async () => {
+      if (parseRoute().name !== "chat") { clearInterval(chatTimer); chatTimer = null; return; }
+      const active = document.querySelector("[data-chat-send]")?.dataset.chatSend;
+      if (!active) return;
+      const data = await apiJson(`/api/founder/threads/${encodeURIComponent(active)}`).catch(() => null);
+      const thread = data?.threads?.find((t) => t.id === active);
+      if (thread && thread.status !== "running") await paintChat(active);
+    }, 3000);
+  }
+
+  async function paintChat(threadId) {
+    const list = await apiJson("/api/founder/threads").catch(() => ({ threads: [] }));
+    const active = threadId || list.threads?.[0]?.id || null;
+    let detail = null;
+    if (active) {
+      const full = await apiJson(`/api/founder/threads/${encodeURIComponent(active)}`).catch(() => null);
+      detail = full?.threads?.find((t) => t.id === active) || null;
+    }
+    app.innerHTML = `<div class="chat-layout">
+      ${threadListPanel(list, { activeId: active })}
+      ${transcriptPanel(detail)}
+    </div>`;
+    bindChat(active);
+    const log = document.getElementById("chat-log");
+    if (log) log.scrollTop = log.scrollHeight;
+  }
+
+  function bindChat(activeId) {
+    app.querySelector("[data-chat-new]")?.addEventListener("click", async () => {
+      try {
+        const created = await apiJson("/api/founder/threads", { method: "POST", body: JSON.stringify({ agentId: "main" }) });
+        location.hash = `#/chat/${created.thread.id}`;
+      } catch (e) { showToast(String(e.message || e), true); }
+    });
+
+    app.querySelectorAll("[data-thread]").forEach((el) => {
+      el.addEventListener("click", () => { location.hash = `#/chat/${el.dataset.thread}`; });
+    });
+
+    app.querySelector("[data-chat-delete]")?.addEventListener("click", async (e) => {
+      const id = e.currentTarget.dataset.chatDelete;
+      if (!confirm("Delete this conversation? The agent keeps its own memory of it.")) return;
+      try {
+        await apiJson(`/api/founder/threads/${encodeURIComponent(id)}`, { method: "DELETE" });
+        location.hash = "#/chat";
+        await paintChat(null);
+      } catch (err) { showToast(String(err.message || err), true); }
+    });
+
+    const form = app.querySelector("[data-chat-send]");
+    form?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const input = document.getElementById("chat-input");
+      const message = input?.value.trim();
+      if (!message) return;
+      input.value = "";
+      try {
+        await apiJson(`/api/founder/threads/${encodeURIComponent(form.dataset.chatSend)}/turns`,
+          { method: "POST", body: JSON.stringify({ message }) });
+        await paintChat(form.dataset.chatSend);
+      } catch (err) {
+        if (input) input.value = message;
+        showToast(String(err.message || err), true);
+      }
+    });
+
+    // The founder's click is the authority. Everything before this point was
+    // the agent describing work; this is the only place it starts.
+    app.querySelectorAll("[data-accept]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const { accept, turn } = button.dataset;
+        button.disabled = true;
+        button.textContent = "Starting…";
+        try {
+          await apiJson(`/api/founder/threads/${encodeURIComponent(activeId)}/proposals/${encodeURIComponent(turn)}/${encodeURIComponent(accept)}/accept`,
+            { method: "POST", body: "{}" });
+          showToast("Started.");
+        } catch (e) {
+          showToast(String(e.message || e), true);
+        }
+        await paintChat(activeId);
+      });
+    });
+  }
+
   async function renderTasks() {
     const ops = await apiJson("/api/hq/operations").catch(() => ({ tasks: [] }));
     const params = new URLSearchParams(location.hash.split("?")[1] || "");
@@ -1638,6 +1740,7 @@ import { buildLiveFloorRows, buildRunningNow, objectiveActivityLabel } from "/li
       else if (r.name === "projects") await renderProjects();
       else if (r.name === "project") await renderProject(r);
       else if (r.name === "tasks") await renderTasks();
+      else if (r.name === "chat") await renderChat(r);
       else if (r.name === "retired") renderRetired(r);
       else if (r.name === "agent") await renderLabAgent(r);
       else await renderToday();

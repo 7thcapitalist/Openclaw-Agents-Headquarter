@@ -69,6 +69,7 @@ import {
 import { enrichHqAgentsWithLifecycle } from "./lib/agentLifecycle.mjs";
 import { buildReadinessReport } from "./lib/readiness.mjs";
 import { buildReadinessSnapshot, rollUp as rollUpReadiness } from "../../factory/lib/hq/readiness.mjs";
+import { buildThreadsPanel } from "../../factory/lib/hq/threads.mjs";
 import {
   buildFounderOverview,
   buildObjectivesView,
@@ -88,6 +89,14 @@ import {
   askFounderQuestion,
   answerFounderQuestion,
   listPendingQuestions,
+  acceptProposal,
+  createThread,
+  deleteThread,
+  findThread,
+  listThreads,
+  postFounderTurn,
+  runThreadTurn,
+  settleProposal,
   postTaskComment,
   resolveFounderDecision,
   resumeObjectiveAfterDecision,
@@ -788,6 +797,94 @@ app.post("/api/founder/questions", (req, res) => {
     });
     void runFounderQuestion(item);
     res.status(202).json({ question: item });
+  } catch (e) {
+    res.status(e?.statusCode || 500).json({ error: String(e.message || e) });
+  }
+});
+
+// ── conversations ────────────────────────────────────────────────────────────
+//
+// The founder wanted the OpenClaw Control UI's chat, but here, where the
+// factory is — so that the agent he is talking to can propose work and he can
+// start it from the same page.
+//
+// What an agent may propose is exactly what the console's intent allowlist
+// permits, and a proposal is inert until the founder clicks. The accept route
+// below then runs it through `handlers()` — literally the same closed map the
+// intent worker uses — so every gate that applies to a founder intent applies
+// here too. See factory/lib/hq/threads.mjs.
+
+const THREAD_ID_RE = /^thread-[a-z0-9]+-[a-f0-9]{8}$/;
+
+function threadIdOr400(req, res) {
+  if (THREAD_ID_RE.test(req.params.id)) return true;
+  res.status(400).json({ error: "Invalid conversation id." });
+  return false;
+}
+
+app.get("/api/founder/threads", (_req, res) => {
+  try { res.json(buildThreadsPanel(listThreads(ROOT))); }
+  catch (e) { res.status(500).json({ error: String(e.message || e) }); }
+});
+
+app.post("/api/founder/threads", (req, res) => {
+  try {
+    res.status(201).json({ thread: createThread(ROOT, { agentId: String(req.body?.agentId || "main").trim() }) });
+  } catch (e) {
+    res.status(e?.statusCode || 500).json({ error: String(e.message || e) });
+  }
+});
+
+app.get("/api/founder/threads/:id", (req, res) => {
+  if (!threadIdOr400(req, res)) return;
+  const thread = findThread(ROOT, req.params.id);
+  if (!thread) return res.status(404).json({ error: "Conversation not found." });
+  res.json(buildThreadsPanel(listThreads(ROOT), { detailId: req.params.id }));
+});
+
+app.delete("/api/founder/threads/:id", (req, res) => {
+  if (!threadIdOr400(req, res)) return;
+  if (!deleteThread(ROOT, req.params.id)) return res.status(404).json({ error: "Conversation not found." });
+  res.json({ deleted: req.params.id });
+});
+
+// Records the message, then answers in a detached promise — the same shape as
+// the question route, because a model turn takes tens of seconds and holding
+// the request open for it makes the page look hung.
+app.post("/api/founder/threads/:id/turns", (req, res) => {
+  if (!threadIdOr400(req, res)) return;
+  try {
+    const thread = postFounderTurn(ROOT, req.params.id, req.body?.message);
+    void runThreadTurn(ROOT, req.params.id, { timeoutMs: FOUNDER_QUESTION_TIMEOUT_MS });
+    res.status(202).json({ thread });
+  } catch (e) {
+    res.status(e?.statusCode || 500).json({ error: String(e.message || e) });
+  }
+});
+
+// The founder's click. `acceptProposal` re-validates and hands back the intent;
+// nothing is executed until the handler map — the console's, not a second one —
+// is asked for it by name.
+app.post("/api/founder/threads/:id/proposals/:turnId/:proposalId/accept", async (req, res) => {
+  if (!threadIdOr400(req, res)) return;
+  const { id, turnId, proposalId } = req.params;
+  try {
+    const intent = acceptProposal(ROOT, id, turnId, proposalId);
+    const { handlers } = await import("../../scripts/hq-intents.mjs");
+    const map = await handlers();
+    const handler = Object.prototype.hasOwnProperty.call(map, intent.kind) ? map[intent.kind] : null;
+    if (typeof handler !== "function") {
+      settleProposal(ROOT, id, turnId, proposalId, { status: "failed", detail: `no handler for ${intent.kind}` });
+      return res.status(501).json({ error: `Nothing here can run "${intent.kind}" yet.` });
+    }
+    try {
+      const detail = await handler(intent.args);
+      res.json({ thread: settleProposal(ROOT, id, turnId, proposalId, { status: "accepted", detail: String(detail || "done") }) });
+    } catch (error) {
+      const detail = String(error?.message || error).slice(0, 300);
+      settleProposal(ROOT, id, turnId, proposalId, { status: "failed", detail });
+      res.status(500).json({ error: detail });
+    }
   } catch (e) {
     res.status(e?.statusCode || 500).json({ error: String(e.message || e) });
   }

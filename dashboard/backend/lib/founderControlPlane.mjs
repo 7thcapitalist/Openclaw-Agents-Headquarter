@@ -14,6 +14,8 @@ import { resumeObjectiveNodes, setObjectiveRecoveryInFlight, readObjState } from
 import { defaultStateRoot } from "../../../factory/lib/natural-language-intake.mjs";
 import { briefBlocker, presentObjective, isSeedProject } from "../../../factory/lib/hq/presenter.mjs";
 import { presentFounderInbox } from "../../../factory/lib/hq/founder-inbox.mjs";
+import { LIMITS as THREAD_LIMITS, countToday, deriveSessionKey, extractProposals, isThreadId, proposalProtocol, titleFrom } from "../../../factory/lib/hq/threads.mjs";
+import { INTENT_KINDS, validateIntent } from "../../../factory/lib/integrations/intent-protocol.mjs";
 
 const CONTROL_FILE = "control-plane.json";
 
@@ -108,9 +110,9 @@ function walkStateFiles(dir, out = []) {
 
 function readControl(root) {
   const path = join(factoryRoot(root), CONTROL_FILE);
-  if (!existsSync(path)) return { version: 1, projects: {}, questions: [], jobs: [], archivedObjectives: {}, dismissedInbox: {} };
+  if (!existsSync(path)) return { version: 1, projects: {}, questions: [], threads: [], jobs: [], archivedObjectives: {}, dismissedInbox: {} };
   const value = JSON.parse(readFileSync(path, "utf8"));
-  return { version: 1, projects: {}, questions: [], jobs: [], archivedObjectives: {}, dismissedInbox: {}, ...value };
+  return { version: 1, projects: {}, questions: [], threads: [], jobs: [], archivedObjectives: {}, dismissedInbox: {}, ...value };
 }
 
 function writeControl(root, value) {
@@ -2003,4 +2005,225 @@ export function postTaskComment({
     notified,
     redactions: result.interaction.redactions,
   };
+}
+
+// ── conversations with an agent ───────────────────────────────────────────────
+//
+// `answerFounderQuestion` above is one turn against one hard-coded session key.
+// This is the same call with a thread identifier in front of it, so the founder
+// can hold several conversations at once — and a transcript behind it, so a
+// conversation is something he can read rather than a single answer that
+// replaces the last one.
+//
+// OpenClaw holds the history. Only the newest founder message is sent; the
+// session key is what makes the agent resume the rest. That is why the key is
+// derived here from the thread id and never accepted from a request: a key
+// selects which conversation an agent resumes, so a caller who could name one
+// could read or poison another thread.
+//
+// See factory/lib/hq/threads.mjs for why a reply can propose but never act.
+
+function writeThread(root, threadId, mutate) {
+  const control = readControl(root);
+  const index = (control.threads || []).findIndex((t) => t.id === threadId);
+  if (index === -1) return null;
+  const next = mutate({ ...control.threads[index] });
+  control.threads[index] = { ...next, id: threadId, updatedAt: new Date().toISOString() };
+  writeControl(root, control);
+  return control.threads[index];
+}
+
+export function listThreads(root) {
+  return (readControl(root).threads || [])
+    .slice()
+    .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
+}
+
+export function findThread(root, threadId) {
+  return (readControl(root).threads || []).find((t) => t.id === threadId) || null;
+}
+
+/** Open a thread. The agent is chosen here, from an id this machine validates. */
+export function createThread(root, { agentId = "main", title = null } = {}) {
+  if (!isValidAgentId(agentId)) {
+    const err = new Error("A valid agentId is required."); err.statusCode = 400; throw err;
+  }
+  const control = readControl(root);
+  const now = new Date().toISOString();
+  const thread = {
+    id: `thread-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`,
+    agentId: String(agentId),
+    title: title ? titleFrom(title) : "New conversation",
+    status: "idle",
+    createdAt: now,
+    updatedAt: now,
+    turns: [],
+  };
+  control.threads = [...(control.threads || []), thread].slice(-THREAD_LIMITS.threads);
+  writeControl(root, control);
+  return thread;
+}
+
+export function deleteThread(root, threadId) {
+  const control = readControl(root);
+  const before = (control.threads || []).length;
+  control.threads = (control.threads || []).filter((t) => t.id !== threadId);
+  if (control.threads.length === before) return false;
+  writeControl(root, control);
+  return true;
+}
+
+/**
+ * Record a founder message. Does not run it — the caller decides when, exactly
+ * as `askFounderQuestion` does, because the route answers in a detached promise.
+ *
+ * Throws a 429 when the thread's daily turn budget is spent. Each turn is a
+ * full model call and the ledger under-reports badly; a cap the founder can see
+ * beats a bill he cannot.
+ */
+export function postFounderTurn(root, threadId, text) {
+  const body = String(text || "").trim();
+  if (!body) { const e = new Error("A message is required."); e.statusCode = 400; throw e; }
+  if (body.length > THREAD_LIMITS.turnChars) {
+    const e = new Error(`A message may not exceed ${THREAD_LIMITS.turnChars} characters.`); e.statusCode = 400; throw e;
+  }
+  if (!isThreadId(threadId)) { const e = new Error("A valid threadId is required."); e.statusCode = 400; throw e; }
+
+  const existing = findThread(root, threadId);
+  if (!existing) { const e = new Error("No such conversation."); e.statusCode = 404; throw e; }
+  if (countToday(existing.turns) >= THREAD_LIMITS.turnsPerDay) {
+    const e = new Error(`This conversation has used its ${THREAD_LIMITS.turnsPerDay} messages for today.`);
+    e.statusCode = 429; throw e;
+  }
+
+  const turn = {
+    id: `turn-${Date.now().toString(36)}-${randomUUID().slice(0, 6)}`,
+    role: "founder",
+    text: body,
+    at: new Date().toISOString(),
+  };
+  return writeThread(root, threadId, (thread) => ({
+    ...thread,
+    // The first thing the founder says names the thread.
+    title: thread.turns.length === 0 ? titleFrom(body) : thread.title,
+    status: "running",
+    turns: [...thread.turns, turn].slice(-THREAD_LIMITS.turnsPerThread),
+  }));
+}
+
+/**
+ * Run the newest founder message and append the reply.
+ *
+ * `execFile` is injected so a test can assert how the process is invoked
+ * without spawning one. Never throws: the outcome is written onto the thread,
+ * which is the only thing the panel reads.
+ */
+export async function runThreadTurn(root, threadId, {
+  execFile: runner = null,
+  timeoutMs = FOUNDER_QUESTION_TIMEOUT_MS,
+} = {}) {
+  const thread = findThread(root, threadId);
+  if (!thread) return null;
+  const last = [...(thread.turns || [])].reverse().find((t) => t.role === "founder");
+  if (!last) return thread;
+
+  // The protocol briefing rides along with the FIRST founder message only.
+  // After that OpenClaw's session memory carries it, exactly as it carries the
+  // conversation — so the founder does not pay for it on every turn.
+  const isFirst = (thread.turns || []).filter((t) => t.role === "founder").length === 1;
+  const message = isFirst ? `${proposalProtocol(INTENT_KINDS)}\n\n---\n\n${last.text}` : last.text;
+
+  const execFileAsync = runner || (await defaultExecFile());
+  try {
+    const { stdout } = await execFileAsync(
+      "openclaw",
+      [
+        "agent",
+        "--agent", thread.agentId,
+        // Derived from the thread id on this machine. Never from a request.
+        "--session-key", deriveSessionKey(thread.agentId, thread.id),
+        // The founder's text, as one argv element. execFile spawns no shell.
+        "--message", message,
+        "--json",
+        "--timeout", String(Math.floor(timeoutMs / 1000)),
+      ],
+      { timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 },
+    );
+    const envelope = JSON.parse(stdout);
+    const reply = envelope.result?.payloads?.map((item) => item.text).filter(Boolean).join("\n")
+      || envelope.summary
+      || "No reply returned.";
+
+    // The reply is split here, before anything stores or renders it: prose for
+    // the founder, proposals validated against the intent allowlist. A
+    // malformed proposal is recorded as rejected and the prose still shows.
+    const { text, proposals } = extractProposals(reply);
+
+    return writeThread(root, threadId, (t) => ({
+      ...t,
+      status: "idle",
+      turns: [...t.turns, {
+        id: `turn-${Date.now().toString(36)}-${randomUUID().slice(0, 6)}`,
+        role: "agent",
+        text: text || "(the reply contained only a proposal)",
+        at: new Date().toISOString(),
+        proposals: proposals.map((p, i) => ({ ...p, id: `proposal-${Date.now().toString(36)}-${i}` })),
+      }].slice(-THREAD_LIMITS.turnsPerThread),
+    }));
+  } catch (error) {
+    return writeThread(root, threadId, (t) => ({
+      ...t,
+      status: "failed",
+      turns: [...t.turns, {
+        id: `turn-${Date.now().toString(36)}-${randomUUID().slice(0, 6)}`,
+        role: "agent",
+        text: "",
+        at: new Date().toISOString(),
+        error: founderQuestionError(error, timeoutMs),
+        proposals: [],
+      }].slice(-THREAD_LIMITS.turnsPerThread),
+    }));
+  }
+}
+
+/**
+ * Mark a proposal accepted and hand back the intent it names.
+ *
+ * This function does NOT execute anything, and that separation is the point:
+ * the caller takes `{kind, args}` to the same handler the console's intents go
+ * through, so every gate that already exists still runs. Re-validated on the
+ * way out because the record has been on disk since the agent wrote it.
+ */
+export function acceptProposal(root, threadId, turnId, proposalId) {
+  const thread = findThread(root, threadId);
+  if (!thread) { const e = new Error("No such conversation."); e.statusCode = 404; throw e; }
+
+  const turn = (thread.turns || []).find((t) => t.id === turnId);
+  const proposal = (turn?.proposals || []).find((p) => p.id === proposalId);
+  if (!proposal) { const e = new Error("No such proposal."); e.statusCode = 404; throw e; }
+  if (proposal.status !== "proposed") {
+    const e = new Error(`This proposal is already ${proposal.status}.`); e.statusCode = 409; throw e;
+  }
+
+  const verdict = validateIntent({ kind: proposal.kind, args: proposal.args });
+  if (!verdict.ok) {
+    const e = new Error(`This proposal is no longer valid: ${verdict.reason}`); e.statusCode = 400; throw e;
+  }
+  return { kind: proposal.kind, args: proposal.args };
+}
+
+/** Record what the accepted proposal did. Called after the handler returns. */
+export function settleProposal(root, threadId, turnId, proposalId, { status, detail }) {
+  return writeThread(root, threadId, (thread) => ({
+    ...thread,
+    turns: thread.turns.map((turn) => (turn.id !== turnId ? turn : {
+      ...turn,
+      proposals: (turn.proposals || []).map((p) => (p.id !== proposalId ? p : {
+        ...p,
+        status: status === "accepted" ? "accepted" : "failed",
+        detail: String(detail || "").slice(0, 500),
+        acceptedAt: new Date().toISOString(),
+      })),
+    })),
+  }));
 }
