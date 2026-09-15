@@ -56,6 +56,23 @@ export async function buildCompanyState({
   const config = readHqConfig(hqRoot);
   const taskList = Array.isArray(tasks) ? tasks.filter(Boolean) : [];
 
+  // The two optional enrichments are the whole cost of this function: measured
+  // on 2026-09-15, the local build is 17ms, `?runtime=1` adds 3,679ms and
+  // `?github=1` adds 3,728ms. The dashboard asks for both, so it was paying
+  // 7,544ms — and they ran one after the other despite being unrelated: GitHub
+  // is network I/O, the runtime is the openclaw CLI.
+  //
+  // Kick the runtime read off here and await it where its results are first
+  // needed, so it overlaps the GitHub round trips instead of queueing behind
+  // them. Nothing between here and there touches `runtime`.
+  const runtimePending =
+    withRuntime && config.runtime?.enabled !== false
+      ? Promise.all([
+          readOpenclawRuntime({ exec: runtimeExec, enabled: true }),
+          readOpenclawActivity({ exec: runtimeExec, enabled: true, limit: config.runtime.auditLimit }),
+        ])
+      : null;
+
   // ---- projects (unified registry + intelligence) ----
   const { projects: unifiedProjects, warnings: registryWarnings } = listCompanyProjects({ hqRoot, hqProjects, now });
   warnings.push(...registryWarnings);
@@ -94,19 +111,24 @@ export async function buildCompanyState({
 
   // ---- external world (read-only GitHub) — computed for every registered
   // project, including the Headquarters entry, so infra context can carry it.
-  const external = [];
+  // One round trip per project, and they were sequential — two projects meant
+  // two waits for no reason. Promise.all preserves order, so `external` reads
+  // exactly as it did before.
+  let external = [];
   if (withGithub && config.github?.enabled !== false) {
-    for (const project of unifiedProjects) {
-      if (!project.github) continue;
-      const awareness = await readRepoAwareness({
-        owner: project.github.owner,
-        repo: project.github.repo,
-        exec,
-        enabled: config.github.enabled !== false,
-        limits: { commits: config.github.commitLimit, prs: config.github.prLimit, issues: config.github.issueLimit },
-      });
-      external.push({ project: project.key, ...awareness, summary: summariseRepoAwareness(awareness) });
-    }
+    const withRepo = unifiedProjects.filter((project) => project.github);
+    external = await Promise.all(
+      withRepo.map(async (project) => {
+        const awareness = await readRepoAwareness({
+          owner: project.github.owner,
+          repo: project.github.repo,
+          exec,
+          enabled: config.github.enabled !== false,
+          limits: { commits: config.github.commitLimit, prs: config.github.prLimit, issues: config.github.issueLimit },
+        });
+        return { project: project.key, ...awareness, summary: summariseRepoAwareness(awareness) };
+      })
+    );
   }
   const externalByKey = new Map(external.map((e) => [e.project, e]));
   const companyExternal = external.filter((e) => e.project !== headquartersEntry?.key);
@@ -193,13 +215,9 @@ export async function buildCompanyState({
   let runtime = null;
   let runtimeActivity = null;
   let rosterReconciliation = null;
-  if (withRuntime && config.runtime?.enabled !== false) {
-    runtime = await readOpenclawRuntime({ exec: runtimeExec, enabled: true });
-    runtimeActivity = await readOpenclawActivity({
-      exec: runtimeExec,
-      enabled: true,
-      limit: config.runtime.auditLimit,
-    });
+  if (runtimePending) {
+    // Started before the GitHub reads above, so by now it has usually resolved.
+    [runtime, runtimeActivity] = await runtimePending;
     if (!runtime.available) warnings.push({ code: "openclaw-runtime-unavailable", message: runtime.error || "openclaw runtime unreachable" });
     if (!runtimeActivity.available) warnings.push({ code: "openclaw-activity-unavailable", message: runtimeActivity.error || "openclaw audit unreachable" });
   }
