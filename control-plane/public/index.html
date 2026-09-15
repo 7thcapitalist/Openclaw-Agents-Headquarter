@@ -52,6 +52,15 @@
         <section class="home" id="home"></section>
         <section class="view" id="view" hidden></section>
 
+        <!-- Task detail, reachable from anywhere a task appears. -->
+        <div class="sheet" id="sheet" hidden>
+          <div class="sheet-backdrop" data-sheet-close="1"></div>
+          <div class="sheet-card">
+            <button type="button" class="sheet-close" id="sheet-close" aria-label="Close">×</button>
+            <div class="sheet-body" id="sheet-body"></div>
+          </div>
+        </div>
+
         <details class="everything-else">
           <summary>Everything else</summary>
           <div class="stale-banner" id="stale-banner" hidden></div>
