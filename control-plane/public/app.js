@@ -105,6 +105,19 @@ function renderStats(stats) {
   }
 }
 
+// Only https, and only what the browser itself agrees is a URL. This exists so
+// `javascript:`, `data:` and friends can never arrive as a row field and be
+// handed to an anchor.
+function safeHref(value) {
+  if (typeof value !== "string" || !value) return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+
 function renderPanels(panels) {
   els.panels.replaceChildren();
   for (const panel of panels) {
@@ -115,7 +128,20 @@ function renderPanels(panels) {
     for (const row of panel.rows) {
       const line = el("div", `row tone-${row.tone || "muted"}`);
       const main = el("div", "row-main");
-      main.append(el("strong", null, row.primary));
+      const href = safeHref(row.link);
+      if (href) {
+        // The one place a row becomes a link: the address of the machine this
+        // page reports on. Everything here comes from a published snapshot, so
+        // the scheme is checked rather than trusted — a row is data, and data
+        // does not get to choose a URL scheme.
+        const anchor = el("a", "row-link", row.primary);
+        anchor.href = href;
+        anchor.target = "_blank";
+        anchor.rel = "noopener noreferrer";
+        main.append(anchor);
+      } else {
+        main.append(el("strong", null, row.primary));
+      }
       if (row.secondary) main.append(el("span", null, row.secondary));
       line.append(main);
       if (row.meta) line.append(el("em", "row-meta", row.meta));

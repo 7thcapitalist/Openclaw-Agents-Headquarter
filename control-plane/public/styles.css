@@ -257,6 +257,11 @@ body {
 .row:first-of-type { border-top: 0; }
 .row-main { min-width: 0; }
 .row-main strong { display: block; font-size: 0.82rem; font-weight: 600; overflow-wrap: anywhere; }
+/* A row that is a link — today only the address of the machine itself. It
+   matches `strong` so the layout does not shift, and is underlined so it is
+   obvious it can be tapped on a phone, which is where it is most needed. */
+.row-main .row-link { display: block; font-size: 0.82rem; font-weight: 600; overflow-wrap: anywhere; color: var(--blue); text-decoration: underline; text-underline-offset: 0.15em; }
+.row-main .row-link:hover { text-decoration-thickness: 2px; }
 .row-main span { display: block; margin-top: 0.15rem; color: var(--muted); font-size: 0.73rem; overflow-wrap: anywhere; }
 .row-meta {
   color: var(--muted);
