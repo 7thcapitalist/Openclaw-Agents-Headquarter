@@ -110,6 +110,7 @@ import {
 } from "./lib/founderApproval.mjs";
 import { readAutonomy } from "../../factory/lib/hq/autonomy.mjs";
 import { retryStuckTasks } from "../../factory/lib/hq/auto-retry.mjs";
+import { resumeStrandedObjectives } from "../../factory/lib/hq/objective-reconciler.mjs";
 import { reconcileMergedTasks } from "../../factory/lib/hq/merge-reconciler.mjs";
 import { resumeState as resumeTaskState, readState as readTaskState, writeState as writeTaskState } from "../../factory/lib/task-workflow.mjs";
 import { runToTerminal as runTaskToTerminal, recordRunnerCrash } from "../../factory/lib/openclaw-runner.mjs";
@@ -1806,7 +1807,40 @@ checkBootConfig();
 app.listen(PORT, HOST, () => {
   console.log(`[agent-lab] dashboard http://${HOST}:${PORT} (root=${ROOT})`);
   resumePendingFounderQuestions();
+  resumeStrandedObjectivesOnBoot();
 });
+
+// The orchestrator runs inside THIS process, so restarting it abandons every
+// objective that was mid-flight — their nodes keep the status they held when
+// the process died and nothing looks at them again. The task-level auto-retry
+// sweep cannot see them: a node that was never dispatched has no state file,
+// and a node abandoned mid-run is not `blocked`.
+//
+// Boot is the one moment this is unambiguous. Nothing can be running in a
+// process that has just started, so a node found `pending` or `running` is
+// owned by nobody. Disable with HQ_RESUME_OBJECTIVES=0.
+function resumeStrandedObjectivesOnBoot() {
+  if (process.env.HQ_RESUME_OBJECTIVES === "0") {
+    console.log("[objective-reconcile] disabled by HQ_RESUME_OBJECTIVES=0");
+    return;
+  }
+  const stateRoot = join(ROOT, "dashboard", "backend", "data", "factory");
+  resumeStrandedObjectives({
+    hqRoot: ROOT,
+    stateRoot,
+    runObjective,
+    max: Math.max(1, Number(process.env.HQ_RESUME_OBJECTIVES_MAX) || 10),
+    log: (message) => console.log(message),
+  })
+    .then(({ scanned, resumed, skipped }) => {
+      if (resumed.length) {
+        console.log(`[objective-reconcile] resumed ${resumed.length} of ${scanned} objective(s); ${skipped.length} left alone`);
+      } else {
+        console.log(`[objective-reconcile] ${scanned} objective(s) scanned, none stranded`);
+      }
+    })
+    .catch((error) => console.error("[objective-reconcile] sweep failed:", error?.message || error));
+}
 
 // ── Auto-retry sweep ─────────────────────────────────────────────────────────
 // Infra failures (no result file, timeout, provider 5xx) should recover on
