@@ -19,6 +19,7 @@ import { searchPanel } from "/lib/searchView.mjs";
 import { scorecardsPanel } from "/lib/scorecardsView.mjs";
 import { budgetPanel } from "/lib/budgetView.mjs";
 import { permissionsPanel } from "/lib/permissionsView.mjs";
+import { buildLiveFloorRows, buildRunningNow, objectiveActivityLabel } from "/lib/runningNow.mjs";
 
 (function () {
   const app = document.getElementById("app");
@@ -441,18 +442,18 @@ import { permissionsPanel } from "/lib/permissionsView.mjs";
   function renderFounderHome({ state, projects, agents, inbox, dismissedInbox, objectives, allTasks, runningRows, liveJobs, autoRecovering, finishedTasks, inboxActionable, overnight, operations, goals, proposals, decisions, scorecards, budgets, permissions, blastRadius, deployments, retention, readiness }) {
     const groups = objectiveView.groupObjectives(objectives);
     const active = [...groups.running, ...groups.waiting, ...groups.blocked];
-    const workingAgents = runningRows.filter((row) => row.status === "working");
+    const workingAgents = runningRows.filter((row) => row.working);
     const nowLine = workingAgents.length ? `${workingAgents.length} agent${workingAgents.length === 1 ? " is" : "s are"} working right now.` : "No agents are actively working right now.";
     const targets = workTargets(state, projects);
     return `<div class="founder-home">
       <header class="founder-topline"><div><span class="eyebrow">Founder command center</span><h1>What is the factory doing?</h1><p>${esc(nowLine)} Here is the work that matters.</p></div><button class="btn secondary" id="ask-agent">Ask the factory</button></header>
       <form id="founder-command" class="founder-launcher"><textarea id="founder-objective" rows="1" placeholder="Start a new outcome…" required></textarea><select id="founder-project" required><option value="">Choose project</option>${targets.map((p) => `<option value="${esc(p.key)}" data-repo="${esc(p.repo || "")}">${esc(p.name)}${p.isHeadquarters ? " (factory)" : ""}</option>`).join("")}</select><input id="founder-repo" type="hidden"/><input id="founder-decompose" type="checkbox" checked hidden/><button class="btn founder-launch" type="submit">Start an outcome</button></form>
       ${renderOvernightPlan(overnight, targets)}
-      <div class="founder-pulse"><div><span class="eyebrow">Factory pulse</span><strong>${active.length ? `${active.length} active objective${active.length === 1 ? "" : "s"}` : "All clear"}</strong></div><div><span>Working</span><b>${workingAgents.length}</b></div><div><span>Waiting for you</span><b class="${inboxActionable ? "pulse-attention" : ""}">${inboxActionable}</b></div><div><span>Recently complete</span><b>${groups.recentlyCompleted.length}</b></div></div>
+      <div class="founder-pulse"><div><span class="eyebrow">Factory pulse</span><strong>${objectiveActivityLabel(groups)}</strong></div><div><span>Working</span><b>${workingAgents.length}</b></div><div><span>Waiting for you</span><b class="${inboxActionable ? "pulse-attention" : ""}">${inboxActionable}</b></div><div><span>Recently complete</span><b>${groups.recentlyCompleted.length}</b></div></div>
       ${renderNeedsYou(inbox, dismissedInbox, inboxActionable)}
       <div class="founder-columns"><main>
         <section class="founder-section"><div class="section-heading"><div><span class="eyebrow">In motion</span><h2>Active objectives</h2></div><span class="section-count">${active.length}</span></div>${active.map((o) => founderObjectiveCard(o)).join("") || `<div class="quiet-state">Nothing is running. Start an outcome above.</div>`}</section>
-        <section class="founder-section"><div class="section-heading"><div><span class="eyebrow">Live floor</span><h2>Agents at work</h2></div></div>${[...liveJobs.map((j) => ({ title: j.objective, sub: "Starting the team", status: "starting" })), ...autoRecovering.map((r) => ({ title: r.objective || r.taskId, sub: "Recovering a safe infrastructure failure", status: "recovering" })), ...runningRows].map((r) => `<div class="agent-work-row"><span class="status-dot ${r.status === "working" ? "is-working" : "is-waiting"}"></span><div><strong>${esc(r.title || r.objective || "Factory work")}</strong><span>${esc(r.sub || `${r.agent || "Agent"} · ${r.stage || "next stage"}`)}</span></div><em>${esc(r.status || "waiting")}</em></div>`).join("") || `<div class="quiet-state">The floor is quiet.</div>`}</section>
+        <section class="founder-section"><div class="section-heading"><div><span class="eyebrow">Live floor</span><h2>Agents at work</h2></div></div>${buildLiveFloorRows(liveJobs, autoRecovering, runningRows).map((r) => `<div class="agent-work-row"><span class="status-dot ${r.working ? "is-working" : "is-waiting"}"></span><div><strong>${esc(r.title)}</strong><span>${esc(r.sub || `${r.agent || "Agent"} · ${r.stage || "next stage"}`)}</span></div><em>${esc(r.status || "waiting")}</em></div>`).join("") || `<div class="quiet-state">The floor is quiet.</div>`}</section>
       </main><aside>
         <section class="founder-section"><div class="section-heading"><div><span class="eyebrow">Recently</span><h2>Completed</h2></div></div>${groups.recentlyCompleted.slice(0, 3).map((o) => founderObjectiveCard(o, true)).join("") || `<div class="quiet-state">No recent completions.</div>`}</section>
         ${renderSearchBox()}
@@ -543,54 +544,6 @@ import { permissionsPanel } from "/lib/permissionsView.mjs";
   function stageVerb(stage) { return ({ product: "shaping", architect: "analyzing", builder: "implementing", reviewer: "reviewing", qa: "testing", security: "checking", release: "preparing" })[stage] || "working on"; }
 
   const PIPELINE = ["product", "architect", "builder", "reviewer", "qa", "security", "release"];
-
-  // "Running now" — one row per unit of work actually executing or blocked, keyed
-  // to stage / who / last output / next / blocker. Real fields only.
-  function buildRunningNow(objectives, tasks, agents) {
-    const agentById = byId(agents);
-    const rows = [];
-    const objTaskIds = new Set();
-    for (const o of objectives) {
-      for (const n of [...(o.nodes || []), o.integration].filter(Boolean)) objTaskIds.add(n.id);
-      if (o.status !== "active") continue;
-      for (const n of [...(o.nodes || []), o.integration].filter(Boolean)) {
-        if (!["running", "blocked", "blocked-by-dep"].includes(n.status)) continue;
-        rows.push({
-          kind: "objective-node",
-          objectiveId: o.objectiveId,
-          title: n.title || n.id.replace(`${o.objectiveId}-`, "").replace(/-/g, " "),
-          sub: `part of: ${String(o.objective).slice(0, 60)}${o.objective.length > 60 ? "…" : ""}`,
-          role: n.role, agent: n.role, model: n.model, stage: n.stage, status: n.status,
-          elapsedMs: n.elapsedMs, lastResult: n.lastResult, blocker: n.blocker,
-          next: n.status === "running" && n.stage ? nextStage(n.stage) : null,
-          reportId: n.hasReport ? n.id : null,
-        });
-      }
-    }
-    const STALE_ACTIVE_MS = 90 * 60 * 1000;
-    for (const t of tasks) {
-      if (objTaskIds.has(t.id)) continue;
-      if (t.status !== "active" && t.status !== "blocked") continue;
-      // Infra-blocked and restart-orphaned tasks are shown in the "recovering"
-      // strip, not here.
-      if (t.status === "blocked" && t.blockerClass === "infra") continue;
-      if (t.status === "active" && Date.now() - (Date.parse(t.updatedAt) || Date.now()) > STALE_ACTIVE_MS) continue;
-      const a = agentById[t.agent] || Object.values(agentById).find((x) => x.runtimeAgentId === t.agent);
-      rows.push({
-        kind: "task", taskId: t.id, title: objectiveView.shortObjectiveTitle(t.objective || t.id), sub: t.project || t.id,
-        role: t.agent, agent: a?.name || t.agent, stage: t.stage, status: t.status,
-        elapsedMs: t.elapsedMs, lastResult: t.lastResult, blocker: t.blocker,
-        next: t.status === "active" && t.stage ? nextStage(t.stage) : null,
-        reportId: t.completionReport ? t.id : null,
-      });
-    }
-    return rows;
-  }
-
-  function nextStage(stage) {
-    const i = PIPELINE.indexOf(stage);
-    return i >= 0 && i < PIPELINE.length - 1 ? PIPELINE[i + 1] : (i === PIPELINE.length - 1 ? "merge-ready" : null);
-  }
 
   function runningNowRow(r) {
     const stageNum = PIPELINE.indexOf(r.stage);

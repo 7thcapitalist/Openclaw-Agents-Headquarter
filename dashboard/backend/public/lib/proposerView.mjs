@@ -48,6 +48,7 @@ export function proposerPanel(source, { esc = escapeHtml } = {}) {
 function renderProposal(proposal, esc) {
   const [kindLabel, kindTone] = KIND_LABEL[proposal.kind] || ["Proposal", ""];
   const evidence = proposal.evidence || {};
+  const goalProjected = /goal projection/i.test(String(evidence.source || ""));
   const context = [
     proposal.goalLevel ? esc(proposal.goalLevel) : null,
     proposal.projectId ? esc(proposal.projectId) : null,
@@ -62,9 +63,8 @@ function renderProposal(proposal, esc) {
       </div>
       <em class="objective-status ${kindTone}">${kindLabel}</em>
     </div>
-    <p class="proposer-why">${esc(proposal.why || "")}</p>
-    ${renderBar(evidence)}
-    <p class="proposer-source">Source: ${esc(evidence.source || "canonical state")}</p>
+    ${goalProjected ? "" : `<p class="proposer-why">${esc(proposal.why || "")}</p>`}
+    ${goalProjected ? "" : renderBar(evidence)}
   </li>`;
 }
 

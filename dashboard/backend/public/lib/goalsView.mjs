@@ -35,6 +35,7 @@ export function goalsPanel(source, { esc = escapeHtml } = {}) {
       <div class="objective-progress" role="img" aria-label="${esc(`${number(summary.percent)} percent of tracked work complete`)}"><span style="width:${number(summary.percent)}%"></span></div>
       <p>${number(summary.complete)} of ${number(summary.total)} tracked units complete${number(summary.blocked) ? ` · <strong class="status-warn">${number(summary.blocked)} blocked</strong>` : ""}${number(summary.active) ? ` · ${number(summary.active)} in flight` : ""}${number(summary.unavailable) ? ` · <strong class="status-warn">${number(summary.unavailable)} goal${number(summary.unavailable) === 1 ? "" : "s"} with no linked work</strong>` : ""}${number(summary.unknown) ? ` · ${number(summary.unknown)} unrecognised` : ""}</p>
     </div>
+    <p class="muted small">Source: goal projection (factory/lib/hq/goals.mjs)</p>
     <ul class="goal-tree">${roots.map((goal) => renderGoal(goal, esc)).join("")}</ul>
   `);
 }
