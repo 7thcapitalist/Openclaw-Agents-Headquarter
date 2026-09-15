@@ -14,6 +14,7 @@ import { answerableDecisions, freshness, intentsPanel, panelsFor, statsFrom } fr
 import { renderHome } from "/home.mjs";
 import { renderAgents, renderBoard, renderDeliveries, renderProjects } from "/views.mjs";
 import { renderMoney } from "/money.mjs";
+import { renderCommandCenter } from "/command-center.mjs";
 import { renderTaskDetail } from "/task-detail.mjs";
 
 const TIMEOUT_MS = 12_000;
@@ -382,6 +383,17 @@ function drawHome(snapshot) {
     intentStateFor,
     onAnswer: (decision, choice, button) =>
       submitIntent("decision.resolve", { decisionId: decision.id, choice }, button, `decision:${decision.id}`),
+    // Every handler here maps to a kind wired in scripts/hq-intents.mjs. A
+    // handler passed for an unwired kind would draw a button that cannot work,
+    // so this list and that file's handler map are the same list.
+    commandCenter: (root) => renderCommandCenter(root, snapshot, {
+      intentStateFor,
+      onStart: (args, button, key) => submitIntent("objective.start", args, button, key),
+      onOvernightAdd: (args, button, key) => submitIntent("overnight.add", args, button, key),
+      onOvernightRemove: (args, button, key) => submitIntent("overnight.remove", args, button, key),
+      onOvernightStart: (args, button, key) => submitIntent("overnight.start", args, button, key),
+      onOvernightStop: (args, button, key) => submitIntent("overnight.stop", args, button, key),
+    }),
   });
 }
 
