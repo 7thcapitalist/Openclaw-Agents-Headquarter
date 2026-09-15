@@ -541,6 +541,14 @@ export async function handleObjectiveRetry({
   const nowISO = new Date(nowMs).toISOString();
   let obj = readObjState(statePath);
 
+  // Recovery exists to get stuck work moving again. The founder cancelled this
+  // one; resuming it would silently undo that.
+  if (obj.status === "cancelled") {
+    const err = new Error("This objective was cancelled. Nothing will be resumed for it.");
+    err.statusCode = 409;
+    throw err;
+  }
+
   if (obj.recovery?.inFlight?.at) {
     const lockAge = nowMs - (Date.parse(obj.recovery.inFlight.at) || 0);
     if (lockAge < RECOVERY_LOCK_MS) {
@@ -897,6 +905,9 @@ export function objectiveLifecycle(obj, {
 } = {}) {
   if (archived) return "archived";
   const status = obj?.status6 || null;
+  // Cancelled is terminal and founder-declared: it is history the moment it is
+  // written, however recently it moved. Nothing about it needs the founder again.
+  if (status === "CANCELLED") return "history";
   const stampMs = Date.parse(obj?.updatedAt || obj?.createdAt || "") || 0;
   const age = now - stampMs;
   // Genuine open founder attention stays active until it's resolved or archived,
@@ -1398,6 +1409,9 @@ function buildFounderInbox({ tasks, decisions, questions, objectives = [], maxAu
   // or a publish decision. Without this, these only appear on the Objectives
   // view and never reach the one list the founder is told to watch.
   for (const obj of objectives || []) {
+    // The founder cancelled this objective. Its nodes may still carry the
+    // blockers they stopped on, but nobody owes them an answer any more.
+    if (obj.status === "cancelled") continue;
     const objNodes = [...(obj.nodes || []), obj.integration].filter(Boolean);
     for (const node of objNodes) {
       if (!node?.blocker) continue;
@@ -1603,6 +1617,17 @@ export function finishFounderJob(root, job, {
   resumeAfter = null,
   evidencePaths = [],
 } = {}) {
+  // A run the founder cancelled is a decision, not a failure. Classifying it as
+  // hard-failed would put the thing they just stopped back in front of them.
+  if (!error && String(result?.status || "") === "cancelled") {
+    return saveFounderJob(root, Object.assign(job, {
+      status: "cancelled",
+      result,
+      error: undefined,
+      updatedAt: new Date().toISOString(),
+    }));
+  }
+
   const outcome = buildOutcome({
     error,
     // A run that finished without delivering is not a success; classify its

@@ -631,6 +631,46 @@ export function setObjectiveRecoveryInFlight(objectivePath, inFlight) {
   });
 }
 
+// ── founder cancel ──────────────────────────────────────────────────────────
+// A terminal status the founder writes by hand. Archiving only changes where an
+// objective is shown; cancelling says the work itself is over: the loop below
+// refuses to schedule a cancelled objective, recovery refuses to resume one,
+// and it stops counting as active work anywhere in Headquarters. Node statuses
+// are deliberately left alone — what each part had already reached is the record
+// of what the run actually did, and cancelling is not a claim about that.
+export const CANCELLED = "cancelled";
+
+export function cancelObjective(objectivePath, { reason = "", at = new Date().toISOString() } = {}) {
+  const before = readObjState(objectivePath);
+  if (before.status === CANCELLED) {
+    return {
+      objectiveId: before.objectiveId,
+      status: CANCELLED,
+      cancelledAt: before.cancelledAt || null,
+      alreadyCancelled: true,
+    };
+  }
+  if (before.status === "complete") {
+    const error = new Error("This objective already finished — there is nothing left to cancel.");
+    error.statusCode = 409;
+    throw error;
+  }
+  const detail = String(reason || "").slice(0, 500);
+  const next = mutate(objectivePath, (s) => {
+    s.status = CANCELLED;
+    s.cancelledAt = at;
+    if (detail) s.cancelReason = detail;
+    s.events.push({ at, type: "objective-cancelled", by: "founder", detail: detail || "cancelled by the founder" });
+  });
+  return {
+    objectiveId: next.objectiveId,
+    status: CANCELLED,
+    cancelledAt: at,
+    previousStatus: before.status,
+    alreadyCancelled: false,
+  };
+}
+
 // ── the loop ─────────────────────────────────────────────────────────────────
 
 export async function runObjective({ hqRoot, objectivePath, maxConcurrent = 3, execute = executeOpenClaw, agentIds = {}, maxAttemptsPerStage = 3, concurrentGroups, publish, stateRoot }) {
@@ -640,6 +680,12 @@ export async function runObjective({ hqRoot, objectivePath, maxConcurrent = 3, e
   checkObjectiveCapability({ hqRoot, objectivePath, capability: "objective.run", action: "run the objective" });
 
   let obj = readObjState(objectivePath);
+  // The founder cancelled this objective. Return before anything is resumed or
+  // rewritten — including the `s.status = "active"` resume below, which would
+  // otherwise quietly undo the cancel on the next retry or wakeup.
+  if (obj.status === CANCELLED) {
+    return { status: CANCELLED, objective: obj, metrics: null, integrationResp: null, observation: null, cancelled: true };
+  }
   assertAcyclic(obj.nodes);
   const nodeStateRoot = stateRoot || join(dirname(objectivePath), "..", "..");
   // Snapshot the graph before scheduling so the exit can tell which nodes
@@ -716,6 +762,9 @@ export async function runObjective({ hqRoot, objectivePath, maxConcurrent = 3, e
 
   while (true) {
     obj = readObjState(objectivePath);
+    // Cancelled while this run was in flight: stop launching new nodes. Whatever
+    // is already dispatched is awaited below rather than orphaned.
+    if (obj.status === CANCELLED) break;
     if (buildNodesComplete(obj)) break;
     if (isDeadlocked(obj) && inFlight.size === 0) break;
     const ready = readyNodes(obj).filter((id) => !inFlight.has(id));
@@ -726,22 +775,28 @@ export async function runObjective({ hqRoot, objectivePath, maxConcurrent = 3, e
   await Promise.allSettled(inFlight.values());
 
   obj = readObjState(objectivePath);
+  const cancelled = obj.status === CANCELLED;
   let integrationResp = null;
-  if (buildNodesComplete(obj)) {
+  if (!cancelled && buildNodesComplete(obj)) {
     integrationResp = await runIntegration({ hqRoot, objectivePath, execute, agentIds, maxAttemptsPerStage, concurrentGroups, publish, stateRoot: nodeStateRoot });
   }
 
   obj = readObjState(objectivePath);
-  const finalStatus = obj.integration.status === GATE_SATISFIED ? "complete"
+  const finalStatus = cancelled ? CANCELLED
+    : obj.integration.status === GATE_SATISFIED ? "complete"
     : buildNodesComplete(obj) ? "integration-blocked"
     : isDeadlocked(obj) ? "blocked" : "incomplete";
-  mutate(objectivePath, (s) => { s.status = finalStatus; s.events.push({ at: new Date().toISOString(), type: "objective-finished", detail: finalStatus }); });
+  if (!cancelled) {
+    mutate(objectivePath, (s) => { s.status = finalStatus; s.events.push({ at: new Date().toISOString(), type: "objective-finished", detail: finalStatus }); });
+  }
 
   // Record graph health and enqueue a durable wakeup for anything that became
   // runnable but was not started, so a parked objective can be resumed by the
   // wakeup worker instead of waiting for someone to notice it. Best-effort by
   // construction: an observation failure must never change the outcome above.
-  const observation = observeObjectiveGraph({
+  // A cancelled objective gets no wakeups: enqueuing one for a node that became
+  // runnable is exactly how cancelled work would come back to life overnight.
+  const observation = cancelled ? null : observeObjectiveGraph({
     hqRoot,
     objectivePath,
     nodeStateRoot,

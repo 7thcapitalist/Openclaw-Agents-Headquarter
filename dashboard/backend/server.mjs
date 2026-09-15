@@ -117,7 +117,7 @@ import { buildCompanyState } from "../../factory/lib/hq/company-state.mjs";
 import { readLearningFindings } from "../../factory/lib/hq/chief-of-staff.mjs";
 import { handleRequest as handleFactoryRequest } from "../../scripts/openclaw-factory.mjs";
 import { decomposeObjective } from "../../factory/lib/objective/decompose.mjs";
-import { runObjective } from "../../factory/lib/objective/orchestrator.mjs";
+import { runObjective, cancelObjective } from "../../factory/lib/objective/orchestrator.mjs";
 import { founderApprovalSetupBlocker } from "../../factory/lib/hq/blocker-class.mjs";
 import { defaultStateRoot } from "../../factory/lib/natural-language-intake.mjs";
 import { readDeploymentStatus } from "../../factory/lib/deploy/status.mjs";
@@ -701,6 +701,28 @@ app.post("/api/founder/objectives/:id/retry", async (req, res) => {
       }),
     });
     res.status(202).json(out);
+  } catch (e) {
+    res.status(e.statusCode || 400).json({ error: String(e.message || e) });
+  }
+});
+
+// Founder stop control: end a decomposed objective for good. Unlike archive,
+// this writes a terminal `cancelled` status into the objective's own state, so
+// the orchestrator will not schedule it, recovery will not resume it, a wakeup
+// will not restart it overnight, and it stops counting as active work. The
+// objective is archived in the same call so the founder's one click both stops
+// the work and clears it off Today. Its state, report, evidence, and GitHub
+// history are kept — cancelling ends the work, it does not erase the record.
+// Registered before the :action route below so "cancel" reaches this handler.
+app.post("/api/founder/objectives/:id/cancel", (req, res) => {
+  try {
+    if (!/^obj-[a-z0-9-]+$/i.test(req.params.id)) return res.status(400).json({ error: "Invalid objective id." });
+    const statePath = findObjectiveStatePath(ROOT, req.params.id);
+    if (!statePath) return res.status(404).json({ error: "No such objective." });
+    const reason = typeof req.body?.reason === "string" ? req.body.reason : "";
+    const cancelled = cancelObjective(statePath, { reason });
+    const archived = setObjectiveArchived(ROOT, req.params.id, true, { reason: reason || "cancelled by the founder" });
+    res.json({ ...cancelled, archived: archived.archived, archivedAt: archived.archivedAt });
   } catch (e) {
     res.status(e.statusCode || 400).json({ error: String(e.message || e) });
   }

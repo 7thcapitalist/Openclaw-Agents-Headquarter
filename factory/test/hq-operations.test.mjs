@@ -15,3 +15,30 @@ test("returns explicit empty operational state", () => { const hqRoot = mkdtempS
 test("aggregates bounded sanitized runtime operations", () => { const f = fixture(); writeFileSync(join(f.taskDir, "liveness.json"), JSON.stringify({ runId: "run-1", state: "needs-followup", reason: "working", nextAction: "continue", recordedAt: "2026-09-09T10:00:00.000Z" })); appendFileSync(join(f.taskDir, "audit.ndjson"), `${JSON.stringify({ version: 1, eventId: "event-1", occurredAt: "2026-09-09T10:00:00.000Z", actor: { type: "agent", id: "codex" }, action: "dispatch.running", subject: { type: "task", id: "task-1" }, correlation: { taskId: "task-1" }, data: {} })}\n`); enqueueWakeup(join(f.stateRoot, "wakeups.json"), { source: "manual", taskRef: "task-1", actorId: "codex", idempotencyKey: "manual:1" }); mkdirSync(join(f.stateRoot, "leases"), { recursive: true }); acquireTaskLease({ root: join(f.stateRoot, "leases"), taskId: "task-1", actorId: "worker", runId: "run-1" }); const costPath = join(f.hqRoot, ".openclaw-factory", "telemetry", "cost-events.ndjson"); appendCostEvent(costPath, createCostEvent({ source: "openclaw-factory", sourceEventId: "run-1", provider: "openai", model: "gpt-5", inputTokens: 10, outputTokens: 5, taskId: "task-1" })); const value = buildOperationsSnapshot({ hqRoot: f.hqRoot, stateRoot: f.stateRoot }); assert.equal(value.summary.activeRuns, 1); assert.equal(value.summary.leasedTasks, 1); assert.equal(value.summary.queuedWakeups, 1); assert.equal(value.summary.inputTokens, 10); assert.equal(value.audit[0].data.secret, undefined); });
 
 test("malformed optional projections degrade without hiding canonical tasks", () => { const f = fixture(); writeFileSync(join(f.taskDir, "liveness.json"), "not-json"); writeFileSync(join(f.stateRoot, "wakeups.json"), "not-json"); const value = buildOperationsSnapshot({ hqRoot: f.hqRoot, stateRoot: f.stateRoot }); assert.equal(value.available, false); assert.equal(value.summary.tasks, 1); assert.ok(value.warnings.length >= 2); });
+
+// A cancelled objective's last recorded graph health describes work that is
+// over. Leaving it in the snapshot is how cancelled work keeps asking for the
+// founder's attention from the Operations panel.
+test("objective graph health is dropped once the founder cancels the objective", () => {
+  const hqRoot = mkdtempSync(join(tmpdir(), "hq-ops-cancel-"));
+  const stateRoot = join(hqRoot, "state");
+  const objDir = join(stateRoot, "objectives", "obj-aa11bb22");
+  mkdirSync(objDir, { recursive: true });
+  const writeObjective = (status) => writeFileSync(join(objDir, "objective-state.json"),
+    JSON.stringify({ objectiveId: "obj-aa11bb22", objective: "Try something out", status }));
+  writeFileSync(join(objDir, "graph-health.json"), JSON.stringify({
+    objectiveId: "obj-aa11bb22", healthy: false, recordedAt: "2026-09-15T10:00:00.000Z",
+    findings: [{ severity: "high", code: "stranded-node", message: "a node is stranded", nodeIds: ["n1"], strandedNodeIds: ["n1"] }],
+  }));
+
+  writeObjective("active");
+  let value = buildOperationsSnapshot({ hqRoot, stateRoot });
+  assert.equal(value.objectives.length, 1);
+  assert.equal(value.summary.unhealthyObjectives, 1);
+
+  writeObjective("cancelled");
+  value = buildOperationsSnapshot({ hqRoot, stateRoot });
+  assert.deepEqual(value.objectives, []);
+  assert.equal(value.summary.unhealthyObjectives, 0);
+  assert.equal(value.summary.strandedNodes, 0);
+});
