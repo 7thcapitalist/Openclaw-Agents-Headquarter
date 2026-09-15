@@ -5,7 +5,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { BOARD_COLUMNS, boardColumn, buildBoard, filterByProject, stagePosition } from "../../control-plane/public/board.mjs";
+import { readFileSync } from "node:fs";
+
+import {
+  BOARD_COLUMNS, boardColumn, buildBoard, filterByProject, filterStalled,
+  movement, stagePosition, STALLED_AFTER_DAYS,
+} from "../../control-plane/public/board.mjs";
 
 test("the three gates collapse into one Review column", () => {
   // Reviewer, qa and security all mean "built, being checked". Three columns
@@ -108,4 +113,119 @@ test("a card never says the stage twice", () => {
   // And a task that never started has no position to show.
   const never = buildBoard([{ taskId: "c", status: "failed", stage: null }]).columns.Blocked[0];
   assert.equal(never.outcomeLine, "Failed before it started");
+});
+
+// ── movement: the board must admit that work has stopped ──────────────────
+//
+// Every card already carried `updatedAt` and the columns were already sorted
+// by it. Nothing rendered it, so a task that had not moved in eight days —
+// task-ca3c3cdf sat blocked for 5.7 — looked identical to one that moved an
+// hour ago.
+
+const NOW = Date.parse("2026-09-15T12:00:00.000Z");
+const ago = (ms) => new Date(NOW - ms).toISOString();
+const DAY = 86_400_000;
+
+test("a card says when it last moved, in words", () => {
+  const board = buildBoard([
+    { taskId: "t1", status: "active", stage: "builder", updatedAt: ago(30 * 60_000) },
+  ], { now: NOW });
+  assert.equal(board.columns["In Progress"][0].movement.label, "moved 30 minutes ago");
+});
+
+test("movement is reported at the scale a person would use", () => {
+  const cases = [
+    [30_000, "moved just now"],
+    [45 * 60_000, "moved 45 minutes ago"],
+    [5 * 3_600_000, "moved 5 hours ago"],
+    [8 * DAY, "moved 8 days ago"],
+    [1 * DAY, "moved 24 hours ago"],
+  ];
+  for (const [age, expected] of cases) {
+    assert.equal(movement(ago(age), { now: NOW }).label, expected, String(age));
+  }
+});
+
+test("three days without movement is stalled, and the threshold is exported", () => {
+  assert.equal(STALLED_AFTER_DAYS, 3);
+  assert.equal(movement(ago(2.9 * DAY), { now: NOW, column: "Review" }).stalled, false);
+  assert.equal(movement(ago(3.1 * DAY), { now: NOW, column: "Review" }).stalled, true);
+});
+
+test("a Done card is never stalled", () => {
+  // Finished work is SUPPOSED to stop moving. Marking it stalled turns the
+  // most reassuring thing on the board into a warning.
+  const board = buildBoard([
+    { taskId: "done", status: "merged", updatedAt: ago(200 * DAY) },
+    { taskId: "mr", status: "merge-ready", updatedAt: ago(200 * DAY) },
+  ], { now: NOW });
+  for (const card of board.columns.Done) assert.equal(card.movement.stalled, false, card.id);
+  assert.equal(board.stalled, 0);
+});
+
+test("blocked and forgotten is flagged — that is the case that cost five days", () => {
+  const board = buildBoard([
+    { taskId: "t1", status: "blocked", stage: "reviewer", updatedAt: ago(5.7 * DAY) },
+  ], { now: NOW });
+  assert.equal(board.columns.Blocked[0].movement.stalled, true);
+  assert.equal(board.columns.Blocked[0].movement.days, 5);
+});
+
+test("every in-flight column can stall", () => {
+  const rows = [
+    ["Assigned", { taskId: "a", status: "active", stage: "product" }],
+    ["In Progress", { taskId: "b", status: "active", stage: "builder" }],
+    ["Review", { taskId: "c", status: "active", stage: "qa" }],
+    ["Inbox", { taskId: "d", status: "active", stage: null }],
+  ];
+  for (const [column, task] of rows) {
+    const board = buildBoard([{ ...task, updatedAt: ago(9 * DAY) }], { now: NOW });
+    assert.equal(board.columns[column][0].movement.stalled, true, column);
+  }
+});
+
+test("a card with no timestamp reports nothing rather than a wrong age", () => {
+  const board = buildBoard([{ taskId: "t1", status: "active", stage: "builder" }], { now: NOW });
+  assert.equal(board.columns["In Progress"][0].movement, null);
+  assert.equal(board.stalled, 0);
+});
+
+test("the board counts what has stopped, and names its own threshold", () => {
+  const board = buildBoard([
+    { taskId: "fresh", status: "active", stage: "builder", updatedAt: ago(1 * DAY) },
+    { taskId: "old", status: "active", stage: "builder", updatedAt: ago(9 * DAY) },
+    { taskId: "older", status: "blocked", stage: "qa", updatedAt: ago(12 * DAY) },
+    { taskId: "done", status: "merged", updatedAt: ago(30 * DAY) },
+  ], { now: NOW });
+  assert.equal(board.stalled, 2);
+  assert.equal(board.stalledAfterDays, 3);
+  assert.equal(board.total, 4);
+});
+
+test("the stalled filter narrows to exactly what the count promised", () => {
+  const tasks = [
+    { taskId: "fresh", status: "active", stage: "builder", updatedAt: ago(1 * DAY) },
+    { taskId: "old", status: "active", stage: "builder", updatedAt: ago(9 * DAY) },
+    { taskId: "done", status: "merged", updatedAt: ago(30 * DAY) },
+  ];
+  const stalled = filterStalled(tasks, { now: NOW });
+  assert.deepEqual(stalled.map((t) => t.taskId), ["old"]);
+  // The filtered board and the count on the unfiltered one must agree, or the
+  // button promises a number the next screen does not show.
+  assert.equal(buildBoard(tasks, { now: NOW }).stalled, buildBoard(stalled, { now: NOW }).total);
+});
+
+test("movement never reads as activity — it is a state transition", () => {
+  // `updatedAt` is the last recorded transition, not the last time an agent
+  // did anything. The vocabulary is part of the contract.
+  const source = readFileSync(new URL("../../control-plane/public/board.mjs", import.meta.url), "utf8");
+  assert.match(source, /last recorded state transition/);
+  assert.match(source, /NOT the last time an agent did/);
+  assert.equal(movement(ago(DAY), { now: NOW }).label.startsWith("moved "), true);
+});
+
+test("a future timestamp does not produce a negative age", () => {
+  const m = movement(new Date(NOW + 60_000).toISOString(), { now: NOW });
+  assert.equal(m.ms, 0);
+  assert.equal(m.stalled, false);
 });
