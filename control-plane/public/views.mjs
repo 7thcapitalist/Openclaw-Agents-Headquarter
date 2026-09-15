@@ -4,6 +4,7 @@
 import { list, money, num, text, unavailable } from "./render.mjs";
 import { BOARD_COLUMNS, buildBoard, filterByProject } from "./board.mjs";
 import { stageLabel, taskTitle, taskOutcomeLine } from "./stage-vocabulary.mjs";
+import { intentStatus } from "./home.mjs";
 
 function el(tag, className, textContent) {
   const node = document.createElement(tag);
@@ -158,4 +159,109 @@ export function renderAgents(root, snapshot) {
     listEl.append(row);
   }
   root.append(listEl);
+}
+
+
+// ─── Deliveries ──────────────────────────────────────────────────────────────
+
+const FINISHED = new Set(["merged", "complete", "completed", "merge-ready"]);
+
+/**
+ * What the factory has produced, and what to do next.
+ *
+ * The suggested next step comes from the proposer, which is report-only on the
+ * machine and report-only here: it is a suggestion the founder accepts, never
+ * something the factory has already decided.
+ */
+export function renderDeliveries(root, snapshot, { onTask = () => {}, onAccept = null, intentStateFor = () => null } = {}) {
+  root.replaceChildren();
+  const ops = unavailable(snapshot?.panels?.operations) ? null : snapshot.panels.operations;
+  const costByTask = ops?.costs?.byTask || {};
+  const delivered = list(ops?.tasks)
+    .filter((t) => FINISHED.has(String(t?.status || "").toLowerCase()))
+    .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
+
+  root.append(el("p", "view-lede", "What the factory has produced, newest first."));
+
+  if (!delivered.length) {
+    root.append(el("p", "home-calm", "Nothing has been delivered yet."));
+  } else {
+    const wrap = el("div", "home-cards");
+    for (const task of delivered) wrap.append(deliveryCard(task, costByTask[task.taskId], onTask));
+    root.append(wrap);
+    // Said once, not on all fourteen cards. A dead link would be worse than an
+    // honest absence, but so is the same sentence repeated down the screen.
+    if (delivered.some((t) => !t.previewUrl)) {
+      root.append(el("p", "home-meta home-meta--dim",
+        "Previews are missing because the factory does not yet write a deployment record when a task finishes."));
+    }
+  }
+
+  // The proposer's next steps, accepted in one click.
+  const proposals = unavailable(snapshot?.panels?.proposals) ? null : snapshot.panels.proposals;
+  const items = list(proposals?.proposals);
+  if (items.length) {
+    root.append(el("h2", "home-heading", "Suggested next"));
+    const wrap = el("div", "home-cards");
+    for (const proposal of items) wrap.append(proposalCard(proposal, onAccept, intentStateFor));
+    root.append(wrap);
+  }
+}
+
+function deliveryCard(task, cost, onTask) {
+  const card = el("article", "home-card");
+  card.tabIndex = 0;
+  card.setAttribute("role", "button");
+  card.append(el("h3", "home-question", taskTitle({ outcome: task.outcome, taskId: task.taskId })));
+
+  const bits = [];
+  if (task.projectId) bits.push(task.projectId);
+  if (cost?.costMicros != null) bits.push(`${money(cost.costMicros)} spent`);
+  else bits.push("cost not recorded");
+  bits.push(taskOutcomeLine({ status: task.status, stage: task.stage }));
+  card.append(el("p", "home-meta", bits.join(" · ")));
+
+  const links = el("div", "home-links");
+  if (task.prUrl) links.append(extLink(task.prUrl, "Pull request ↗"));
+  if (task.previewUrl) links.append(extLink(task.previewUrl, "Preview ↗"));
+  card.append(links);
+  card.append(idLine(task.taskId));
+  card.addEventListener("click", (e) => { if (e.target.tagName !== "A") onTask(task.taskId); });
+  card.addEventListener("keydown", (e) => { if (e.key === "Enter") onTask(task.taskId); });
+  return card;
+}
+
+function proposalCard(proposal, onAccept, intentStateFor) {
+  const card = el("article", "home-card home-card--decision");
+  const head = el("div", "home-card-head");
+  head.append(el("span", "home-chip home-chip--decision", `Suggestion ${proposal.rank ?? ""}`.trim()));
+  if (proposal.projectId) head.append(el("span", "home-meta", proposal.projectId));
+  card.append(head);
+  card.append(el("h3", "home-question", text(proposal.title, "A next step")));
+  if (proposal.why) card.append(el("p", "home-why", text(proposal.why, "")));
+
+  const key = `proposal:${proposal.goalId || proposal.title}`;
+  const state = intentStateFor(key);
+  if (state) { card.append(intentStatus(state)); return card; }
+
+  if (onAccept) {
+    const actions = el("div", "home-actions");
+    const accept = el("button", "home-option", "Start this");
+    accept.type = "button";
+    accept.addEventListener("click", () => onAccept(proposal, accept, key));
+    actions.append(accept);
+    card.append(actions);
+  } else {
+    // Report-only until Launch exists: say so rather than offering a button
+    // that cannot do anything.
+    card.append(el("p", "home-meta home-meta--dim",
+      "Read-only for now — starting work from the console is not wired yet."));
+  }
+  return card;
+}
+
+function extLink(href, label) {
+  const a = el("a", "home-link", label);
+  a.href = href; a.target = "_blank"; a.rel = "noreferrer";
+  return a;
 }

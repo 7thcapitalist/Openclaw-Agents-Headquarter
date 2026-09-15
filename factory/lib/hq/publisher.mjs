@@ -24,6 +24,7 @@ import { buildDecisionHistory } from "./decision-history.mjs";
 import { buildDeploymentsSnapshot } from "./deployments.mjs";
 import { buildGoalsSnapshot } from "./goals.mjs";
 import { buildOperationsSnapshot } from "./operations.mjs";
+import { buildWorkProposals } from "./proposer.mjs";
 import { buildMirrorSnapshot, MIRROR_CONTRACT } from "./mirror.mjs";
 import { buildTaskDetail } from "./task-detail.mjs";
 
@@ -61,6 +62,10 @@ export async function collectSources({ hqRoot, tasks = [], now = new Date() } = 
     gather("deployments", () => buildDeploymentsSnapshot({ hqRoot })),
     gather("scorecards", () => buildAgentScorecards({ hqRoot })),
     gather("budgets", () => buildBudgetSnapshot({ hqRoot })),
+    // What to do next. Report-only on the machine and report-only here: the
+    // console offers a proposal as a suggestion the founder accepts, never as
+    // something the factory has already decided.
+    gather("proposals", () => buildWorkProposals({ hqRoot })),
   ]);
 
   return Object.fromEntries(panels.map(({ name, value }) => [name, value]));
