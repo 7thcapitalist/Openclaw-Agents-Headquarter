@@ -90,7 +90,19 @@ export function getEnrolledFounderKey(root) {
   const envPath = process.env.FACTORY_FOUNDER_PUBLIC_KEY;
   if (envPath && existsSync(resolve(envPath))) {
     const pem = readFileSync(resolve(envPath), "utf8");
-    return { enrolled: true, source: "env", pem, fingerprint: publicKeyFingerprint(pem), enrolledAt: null, history: [] };
+    // The rotation history lives in the meta file and is independent of where
+    // the *current* key came from. Returning [] here discarded it, so rotating
+    // away from an env-sourced key silently erased every earlier rotation.
+    let meta = {};
+    try { meta = JSON.parse(readFileSync(enrolledKeyMetaFile(root), "utf8")); } catch { /* optional */ }
+    return {
+      enrolled: true,
+      source: "env",
+      pem,
+      fingerprint: publicKeyFingerprint(pem),
+      enrolledAt: meta.enrolledAt || null,
+      history: Array.isArray(meta.history) ? meta.history : [],
+    };
   }
   return { enrolled: false, source: null, pem: null, fingerprint: null, enrolledAt: null, history: [] };
 }
@@ -123,10 +135,25 @@ export function enrollFounderKey(root, { publicKeyPem, rotationSignature, at = n
     }
   }
 
+  // Record the key being superseded, whatever it was sourced from.
+  //
+  // This previously fired only for `source === "browser"`, so rotating away
+  // from an env-sourced key recorded nothing at all. Two real rotations
+  // (2026-09-08 and 2026-09-12) left `history: []`, and the consequence is not
+  // cosmetic: an approval request bound to a retired authority becomes
+  // unidentifiable. Signing it reads as "I signed" to the founder and "not
+  // approved" to the factory, with nothing on file to explain why. `enrolledAt`
+  // is kept alongside `retiredAt` so a retired key's window of validity can be
+  // reconstructed and a request dated into it.
   const history = [
     ...(current.history || []),
-    ...(current.source === "browser" && current.fingerprint
-      ? [{ fingerprint: current.fingerprint, retiredAt: at }]
+    ...(current.enrolled && current.fingerprint
+      ? [{
+          fingerprint: current.fingerprint,
+          enrolledAt: current.enrolledAt || null,
+          retiredAt: at,
+          source: current.source || null,
+        }]
       : []),
   ].slice(-20);
 
