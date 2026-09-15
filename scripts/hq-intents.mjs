@@ -120,7 +120,9 @@ async function once() {
       // than re-running it — at-most-once is the safer side to err on.
       await call("/api/intents", {
         method: "PATCH",
-        body: { id: intent.id, status: result.status, detail: result.detail },
+        // Report what was asked alongside what happened, so a rejection can be
+        // diagnosed after the fact instead of only counted.
+        body: { id: intent.id, status: result.status, detail: result.detail, kind: intent.kind, args: intent.args || null },
       });
       report(`  ${intent.kind} ${intent.id} -> ${result.status}`);
     },

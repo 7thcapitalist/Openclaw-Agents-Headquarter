@@ -196,10 +196,23 @@ export async function claim(id, { claimedBy = "factory-machine", now = new Date(
 }
 
 /** Record what happened. Terminal; never read back into the pending queue. */
-export async function report(id, { status, detail = null, now = new Date().toISOString() }) {
+export async function report(id, { status, detail = null, kind = null, args = null, now = new Date().toISOString() }) {
   const authorization = token();
   const { del, put } = await blob();
-  const record = { version: 1, id, status, detail: detail ? String(detail).slice(0, 2000) : null, reportedAt: now };
+  // Retain WHAT WAS ASKED, not just what happened.
+  //
+  // The only intent in this queue's history was rejected with "taskId contains
+  // shell-metacharacters" and the offending value is now unrecoverable: claim()
+  // deletes the pending blob and the result kept no arguments, so there is no
+  // way to see what the page actually sent. A result that cannot be debugged is
+  // half a record.
+  const record = {
+    version: 1, id, status,
+    kind: kind ? String(kind).slice(0, 64) : null,
+    args: args && typeof args === "object" ? summariseArgs(args) : null,
+    detail: detail ? String(detail).slice(0, 2000) : null,
+    reportedAt: now,
+  };
   await put(`${RESULTS}${id}.json`, JSON.stringify(record), {
     access: "private",
     contentType: "application/json",
@@ -225,6 +238,17 @@ export async function listResults({ limit = 50 } = {}) {
     } catch {
       /* skip unreadable */
     }
+  }
+  return out;
+}
+
+// Argument values, bounded. Kept as sent — an argument that was REJECTED is
+// exactly the one worth seeing verbatim — but capped so a result blob cannot
+// become a payload store.
+function summariseArgs(args) {
+  const out = {};
+  for (const [key, value] of Object.entries(args).slice(0, 12)) {
+    out[String(key).slice(0, 64)] = typeof value === "string" ? value.slice(0, 200) : value;
   }
   return out;
 }

@@ -87,10 +87,14 @@ test("an unexpected argument key is rejected rather than trimmed", async () => {
   assert.deepEqual(ran, [], "silently dropping a field makes the request and the action diverge");
 });
 
-test("a known kind with no registered handler fails without running anything", async () => {
+test("a known kind with no registered handler is rejected without running anything", async () => {
   const result = await executeIntent({ id: "1", kind: "objective.retry", args: { objectiveId: "obj-x" } }, handlers());
-  assert.equal(result.status, "failed");
-  assert.match(result.detail, /no handler registered/);
+  // `rejected`, not `failed`. The two mean different things to whoever reads
+  // the result: this machine did not try and fail, it will not do this at all.
+  // A console offering an unwired kind has to be able to say that.
+  assert.equal(result.status, "rejected");
+  assert.match(result.detail, /allowlisted but not handled/);
+  assert.match(result.detail, /nothing was run/);
 });
 
 test("a handler that throws fails the intent, never the loop", async () => {
