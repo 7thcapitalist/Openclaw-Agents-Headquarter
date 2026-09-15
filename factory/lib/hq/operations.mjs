@@ -2,6 +2,7 @@ import { existsSync, readdirSync, readFileSync } from "fs";
 import { basename, dirname, join, resolve } from "path";
 import { readAuditEvents } from "../audit/envelope.mjs";
 import { readCostEvents, summarizeCostLedger } from "./cost-ledger.mjs";
+import { loadPricing, priceCostEvents } from "./cost.mjs";
 import { readWakeupQueue, wakeupQueueHealth } from "../wakeups/queue.mjs";
 import { readLease } from "../leases/task-lease.mjs";
 import { defaultStateRoot } from "./tasks.mjs";
@@ -17,7 +18,9 @@ export function buildOperationsSnapshot({ hqRoot, stateRoot = null, now = new Da
   catch (error) { warnings.push(`wakeup queue unavailable: ${error.message}`); queue = { ...emptyQueue(), available: false }; }
   const costPath = join(resolve(hqRoot), ".openclaw-factory", "telemetry", "cost-events.ndjson");
   let costs = summarizeCostLedger([]);
-  try { costs = summarizeCostLedger(readCostEvents(costPath)); }
+  // Priced through the same function budgets uses, so the two panels of one
+  // snapshot can no longer report different totals for the same ledger.
+  try { costs = summarizeCostLedger(priceCostEvents(readCostEvents(costPath), loadPricing(hqRoot)).events); }
   catch (error) { warnings.push(`cost ledger unavailable: ${error.message}`); costs = { ...costs, available: false }; }
   const objectives = objectiveHealth(root, warnings);
   // Which tasks are paying for runs that change nothing. Read-only; the

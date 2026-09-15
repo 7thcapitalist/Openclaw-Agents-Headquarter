@@ -21,7 +21,7 @@
 import { join, resolve } from "path";
 import { evaluateBudgetAlerts } from "./budget-alerts.mjs";
 import { readCostEvents, summarizeCostLedger } from "./cost-ledger.mjs";
-import { loadPricing, priceUsage } from "./cost.mjs";
+import { loadPricing, priceCostEvents, priceUsage } from "./cost.mjs";
 import { readPolicyRegistry } from "./budget-policies.mjs";
 
 export function costLedgerPath(hqRoot) {
@@ -31,31 +31,11 @@ export function costLedgerPath(hqRoot) {
 // Apply the tracked pricing table to any event the provider did not price.
 // Returns the events unchanged apart from `costMicros`/`costConfidence`, so the
 // result is still a valid cost-event list for every existing consumer.
-export function priceCostEvents(events, pricing) {
-  let derived = 0;
-  let stillUnpriced = 0;
-  const priced = events.map((event) => {
-    if (event.costMicros != null) return event;
-    const quote = priceUsage({
-      provider: event.provider,
-      model: event.model,
-      tokensIn: event.inputTokens,
-      tokensOut: event.outputTokens,
-    }, pricing);
-    if (!quote || quote.costUsd == null) {
-      stillUnpriced += 1;
-      return event;
-    }
-    derived += 1;
-    return {
-      ...event,
-      costMicros: Math.round(quote.costUsd * 1_000_000),
-      costConfidence: "calculated",
-      pricingVersion: event.pricingVersion || pricing?.updatedAt || null,
-    };
-  });
-  return { events: priced, derived, stillUnpriced };
-}
+
+// Kept exported here: this was its home and callers/tests import it from this
+// module. The implementation now lives beside the pricer in cost.mjs so
+// operations.mjs can use it without depending on the budgets panel.
+export { priceCostEvents };
 
 // Never throws. Budgets are alert-only and read-only; a missing ledger,
 // unreadable registry, or unknown model must degrade the view, not the factory.

@@ -60,7 +60,10 @@ test("a model absent from the pricing table stays unpriced rather than counting 
   assert.equal(derived, 0);
   assert.equal(stillUnpriced, 1);
   assert.equal(events[0].costMicros, null);
-  assert.equal(events[0].costConfidence, "unavailable");
+  // "unpriced" not "unavailable": we know exactly what the usage was and have
+  // no price for that model. That distinction is actionable — add the model to
+  // factory/pricing.json — where "unavailable" reads as "we have no idea".
+  assert.equal(events[0].costConfidence, "unpriced");
 });
 
 test("pricing at read time never rewrites the append-only ledger", () => {

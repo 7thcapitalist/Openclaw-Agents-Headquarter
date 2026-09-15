@@ -604,6 +604,13 @@ function sanitizeUsage(agentMeta) {
   const tokensOut = toInteger(agentMeta.tokensOut);
   if (!provider || !model || tokensIn == null || tokensOut == null) return null;
   const usage = { provider, model, tokensIn, tokensOut };
+  // Both of these were silently dropped here, which is why every ledger event
+  // carried costMicros: null and cachedInputTokens: 0 no matter what the
+  // harness reported. The ledger schema had the fields all along.
+  const cachedInputTokens = toInteger(agentMeta.cachedInputTokens);
+  if (cachedInputTokens != null) usage.cachedInputTokens = cachedInputTokens;
+  const costMicros = toInteger(agentMeta.costMicros);
+  if (costMicros != null) usage.costMicros = costMicros;
   const durationMs = toInteger(agentMeta.durationMs);
   if (durationMs != null) usage.durationMs = durationMs;
   return usage;

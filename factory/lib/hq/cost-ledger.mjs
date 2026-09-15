@@ -6,7 +6,11 @@ import { assertSupportedVersion } from "../store/durable-version.mjs";
 import { dirname, resolve } from "path";
 
 const TYPES = new Set(["usage", "correction", "reversal"]);
-const CONFIDENCE = new Set(["provider-reported", "calculated", "estimated", "unavailable"]);
+// "unpriced" is distinct from "unavailable": unavailable means we do not know
+// what the usage was, unpriced means we know exactly what it was and have no
+// price for that model. The second is actionable — add the model to
+// factory/pricing.json — and must never be summed as zero.
+const CONFIDENCE = new Set(["provider-reported", "calculated", "estimated", "unavailable", "unpriced"]);
 const SAFE = /^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,199}$/;
 
 export function createCostEvent(input, { now = () => new Date().toISOString(), id = randomUUID } = {}) {
