@@ -10,7 +10,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -90,7 +90,31 @@ function makeFixture(prefix) {
   const statePath = join(root, "state", "state.json");
   mkdirSync(worktree);
   writeState(statePath, createState({ task, repo: join(root, "repo"), branch: "factory/issue-902", worktree }));
-  return { worktree, statePath };
+  return { root, worktree, statePath };
+}
+
+// The two tests below drive the real runner, which resolves an agent's chain
+// through `defaultOpenClawConfigPath()` — `~/.openclaw/openclaw.json` unless
+// OPENCLAW_CONFIG says otherwise. Without this, they read whatever routes the
+// developer happens to have configured: green on a workstation with several
+// seats, red on CI where that file does not exist at all, because with no chain
+// there is no route to rotate to and the override stays null.
+//
+// That is exactly how it failed — main went red on CI while passing locally on
+// the same commit. So the fixture supplies the chain, and the assertions below
+// are about CONFIG above rather than about the host.
+function withAgentConfig(root, run) {
+  const configPath = join(root, "openclaw.json");
+  writeFileSync(configPath, JSON.stringify(CONFIG, null, 2), "utf8");
+  const previous = process.env.OPENCLAW_CONFIG;
+  process.env.OPENCLAW_CONFIG = configPath;
+  return (async () => {
+    try { return await run(); }
+    finally {
+      if (previous === undefined) delete process.env.OPENCLAW_CONFIG;
+      else process.env.OPENCLAW_CONFIG = previous;
+    }
+  })();
 }
 
 // An agent that was reached, answered, and ended its turn normally — and still
@@ -108,6 +132,7 @@ const completedTurn = (provider, model) => ({
 
 test("a route that answered and delivered nothing is recorded, and the retry leaves it", async () => {
   const fixture = makeFixture("route-rotation-");
+  await withAgentConfig(fixture.root, async () => {
   const seen = [];
   const execute = async ({ agentId, model }) => {
     seen.push({ agentId, model: model || null });
@@ -137,6 +162,7 @@ test("a route that answered and delivered nothing is recorded, and the retry lea
   assert.equal(dispatched.at(-1).route, seen[1].model,
     "the overridden route is recorded on the dispatch that used it");
   assert.equal(dispatched[0].route, undefined, "the first attempt recorded no override");
+  });
 });
 
 test("an unreachable agent does not cost its route — only a turn that ran does", async () => {
@@ -146,7 +172,7 @@ test("an unreachable agent does not cost its route — only a turn that ran does
   // its configured seat on a transient blip.
   const execute = async () => ({ stdout: "connection reset", stderr: "Error: socket hang up" });
 
-  await runOneStage({ hqRoot, statePath: fixture.statePath, execute });
+  await withAgentConfig(fixture.root, () => runOneStage({ hqRoot, statePath: fixture.statePath, execute }));
   const state = readState(fixture.statePath);
   assert.equal(state.routeFailures?.product, undefined, "a transient failure is not a verdict on the route");
 });
