@@ -78,6 +78,20 @@ export default async function handler(req, res) {
       // Say which variable is missing, never its value, and never fall open.
       return sendJson(res, 503, { error: "control plane is not configured", detail: error.message });
     }
+    // The client-facing body stays generic — it faces the internet and must not
+    // describe the store's internals. But collapsing the cause to a bare 502
+    // server-side is itself a defect: on 2026-09-14 the blob store was
+    // suspended and the publisher retried into this exact branch 1,350 times
+    // over eleven hours, with the real reason ("This store has been suspended")
+    // never written down anywhere. Log enough to diagnose, never the payload.
+    console.error("[mirror] unhandled error", JSON.stringify({
+      name: error?.name ?? null,
+      message: String(error?.message ?? error).slice(0, 500),
+      status: error?.status ?? error?.statusCode ?? null,
+      code: error?.code ?? null,
+      cause: error?.cause ? String(error.cause?.message ?? error.cause).slice(0, 200) : null,
+      method: req.method,
+    }));
     return sendJson(res, 502, { error: "mirror unavailable" });
   }
 }
