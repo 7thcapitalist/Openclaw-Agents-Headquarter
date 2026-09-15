@@ -11,7 +11,7 @@
 
 import { isPublisher, isViewer } from "./_lib/auth.mjs";
 import { readText, requestLike, sendJson } from "./_lib/http.mjs";
-import { MIRROR_CONTRACT, readSnapshot, writeSnapshot } from "./_lib/store.mjs";
+import { MIRROR_CONTRACT, readSnapshot, writeSnapshot, writeTaskDetail } from "./_lib/store.mjs";
 
 // A projection of the whole dashboard is not small, but it is not a file
 // upload either. This bounds what one publish can cost before anything is
@@ -38,6 +38,12 @@ export default async function handler(req, res) {
     if (req.method === "POST") {
       if (!isPublisher(request)) return refuse(res);
 
+      // `?task=<id>` writes one task's detail document instead of the mirror.
+      // Same credential, same size bound, same route — one publisher, one
+      // authenticated path outbound, rather than a second endpoint with its own
+      // auth to keep in agreement.
+      const taskId = new URL(req.url || "/", "https://control.invalid").searchParams.get("task");
+
       let raw;
       try {
         raw = await readText(req, { maxBytes: MAX_BODY_BYTES });
@@ -58,6 +64,14 @@ export default async function handler(req, res) {
       // Reject rather than coerce. A snapshot that does not declare the
       // contract is not one this viewer knows how to render, and storing it
       // anyway would put the renderer in front of data nobody agreed on.
+      if (taskId) {
+        if (snapshot?.contract !== "hq.task/1") {
+          return sendJson(res, 422, { error: "contract must be hq.task/1", received: snapshot?.contract ?? null });
+        }
+        const storedTask = await writeTaskDetail(taskId, snapshot);
+        return sendJson(res, 200, { ok: true, taskId, bytes: storedTask.size });
+      }
+
       if (snapshot?.contract !== MIRROR_CONTRACT) {
         return sendJson(res, 422, {
           error: `contract must be ${MIRROR_CONTRACT}`,

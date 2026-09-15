@@ -25,6 +25,7 @@ import { buildDeploymentsSnapshot } from "./deployments.mjs";
 import { buildGoalsSnapshot } from "./goals.mjs";
 import { buildOperationsSnapshot } from "./operations.mjs";
 import { buildMirrorSnapshot, MIRROR_CONTRACT } from "./mirror.mjs";
+import { buildTaskDetail } from "./task-detail.mjs";
 
 // One slow or broken panel must not cost the whole publish. A mirror missing
 // one section and saying so is worth more than no mirror at all, so each source
@@ -96,6 +97,41 @@ function withoutCredential(text, credential) {
 }
 
 /**
+ * Build the per-task detail documents that back GET /api/task.
+ *
+ * Sanitised through the same boundary as the mirror — one call, so a field can
+ * never travel under the per-task route that would be refused under the main
+ * one. Evidence PATHS only; no body, diff or patch has a path into this.
+ */
+export function buildTaskDetails({ hqRoot, states = [], costs = null, now = new Date().toISOString() } = {}) {
+  const byTask = costs?.byTask || {};
+  const byStage = costs?.byStage || {};
+  const out = [];
+  for (const state of states) {
+    if (!state?.task?.id) continue;
+    let detail;
+    try {
+      detail = buildTaskDetail({
+        state,
+        costTotal: byTask[state.task.id] || null,
+        // byStage is factory-wide, not per task; a per-task-per-stage bucket
+        // does not exist in the ledger, so the stage figure is omitted rather
+        // than attributing another task's spend to this one.
+        costByStage: {},
+        now,
+      });
+    } catch {
+      continue;
+    }
+    if (!detail) continue;
+    const clean = buildMirrorSnapshot({ hqRoot, sources: { detail }, now, publisher: null, allowLongFields: true });
+    out.push({ taskId: detail.taskId, detail: clean.panels.detail });
+  }
+  void byStage;
+  return out;
+}
+
+/**
  * Deliver one snapshot. Outbound only.
  *
  * The credential is read from the environment and never logged, never returned,
@@ -136,6 +172,43 @@ export async function publishSnapshot({
       // explicitly before it can reach a caller, a log, or a pm2 file.
       const detail = await response.text().catch(() => "");
       return { ok: false, status: response.status, reason: withoutCredential(detail, token).slice(0, 200) };
+    }
+    return { ok: true, status: response.status };
+  } catch (error) {
+    if (error?.name === "AbortError") return { ok: false, reason: `timed out after ${timeoutMs}ms` };
+    return { ok: false, reason: String(error?.message || error).slice(0, 200) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Deliver one task's detail. Outbound only, same credential as the mirror.
+ */
+export async function publishTaskDetail({
+  taskId,
+  detail,
+  endpoint = process.env.HQ_CONTROL_PLANE_URL,
+  token = process.env.HQ_WRITE_TOKEN,
+  fetchImpl = globalThis.fetch,
+  timeoutMs = 20_000,
+} = {}) {
+  if (!endpoint) return { ok: false, reason: "HQ_CONTROL_PLANE_URL is not configured" };
+  if (!token) return { ok: false, reason: "HQ_WRITE_TOKEN is not configured" };
+
+  const url = new URL(`/api/mirror?task=${encodeURIComponent(taskId)}`, endpoint).toString();
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), timeoutMs);
+  try {
+    const response = await fetchImpl(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+      body: JSON.stringify(detail),
+      signal: abort.signal,
+    });
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      return { ok: false, status: response.status, reason: withoutCredential(body, token).slice(0, 200) };
     }
     return { ok: true, status: response.status };
   } catch (error) {
