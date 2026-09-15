@@ -114,6 +114,75 @@ Then, within about 30 seconds of a restart:
 The dashboard's boot line prints its root. If it does not say `hq-runtime`,
 pm2 is running the wrong checkout.
 
+## The machine ran out of memory once. What to check.
+
+On 2026-09-15 the whole control plane went down and the box rebooted. The cause
+was not a bug in any service:
+
+```
+Sep 15 18:12:36 kernel: Out of memory: Killed process 3684281 (PM2 v7.0.4: God)
+                        anon-rss:4724632kB
+```
+
+Two `PM2 God` daemons were running at once, at ~4.5 GB and ~3.9 GB — **8.4 GB of
+a 14 GB machine spent on process management**. The kernel killed the larger one,
+which was the one holding all four services. For roughly twenty minutes before
+that the dashboard had been starved, serving requests in 6-8 minutes until the
+browser gave up:
+
+```
+[req] GET /api/hq/company 200 483803.7ms SLOW ABORTED
+```
+
+Recovery was automatic and clean: `pm2-hq.service` resurrected all four services
+23 seconds after boot, because `pm2 save` had been run. Nothing in flight was
+lost — the boot reconciler correctly reported `none stranded`.
+
+### The two guards
+
+1. **Per-app ceilings** — `max_memory_restart` in `ecosystem.config.cjs`. pm2
+   restarts an app that balloons instead of letting it take the machine.
+2. **A ceiling on pm2 itself** — `max_memory_restart` does **not** apply to the
+   God daemon, and God is what actually died. The only guard that reaches it is
+   a cgroup limit on its systemd unit:
+
+   ```bash
+   systemctl --user edit pm2-hq.service
+   # [Service]
+   # MemoryHigh=2G
+   # MemoryMax=3G
+   systemctl --user daemon-reload
+   ```
+
+   `MemoryHigh` throttles before `MemoryMax` kills — set them together or not at
+   all. Note this caps God **and its children**, so the ceiling must exceed the
+   sum of the app ceilings plus headroom, or systemd will kill a healthy
+   dashboard to stay under it.
+
+### If two God daemons appear again
+
+```bash
+ps -eo pid,rss,args | grep "[P]M2.*God"
+```
+
+More than one line is the failure mode above. They can come from a `pm2`
+invoked with a different `PM2_HOME`, or from a daemon that was killed while a
+new one started. Repeatedly deleting and re-adding processes (as a migration
+does) appears to make God grow; prefer `pm2 reload ecosystem.config.cjs` over
+`pm2 delete` + `pm2 start` where possible.
+
+### Logs
+
+`pm2-logrotate` is not installed by default and `hq-tunnel-error.log` reached
+70 MB. Install it once per machine:
+
+```bash
+pm2 install pm2-logrotate
+pm2 set pm2-logrotate:max_size 10M
+pm2 set pm2-logrotate:retain 7
+pm2 set pm2-logrotate:compress true
+```
+
 ## What a restart costs
 
 The objective orchestrator runs **inside** the dashboard process. Restarting
