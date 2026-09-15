@@ -1,7 +1,7 @@
 // The console's tabs beyond Home. Same modules, same vocabulary, same mapping
 // as the local dashboard — a screen that exists in both is the same screen.
 
-import { list, money, num, text, unavailable } from "./render.mjs";
+import { degraded, list, money, num, text, unavailable } from "./render.mjs";
 import { BOARD_COLUMNS, buildBoard, filterByProject, filterStalled } from "./board.mjs";
 import { stageLabel, taskTitle, taskOutcomeLine } from "./stage-vocabulary.mjs";
 import { intentStatus } from "./home.mjs";
@@ -23,7 +23,8 @@ export function renderBoard(root, snapshot, {
   project = null, onTask = () => {}, stalledOnly = false, onStalledOnly = null, now = Date.now(),
 } = {}) {
   root.replaceChildren();
-  const tasks = unavailable(snapshot?.panels?.operations) ? [] : list(snapshot.panels.operations.tasks);
+  const operations = snapshot?.panels?.operations;
+  const tasks = unavailable(operations) ? [] : list(operations.tasks);
   const scoped = filterByProject(tasks, project);
   // The whole board is built first so the filter has an honest count to offer
   // even while it is on.
@@ -33,6 +34,11 @@ export function renderBoard(root, snapshot, {
   root.append(el("p", "view-lede",
     `Where every piece of work sits right now${project ? ` · ${project}` : ""} — ${board.total} task${board.total === 1 ? "" : "s"}`
     + `${stalledOnly ? ` with no movement in ${all.stalledAfterDays}+ days` : ""}.`));
+
+  // A warning is shown BESIDE the work, never instead of it. An unreadable
+  // cost ledger used to blank this whole board while 21 tasks were running.
+  const boardWarning = degraded(operations);
+  if (boardWarning) root.append(el("p", "panel-degraded", boardWarning));
 
   if (onStalledOnly && (all.stalled || stalledOnly)) {
     const bar = el("div", "board-filter");
