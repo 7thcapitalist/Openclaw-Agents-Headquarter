@@ -515,7 +515,11 @@ function checkObjectiveCapability({ hqRoot, objectivePath, capability, action })
   });
 }
 
-export function resumeObjectiveNodes({ hqRoot = null, objectivePath, nodeIds, now = () => new Date().toISOString(), staleActiveMs = 90 * 60 * 1000 }) {
+// `by` names who asked. It defaults to the founder because every caller until
+// now was the founder pressing a button; the boot sweep passes "system", so a
+// recovery the machine performed on its own does not read, in the audit log the
+// founder scrolls through, as a decision the founder made.
+export function resumeObjectiveNodes({ hqRoot = null, objectivePath, nodeIds, by = "founder", now = () => new Date().toISOString(), staleActiveMs = 90 * 60 * 1000 }) {
   const at = typeof now === "function" ? now() : now;
   // Resuming blocked nodes restarts real work, so it is checked once for the
   // whole call rather than per node: the founder asked to recover an objective,
@@ -611,11 +615,11 @@ export function resumeObjectiveNodes({ hqRoot = null, objectivePath, nodeIds, no
       s.recovery = {
         ...prev,
         requestedAt: at,
-        by: "founder",
+        by,
         nodes: resumed.map((r) => r.id),
         attempts: (prev.attempts || 0) + 1,
       };
-      s.events.push({ at, type: "objective-recovery-requested", by: "founder", nodes: resumed.map((r) => r.id) });
+      s.events.push({ at, type: "objective-recovery-requested", by, nodes: resumed.map((r) => r.id) });
       if (s.status !== "active") s.status = "active";
     });
   }
