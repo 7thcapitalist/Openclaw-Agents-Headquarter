@@ -182,3 +182,83 @@ test("spend is read from a panel that is actually up", () => {
   assert.equal(pulse.spendLabel, "$0.09", "a real cost must not render as $0.00");
   assert.equal(pulse.unpricedEvents, 2);
 });
+
+// ─── A4: no machine text as a headline ───────────────────────────────────────
+
+test("a recovery escalation's machine prose never becomes the title", async () => {
+  const { plainQuestion, plainContext, technicalOf } = await import("../../control-plane/public/home.mjs");
+  const raw = "Recovery could not continue after 1 bounded attempt(s): product dispatch wrote no result file "
+    + "(session agent:architect:factory-obj-74ffa4cc-control-plane-app-shell-recovery-1-diagnose); "
+    + "redacted executor output captured at evidence/obj-74ffa4cc-recovery-1-diagnose-missing-result.md. "
+    + "Reason: Gateway agent call connection closed. Check `openclaw gateway status`.";
+
+  const title = plainQuestion(raw);
+  assert.doesNotMatch(title, /session agent:/, "no session keys in a headline");
+  assert.doesNotMatch(title, /evidence\//, "no evidence paths in a headline");
+  assert.doesNotMatch(title, /obj-74ffa4cc/, "no task ids in a headline");
+  assert.doesNotMatch(title, /`/, "no backticked machine literals");
+  assert.ok(title.length <= 155);
+
+  // Nothing is deleted — the original survives for the fold.
+  const technical = technicalOf(raw, "");
+  assert.match(technical, /session agent:architect/);
+  assert.match(technical, /evidence\/obj-74ffa4cc/);
+});
+
+test("when nothing human survives, the card says what it is", async () => {
+  const { plainQuestion } = await import("../../control-plane/public/home.mjs");
+  const allMachine = "agent:qa:factory-obj-x-1 `gh` evidence/a.md obj-abcdef123";
+  assert.equal(plainQuestion(allMachine), "The factory needs a decision before it can continue.");
+});
+
+test("context never just repeats the title", async () => {
+  const { plainContext } = await import("../../control-plane/public/home.mjs");
+  assert.equal(plainContext("Same words here.", "Same words here."), "");
+  assert.equal(plainContext("The reviewer cannot verify remote behaviour.", "Different question?"),
+    "The reviewer cannot verify remote behaviour.");
+});
+
+// ─── what finished recently ──────────────────────────────────────────────────
+
+test("finished work is surfaced, newest first, with cost and links", async () => {
+  const { homeFinished } = await import("../../control-plane/public/home.mjs");
+  const panels = {
+    operations: {
+      costs: { byTask: { "obj-a": { costMicros: 22030000 } } },
+      tasks: [
+        { taskId: "obj-a", outcome: "Rebuild the frontend as an RPG.", projectId: "lifemaxing", status: "merged", updatedAt: "2026-09-14T02:30:00.000Z", prUrl: "https://github.com/x/y/pull/5" },
+        { taskId: "obj-b", outcome: "Add the backend loop.", projectId: "lifemaxing", status: "merged", updatedAt: "2026-09-12T02:10:00.000Z" },
+        { taskId: "obj-c", outcome: "Still going.", status: "active", updatedAt: "2026-09-15T00:00:00.000Z" },
+      ],
+      objectives: [],
+    },
+  };
+  const done = homeFinished(panels);
+  // Active work is not "finished".
+  assert.deepEqual(done.map((d) => d.id), ["obj-a", "obj-b"]);
+  assert.equal(done[0].title, "Rebuild the frontend as an RPG.");
+  assert.equal(done[0].cost.costMicros, 22030000);
+  assert.equal(done[0].prUrl, "https://github.com/x/y/pull/5");
+});
+
+test("nothing finished says so in one line, and does not pad", async () => {
+  const { homeFinished } = await import("../../control-plane/public/home.mjs");
+  assert.deepEqual(homeFinished({ operations: { tasks: [{ taskId: "a", status: "active" }], objectives: [] } }), []);
+});
+
+test("the spend line names its window and admits when it is a floor", () => {
+  const complete = homePulse({
+    operations: { summary: { tasks: 3 }, costs: { totals: { costMicros: 85068, unpricedEvents: 0, events: 48 } }, tasks: [], objectives: [] },
+    company: { summary: { projects: 2 } },
+  });
+  assert.equal(complete.spendWindow, "across all 48 recorded runs");
+  assert.equal(complete.spendComplete, true);
+
+  const partial = homePulse({
+    operations: { summary: { tasks: 3 }, costs: { totals: { costMicros: 85068, unpricedEvents: 2, events: 48 } }, tasks: [], objectives: [] },
+    company: { summary: { projects: 2 } },
+  });
+  // A missing price must never read as free — say the number is a floor.
+  assert.equal(partial.spendComplete, false);
+  assert.equal(partial.unpricedEvents, 2);
+});

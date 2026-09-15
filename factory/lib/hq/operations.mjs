@@ -53,6 +53,13 @@ function taskOperations(statePath, warnings) {
     // Without a projectId the console cannot group a task list by project
     // without parsing the id string, which is not a contract.
     projectId: state?.task?.project || null,
+    // What the work is FOR, so a console can name a task by its outcome rather
+    // than by its id. Bounded to a sentence: an objective can be 1,307 lines,
+    // and a list view needs a title, not a brief.
+    outcome: firstSentence(state?.task?.outcome, 200),
+    // Where the work landed, so "here is what shipped" is reachable from a list.
+    prUrl: state?.pullRequest?.url || state?.publish?.prUrl || state?.githubPublish?.prUrl || null,
+    previewUrl: state?.deployment?.previewUrl || state?.publish?.previewUrl || null,
     status: state?.status || "unknown",
     stage,
     // `actor` is whichever runtime happens to hold the CURRENT dispatch and is
@@ -68,6 +75,26 @@ function taskOperations(statePath, warnings) {
     lease: lease ? { actorId: lease.actorId, runId: lease.runId, expiresAt: lease.expiresAt } : null,
     audit,
   };
+}
+
+// An objective's own first line, read from its state beside the health file.
+// Best-effort: a missing or unreadable objective costs the title, not the row.
+function objectiveTitle(dir) {
+  try {
+    const state = JSON.parse(readFileSync(join(dir, "objective-state.json"), "utf8"));
+    return firstSentence(state?.objective, 200);
+  } catch {
+    return null;
+  }
+}
+
+// The first sentence of an outcome, bounded. A task's title has to fit a row.
+function firstSentence(value, max) {
+  if (typeof value !== "string") return null;
+  const line = value.split("\n").map((x) => x.trim()).find(Boolean) || "";
+  if (!line) return null;
+  const sentence = line.split(/(?<=[.?!])\s/)[0] || line;
+  return sentence.length > max ? `${sentence.slice(0, max - 1)}…` : sentence;
 }
 
 function stateFiles(root, out = []) { if (!existsSync(root)) return out; for (const entry of safeReadDir(root)) { const path = join(root, entry.name); if (entry.isDirectory()) stateFiles(path, out); else if (entry.isFile() && entry.name === "state.json") out.push(path); } return out; }
@@ -89,6 +116,10 @@ function objectiveHealth(root, warnings) {
       const findings = Array.isArray(health.findings) ? health.findings : [];
       out.push({
         objectiveId: String(health.objectiveId || objectiveId),
+        // What the objective is FOR, so the console can name it. Without this
+        // an unhealthy objective rendered as "Untitled task" beside its raw id
+        // — the same naming gap as the task rows, one level up.
+        objective: objectiveTitle(dirname(path)),
         healthy: health.healthy === true,
         recordedAt: health.recordedAt || null,
         ready: Array.isArray(health.ready) ? health.ready.slice(0, 20) : [],
