@@ -65,9 +65,39 @@ const execute = async ({ dispatch }) => {
   }));
 };
 
+// Real git, stubbed gh. Every git command runs for real against the bare repo
+// so the push, the branches and the commit range are all genuine; only the two
+// GitHub API calls are answered locally.
+function smokeExec(cwd, args) {
+  if (args[0] !== "gh") return realExec(cwd, args);
+  if (args[1] === "pr" && args[2] === "list") return { ok: true, out: "[]" };
+  if (args[1] === "pr" && args[2] === "create") {
+    const head = args[args.indexOf("--head") + 1];
+    return { ok: true, out: `https://github.com/objective-smoke/app/pull/${encodeURIComponent(head).slice(-4)}` };
+  }
+  return { ok: false, out: `unexpected gh call in smoke: ${args.join(" ")}` };
+}
+
+function realExec(cwd, args) {
+  try {
+    return { ok: true, out: execFileSync(args[0], args.slice(1), { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim() };
+  } catch (error) {
+    return { ok: false, out: String(error.stderr || error.message || error).trim() };
+  }
+}
+
 const result = await runObjective({
   hqRoot: HQ, objectivePath, maxConcurrent: 3, stateRoot, execute,
-  publish: (args) => publishMergeReadyTask({ ...args, ghAvailable: () => false }),
+  // Hermetic publication: git really runs against the local bare repo, and only
+  // `gh` is stubbed.
+  //
+  // This used to pass `ghAvailable: () => false`, which made every node take the
+  // "pushed but no PR" branch — and classifyNodePublish calls that a publication
+  // FAILURE once a real target is resolved, so every build node blocked and the
+  // objective finished `blocked` instead of `complete`. The smoke was declaring
+  // the tool missing in order to stay offline, and thereby testing only the
+  // failure path of the thing it exists to prove.
+  publish: (args) => publishMergeReadyTask({ ...args, exec: smokeExec }),
 });
 
 assert.equal(result.status, "complete", JSON.stringify(result.integrationResp || result.status));
