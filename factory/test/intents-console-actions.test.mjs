@@ -1,10 +1,16 @@
 // What the Home view's buttons can actually cause, and what happens when they
 // press one this machine does not wire.
 //
-// Twelve kinds are allowlisted and three are handled. A console offering an
+// Twelve kinds are allowlisted and eight are handled. A console offering an
 // unhandled kind previously enqueued a request that reported `failed` with
 // "no handler registered" — technically true, but `failed` reads as "we tried",
 // and a page cannot tell the founder that nothing was ever going to run.
+//
+// The fixture below deliberately wires only two kinds: these tests are about
+// what `executeIntent` does with a kind it has or lacks, not about this
+// machine's wiring. The real map is asserted separately, at the bottom, by
+// importing it — because a fixture that restates the wiring is a fixture that
+// will quietly disagree with it.
 import test from "node:test";
 import assert from "node:assert/strict";
 
@@ -15,6 +21,16 @@ const handlers = {
   "task.retry": async ({ taskId }) => `resumed ${taskId}`,
   "decision.resolve": async ({ decisionId }) => `recorded decision on ${String(decisionId).split(":")[0]}`,
 };
+
+// Every declared argument of a kind is required, and validation runs BEFORE the
+// handler lookup. So a test about "is this kind wired" has to send a complete
+// argument set, or it measures the validator instead.
+function argsFor(kind) {
+  const filled = { taskId: "task-ca3c3cdf", objectiveId: "obj-c58897c0", decisionId: "task-ca3c3cdf:reviewer",
+    choice: "yes", reason: "no", assertion: "sig", itemId: "night-1", body: "text",
+    objective: "do the thing", projectId: "lifemaxing" };
+  return Object.fromEntries((INTENT_KINDS[kind]?.args || []).map((name) => [name, filled[name]]));
+}
 
 test("the two kinds Home needs execute and report what they did", async () => {
   const retry = await executeIntent({ id: "a", kind: "task.retry", args: { taskId: "obj-74ffa4cc-control-plane-app-shell" } }, handlers);
@@ -27,7 +43,9 @@ test("the two kinds Home needs execute and report what they did", async () => {
 });
 
 test("an allowlisted but unwired kind is REJECTED with a reason a page can display", async () => {
-  const result = await executeIntent({ id: "c", kind: "overnight.start", args: {} }, handlers);
+  // Valid args on purpose: this must reach the handler lookup and be rejected
+  // for being unwired, not bounce off the validator for a missing field.
+  const result = await executeIntent({ id: "c", kind: "task.comment", args: { taskId: "task-ca3c3cdf", body: "any" } }, handlers);
   // `rejected`, not `failed`: this machine did not try and fail, it will not do
   // this at all. The distinction is what the founder reads.
   assert.equal(result.status, "rejected");
@@ -38,9 +56,9 @@ test("an allowlisted but unwired kind is REJECTED with a reason a page can displ
 
 test("every unwired kind is rejected, none silently", async () => {
   const unwired = Object.keys(INTENT_KINDS).filter((k) => !(k in handlers));
-  assert.ok(unwired.length >= 9, "most kinds are still unwired, which is the point");
+  assert.ok(unwired.length >= 4, "the fixture wires two kinds; the rest must still be rejected");
   for (const kind of unwired) {
-    const result = await executeIntent({ id: kind, kind, args: {} }, handlers);
+    const result = await executeIntent({ id: kind, kind, args: argsFor(kind) }, handlers);
     assert.equal(result.status, "rejected", `${kind} must not fail silently`);
     assert.ok(result.detail && result.detail.length > 20, `${kind} must carry a displayable reason`);
   }
@@ -78,12 +96,56 @@ test("a batch runs in order and reports each outcome", async () => {
   const results = await executeBatch(
     [
       { id: "1", kind: "task.retry", args: { taskId: "obj-a" } },
-      { id: "2", kind: "overnight.stop", args: {} },
+      { id: "2", kind: "task.comment", args: { taskId: "obj-b", body: "any" } },
       { id: "3", kind: "decision.resolve", args: { decisionId: "obj-b:product", choice: "yes" } },
     ],
     handlers,
     { onResult: (intent, result) => { seen.push(`${intent.kind}:${result.status}`); } },
   );
-  assert.deepEqual(seen, ["task.retry:done", "overnight.stop:rejected", "decision.resolve:done"]);
+  assert.deepEqual(seen, ["task.retry:done", "task.comment:rejected", "decision.resolve:done"]);
   assert.deepEqual(results.map((r) => r.status), ["done", "rejected", "done"]);
+});
+
+
+// ── what THIS machine actually wires ─────────────────────────────────────────
+//
+// Imported, not restated. `scripts/hq-intents.mjs` only runs its CLI when
+// invoked directly, so importing it here yields the handler map and starts no
+// polling.
+test("every handler this machine wires is allowlisted", async () => {
+  const { handlers: realHandlers } = await import("../../scripts/hq-intents.mjs");
+  const wired = Object.keys(await realHandlers());
+  for (const kind of wired) {
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(INTENT_KINDS, kind),
+      `${kind} is wired but not allowlisted — a handler can never be the thing that grants a power`,
+    );
+  }
+});
+
+test("the console's actions are wired, and the rest still reject with a reason", async () => {
+  const { handlers: realHandlers } = await import("../../scripts/hq-intents.mjs");
+  const real = await realHandlers();
+
+  // Everything the console offers a button for must execute here. A drawn
+  // control whose kind is unwired is the dead button this project forbids.
+  for (const kind of [
+    "task.retry", "objective.retry", "decision.resolve",
+    "objective.start", "overnight.add", "overnight.remove", "overnight.start", "overnight.stop",
+  ]) {
+    assert.ok(typeof real[kind] === "function", `${kind} must be wired for the console to offer it`);
+  }
+
+  // And the kinds still unwired must reject — never `failed`, never silent.
+  const unwired = Object.keys(INTENT_KINDS).filter((k) => !(k in real));
+  assert.deepEqual(
+    unwired.sort(),
+    ["approval.reject", "approval.submit", "inbox.dismiss", "task.comment"],
+    "if this list changed, wire the console button or update it deliberately",
+  );
+  for (const kind of unwired) {
+    const result = await executeIntent({ id: kind, kind, args: argsFor(kind) }, real);
+    assert.equal(result.status, "rejected", `${kind} must not fail silently`);
+    assert.match(result.detail, /allowlisted but not handled/);
+  }
 });
