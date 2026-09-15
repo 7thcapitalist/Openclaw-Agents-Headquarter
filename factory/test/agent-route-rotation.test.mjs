@@ -10,7 +10,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -29,6 +29,15 @@ const CONFIG = {
     },
   },
 };
+
+// The runner reaches the chain through OpenClaw's own config path rather than an
+// injected object, so point that path at the fixture above. Without this the
+// runner tests below read whatever ~/.openclaw/openclaw.json the host happens to
+// have: they pass on a developer box that has seats configured, and fail in CI,
+// where there is no config, the chain comes back empty and nothing rotates.
+const fixtureConfigPath = join(mkdtempSync(join(tmpdir(), "route-rotation-config-")), "openclaw.json");
+writeFileSync(fixtureConfigPath, JSON.stringify(CONFIG));
+process.env.OPENCLAW_CONFIG = fixtureConfigPath;
 
 test("providerOf splits the provider off a route, and treats a bare model as its own", () => {
   assert.equal(providerOf("anthropic/claude-sonnet-5"), "anthropic");
