@@ -13,11 +13,18 @@ const proposal = (over = {}) => ({
   ...over,
 });
 
-test("a goal-derived proposal does not echo goal-projection prose or counts", () => {
+// Deliberately changed from the original "a ranked proposal shows its reasoning
+// and the numbers behind it" test: that test used to assert `Source: goal
+// projection` was rendered. This panel now drops the raw provenance line for
+// every proposal (the "Ranked from canonical state" lede already says where the
+// numbers come from), while still showing the reasoning and evidence a founder
+// needs to check the ranking, per the approved architecture plan and the
+// reviewer's finding that suppressing why/the bar was an undisclosed regression.
+test("a ranked proposal shows its reasoning and the numbers behind it, without a raw provenance line", () => {
   const html = proposerPanel({ available: true, proposals: [proposal()], considered: { goals: 3 } });
+  assert.match(html, /12 items of 20/);
+  assert.match(html, /12 blocked/);
   assert.match(html, /openclaw-factory/);
-  assert.doesNotMatch(html, /12 items of 20/);
-  assert.doesNotMatch(html, /12 blocked/);
   assert.doesNotMatch(html, /Source: goal projection/);
 });
 
