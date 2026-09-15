@@ -242,6 +242,34 @@ export function homeFinished(panels, { limit = 6 } = {}) {
     .slice(0, limit);
 }
 
+const EVENT_VERB = {
+  "stage-pass": "finished", "stage-fail": "failed", "stage-decision-required": "asked you",
+  "task-resumed": "resumed", "task-created": "started", "handoff-ready": "handed over",
+  "merge-ready": "ready to merge", "recovery-diagnosing": "started recovery",
+  "recovery-escalated": "escalated", "dispatch-blocked": "blocked",
+  "task-closed-unsigned": "closed", "founder-decision-applied": "you decided",
+};
+
+/**
+ * Everything the factory has done, in time order, with which agent and when.
+ *
+ * The data has been published all along — 200 records, each carrying an actor —
+ * and the console rendered none of it. This is the view that exists on the
+ * local dashboard and had no equivalent here.
+ */
+export function homeActivity(panels, { limit = 60 } = {}) {
+  if (unavailable(panels?.company)) return [];
+  return list(panels.company.activityFeed).slice(0, limit).map((event) => ({
+    at: text(event?.at, ""),
+    verb: EVENT_VERB[event?.type] || String(event?.type || "event").replaceAll("-", " "),
+    actor: text(event?.actor, ""),
+    stage: event?.stage ? stageLabel(event.stage) : "",
+    taskId: text(event?.taskId, ""),
+    title: taskTitle({ outcome: event?.objective, taskId: event?.taskId }),
+    project: text(event?.project, ""),
+  }));
+}
+
 export function homeModel(snapshot, now = Date.now()) {
   const panels = snapshot?.panels || {};
   const decisions = homeDecisions(panels);
@@ -252,6 +280,8 @@ export function homeModel(snapshot, now = Date.now()) {
     attention,
     pulse: homePulse(panels),
     finished: homeFinished(panels),
+    activity: homeActivity(panels),
+    activityTotal: unavailable(panels?.company) ? 0 : list(panels.company.activityFeed).length,
     calm: decisions.length === 0 && attention.length === 0,
   };
 }
@@ -384,6 +414,19 @@ function attentionRow(item) {
   return row;
 }
 
+function activityRow(event) {
+  const row = el("li", "home-feed-row");
+  row.append(el("time", "home-feed-when", agoLabel(event.at) || "—"));
+  const body = el("div", "home-feed-body");
+  const line = el("div", "home-feed-line");
+  if (event.actor) line.append(el("span", "home-chip home-chip--muted", event.actor));
+  line.append(document.createTextNode(` ${event.verb}${event.stage ? ` · ${event.stage}` : ""}`));
+  body.append(line);
+  body.append(el("div", "home-meta", event.title));
+  row.append(body);
+  return row;
+}
+
 function finishedRow(item) {
   const row = el("li", "home-row home-row--done");
   row.append(el("span", "home-dot home-dot--good"));
@@ -477,6 +520,17 @@ export function renderHome(root, snapshot, { onAnswer = () => {}, intentStateFor
     root.append(done);
   } else {
     root.append(el("p", "home-calm home-calm--small", "Nothing has finished yet."));
+  }
+
+  // What the factory has done. The local dashboard has had this all along and
+  // the console had no version of it.
+  if (model.activity.length) {
+    root.append(el("h2", "home-heading", "What the factory has done"));
+    root.append(el("p", "home-meta home-meta--dim",
+      `the most recent ${model.activity.length} of ${model.activityTotal} published events, newest first`));
+    const feed = el("ol", "home-feed");
+    for (const event of model.activity) feed.append(activityRow(event));
+    root.append(feed);
   }
 
   const p = model.pulse;
