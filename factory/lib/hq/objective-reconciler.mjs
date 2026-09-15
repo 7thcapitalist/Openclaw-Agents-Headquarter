@@ -21,14 +21,24 @@
 // objective can have a live runner in a process that has just started. A node
 // found `pending` or `running` here is, by construction, owned by nobody.
 //
-// It schedules; it does not repair. runObjective is already idempotent and
-// self-healing — it resumes nodes whose task state went active, releases
-// `blocked-by-dep` descendants, and re-asserts `active` — so the whole job here
-// is deciding WHICH objectives to hand it, and standing well back.
+// It schedules; it does not repair — with one exception it cannot delegate.
+// runObjective is idempotent and self-healing for a node that is `blocked` or
+// `failed`: it puts those back to `pending` when their task state went active,
+// releases `blocked-by-dep` descendants, and re-asserts `active`. But it starts
+// work only from `readyNodes`, which is `pending` alone, so a node abandoned at
+// `running` matches neither path and runObjective cannot revive it — it finds
+// nothing ready, calls the objective deadlocked, and writes it `incomplete`,
+// telling the founder the work ended when a restart is all that happened.
+//
+// So an abandoned node goes through resumeObjectiveNodes FIRST, which is the
+// machinery the founder's own recovery button already uses: it retires the
+// stuck dispatch, re-arms the stage, and puts the node back to `pending`, where
+// runObjective can see it. Its staleness guard earns its keep here too — see
+// resumeStrandedObjectives.
 
 import { existsSync, readdirSync, readFileSync } from "fs";
 import { join } from "path";
-import { readObjState, CANCELLED } from "../objective/orchestrator.mjs";
+import { readObjState, resumeObjectiveNodes, CANCELLED } from "../objective/orchestrator.mjs";
 import { readyNodes, GATE_SATISFIED } from "../objective/graph.mjs";
 
 // objectives live at <stateRoot>/<project>/objectives/<id>/objective-state.json
@@ -57,13 +67,18 @@ const FINISHED_OBJECTIVE_STATES = new Set([CANCELLED, "complete", "completed", "
  * Exported because the decision is the interesting part and deserves to be
  * tested without a filesystem or a runner behind it.
  *
+ * `ready` and `abandoned` are reported separately because they need different
+ * handling: a ready node only needs a scheduler, an abandoned one needs its
+ * dispatch retired first.
+ *
  * @param {object} objective  parsed objective-state.json
- * @returns {{stranded:boolean, reason:string, nodeIds:string[]}}
+ * @returns {{stranded:boolean, reason:string, nodeIds:string[], ready:string[], abandoned:string[]}}
  */
 export function strandedNodes(objective) {
-  if (!objective || typeof objective !== "object") return { stranded: false, reason: "unreadable", nodeIds: [] };
+  const nothing = (reason) => ({ stranded: false, reason, nodeIds: [], ready: [], abandoned: [] });
+  if (!objective || typeof objective !== "object") return nothing("unreadable");
   if (FINISHED_OBJECTIVE_STATES.has(objective.status)) {
-    return { stranded: false, reason: `objective is ${objective.status}`, nodeIds: [] };
+    return nothing(`objective is ${objective.status}`);
   }
 
   const nodes = objective.nodes || {};
@@ -98,8 +113,8 @@ export function strandedNodes(objective) {
     .map((node) => node.id);
 
   const nodeIds = [...new Set([...ready, ...abandoned])];
-  if (!nodeIds.length) return { stranded: false, reason: "no node is ready to run", nodeIds: [] };
-  return { stranded: true, reason: `${nodeIds.length} node(s) ready with no runner`, nodeIds };
+  if (!nodeIds.length) return nothing("no node is ready to run");
+  return { stranded: true, reason: `${nodeIds.length} node(s) ready with no runner`, nodeIds, ready, abandoned };
 }
 
 /**
@@ -110,6 +125,7 @@ export function strandedNodes(objective) {
  * @param {string}   input.stateRoot          directory to scan for objective states
  * @param {Function} input.runObjective       injected orchestrator (required; tests pass a spy)
  * @param {number}  [input.max=10]            objectives started per sweep, so a boot after a long outage cannot start fifty runs at once
+ * @param {Function}[input.resumeNodes]       injected node reviver (tests pass a spy)
  * @param {Function}[input.readConfig]
  * @param {Function}[input.log]
  * @returns {Promise<{scanned:number, resumed:Array, skipped:Array}>}
@@ -118,6 +134,7 @@ export async function resumeStrandedObjectives({
   hqRoot,
   stateRoot,
   runObjective,
+  resumeNodes = resumeObjectiveNodes,
   max = 10,
   readConfig = () => {
     try { return JSON.parse(readFileSync(join(hqRoot, "factory", "factory.config.json"), "utf8")); }
@@ -152,8 +169,54 @@ export async function resumeStrandedObjectives({
       continue;
     }
 
-    log(`[objective-reconcile] resuming ${objective.objectiveId}: ${verdict.reason}`);
-    resumed.push({ objectivePath, objectiveId: objective.objectiveId, nodeIds: verdict.nodeIds });
+    // A node left `running` has to be revived before the scheduler can see it;
+    // handing the objective straight to runObjective would relabel it
+    // `incomplete` and leave the node exactly where it was.
+    //
+    // This is also where the sweep stops trusting its own premise. "Nothing can
+    // be running in a process that has just started" is true of THIS process,
+    // not of the machine: runObjective is called out of process by
+    // scripts/factory-objective.mjs, scripts/factory-improve-loop.mjs and
+    // scripts/objective-smoke.mjs, and no lock spans them. resumeObjectiveNodes
+    // refuses a node whose task state is still being written, so an objective a
+    // terminal is running right now is left to it rather than adopted.
+    let revived = [];
+    let live = [];
+    if (verdict.abandoned.length) {
+      try {
+        const outcome = resumeNodes({ hqRoot, objectivePath, nodeIds: verdict.abandoned, by: "system" });
+        revived = (outcome?.resumed || []).map((entry) => entry.id);
+        live = outcome?.skipped || [];
+      } catch (error) {
+        skipped.push({
+          objectivePath,
+          objectiveId: objective.objectiveId,
+          reason: `cannot revive abandoned node(s): ${String(error?.message || error).slice(0, 120)}`,
+        });
+        continue;
+      }
+    }
+
+    // Nothing to schedule: every ready node was imaginary and every abandoned
+    // one belongs to somebody. Starting a run here is what wrote `incomplete`
+    // over an objective that was merely interrupted.
+    if (!verdict.ready.length && !revived.length) {
+      skipped.push({
+        objectivePath,
+        objectiveId: objective.objectiveId,
+        reason: live.length
+          ? `${live.length} node(s) still owned by a live runner: ${live.map((entry) => entry.reason).join("; ").slice(0, 120)}`
+          : "nothing could be revived",
+      });
+      continue;
+    }
+
+    const detail = revived.length ? `${verdict.reason} (${revived.length} revived after a restart)` : verdict.reason;
+    log(`[objective-reconcile] resuming ${objective.objectiveId}: ${detail}`);
+    // `resumed` counts objectives actually handed to the orchestrator, which is
+    // what `max` is meant to bound — an objective that could not be revived
+    // must not spend a slot a startable one needs.
+    resumed.push({ objectivePath, objectiveId: objective.objectiveId, nodeIds: verdict.nodeIds, revived });
 
     // Detached, exactly like every other runObjective caller: an objective runs
     // for tens of minutes and boot must not wait for it. A failure is logged
