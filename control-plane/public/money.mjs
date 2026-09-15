@@ -23,38 +23,7 @@
 //      like a monthly bill but was not would be the wrong number on the wrong
 //      screen. One line says what the ledger covers.
 
-import { list, money, num, text } from "./render.mjs";
-
-/**
- * Is this panel actually missing, or merely incomplete?
- *
- * `operations` and `budgets` both set `available: warnings.length === 0`, so
- * `available: false` means "something was noted", NOT "there is no data" — the
- * budgets panel reports it for two unpriced events while carrying three real,
- * correct policies. The shared `unavailable()` helper reads that as "not
- * configured", which renders a working panel as a dead one and hides numbers
- * the founder has.
- *
- * So: a panel is missing only when it is absent or explicitly `unavailable`.
- * Anything else is present, possibly with a caveat, which is what
- * `dashboard/backend/public/lib/budgetView.mjs` has always done.
- */
-function missing(panel) {
-  if (!panel || typeof panel !== "object") return "no data published";
-  if (panel.unavailable) return text(panel.reason, "unavailable on the machine");
-  return null;
-}
-
-/** The caveat that goes with `available: false`, or null. */
-function incompleteness(panel) {
-  if (panel?.available === false) {
-    const warnings = list(panel.warnings).map((w) => text(w, "")).filter(Boolean);
-    return warnings.length
-      ? `Some data could not be read, so these numbers are incomplete: ${warnings[0]}${warnings.length > 1 ? ` (+${warnings.length - 1} more)` : ""}`
-      : "Some data could not be read, so these numbers are incomplete.";
-  }
-  return null;
-}
+import { degraded, list, money, num, text, unavailable } from "./render.mjs";
 
 function el(tag, className, textContent) {
   const node = document.createElement(tag);
@@ -93,7 +62,7 @@ function breakdown(bucket, { limit = 12 } = {}) {
 export function moneyModel(snapshot) {
   const operations = snapshot?.panels?.operations;
   const budgets = snapshot?.panels?.budgets;
-  const costsReason = missing(operations);
+  const costsReason = unavailable(operations);
   const costs = costsReason ? null : operations.costs;
 
   if (!costs) {
@@ -104,7 +73,7 @@ export function moneyModel(snapshot) {
   const unpriced = num(totals.unpricedEvents);
   return {
     available: true,
-    incomplete: incompleteness(operations),
+    incomplete: degraded(operations),
     totals: {
       costMicros: num(totals.costMicros),
       events: num(totals.events),
@@ -127,20 +96,22 @@ export function moneyModel(snapshot) {
 }
 
 export function budgetModel(panel) {
-  const reason = missing(panel);
-  if (reason) return { available: false, reason, alerts: [], pricing: null };
-  // `configured` is the real question, and it is asked BEFORE `available`.
-  if (panel.configured === false) {
+  // Asked before `unavailable()`, which would answer the same question with a
+  // bare "not configured". Here there is something more useful to say, and the
+  // founder can act on it.
+  if (panel && typeof panel === "object" && !panel.unavailable && panel.configured === false) {
     return {
       available: false,
       reason: "No budget policies are set. Add them to factory/budgets.json.",
       alerts: [], pricing: panel.pricing || null,
     };
   }
+  const reason = unavailable(panel);
+  if (reason) return { available: false, reason, alerts: [], pricing: null };
   const summary = panel.summary || {};
   return {
     available: true,
-    incomplete: incompleteness(panel),
+    incomplete: degraded(panel),
     // Worst state wins: one exceeded policy must not be averaged away by two
     // healthy ones.
     worst: num(summary.exceeded) ? "exceeded" : num(summary.warning) ? "warning" : num(summary.unavailable) ? "unavailable" : "ok",

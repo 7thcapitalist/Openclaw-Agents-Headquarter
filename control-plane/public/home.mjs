@@ -186,10 +186,16 @@ export function homePulse(panels) {
   // cost bucket, and labelling an all-time total as today's would be a lie the
   // viewer cannot detect. Adding `byDay` to the snapshot is a builder change.
   //
-  // Read from operations first. `budgets.available` goes false for an ordinary
-  // warning — two unpriced events is enough — and `unavailable()` treats that
-  // as a dead panel, which rendered a real $0.09 as "$0.00 spend to date". The
-  // two panels carry identical totals now, so prefer the one that is up.
+  // Read from operations first, then budgets. This used to be a workaround:
+  // `budgets.available` goes false for an ordinary warning — two unpriced
+  // events is enough — and `unavailable()` treated that as a dead panel, which
+  // rendered a real $0.09 as "$0.00 spend to date". That was patched here,
+  // at one call site, while eight other builders carried the same conflation.
+  //
+  // `unavailable()` no longer confuses "recorded a warning" with "has no
+  // data", so this fallback is no longer load-bearing. It stays because the
+  // two panels carry identical totals and preferring the one that is up is
+  // still the right order to read them in.
   const totals = ops?.costs?.totals || budgets?.totals || null;
   const micros = num(totals?.costMicros, 0);
   const unpriced = num(totals?.unpricedEvents, 0);

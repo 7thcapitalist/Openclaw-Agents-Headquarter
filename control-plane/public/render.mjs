@@ -88,11 +88,56 @@ export function freshness(publishedAt, now = Date.now()) {
 
 // A panel that failed to build on the machine arrives as a marker rather than
 // as absence, so the page can say which part is missing and why.
+//
+// THREE DIFFERENT THINGS, AND THEY WERE CONFLATED.
+//
+// The published contract already distinguishes them; this helper did not, and
+// read the wrong field:
+//
+//   `unavailable: true`   the builder THREW. `gather()` in publisher.mjs
+//                         replaces the panel with this marker, so there is no
+//                         data at all. This is genuine absence.
+//   `configured: false`   the founder has not set this up — no budget
+//                         policies, no goals registered. Also nothing to show,
+//                         and "not configured" is the true thing to say.
+//   `available: false`    the builder SUCCEEDED and recorded a warning. Ten
+//                         builders set it as `warnings.length === 0`, so it
+//                         means "something was noted", never "there is no
+//                         data" — DATA IS PRESENT, right there beside it.
+//
+// Treating the third as absence blanked working panels. The worst case was the
+// Board: `buildOperationsSnapshot` pushes a warning when the COST LEDGER is
+// unreadable and sets `available` from `warnings.length`, and the Board does
+// `unavailable(panels.operations) ? [] : …` — so an unreadable cost ledger
+// rendered an empty board, captioned "not configured", while 21 tasks were
+// running. That is the failure the founder already lived through once, from a
+// different cause.
+//
+// So absence is decided by the two fields that mean absence. Degradation is a
+// separate question, answered by `degraded()` below, and a panel that has data
+// renders it with the warning beside it.
 export function unavailable(panel) {
   if (!panel || typeof panel !== "object") return "no data published";
   if (panel.unavailable) return text(panel.reason, "unavailable on the machine");
-  if (panel.available === false) return text(panel.reason || panel.state, "not configured");
+  if (panel.configured === false) return text(panel.reason, "not configured");
   return null;
+}
+
+/**
+ * Did this panel build with warnings? Returns a sentence, or null.
+ *
+ * Every caller that renders a panel's data should render this beside it. It is
+ * deliberately NOT part of `unavailable()`: the whole defect was one question
+ * ("can I show this?") being answered by a field that meant something else
+ * ("was anything noted?").
+ */
+export function degraded(panel) {
+  if (!panel || typeof panel !== "object") return null;
+  if (panel.unavailable || panel.available !== false) return null;
+  const warnings = list(panel.warnings).map((w) => text(w, "")).filter(Boolean);
+  if (!warnings.length) return "Some of this could not be read, so it may be incomplete.";
+  return `Some of this could not be read, so it may be incomplete: ${warnings[0]}`
+    + (warnings.length > 1 ? ` (+${warnings.length - 1} more)` : "");
 }
 
 // --- the headline numbers ----------------------------------------------------
