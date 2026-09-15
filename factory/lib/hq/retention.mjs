@@ -23,7 +23,7 @@ import { defaultStateRoot } from "./tasks.mjs";
 export const RETENTION_CLASSES = Object.freeze({
   canonical: {
     prunable: false,
-    reason: "Canonical workflow state. Deleting it destroys the record of what the factory did.",
+    reason: "Canonical workflow state, including the SQLite store that is its authority. Deleting it destroys the record of what the factory did.",
   },
   "append-only-audit": {
     prunable: false,
@@ -53,6 +53,23 @@ export const RETENTION_CLASSES = Object.freeze({
 });
 
 const CANONICAL_NAMES = new Set(["state.json", "objective-state.json", "control-plane.json"]);
+
+// The SQLite store beside each canonical JSON file, and its WAL/SHM siblings.
+//
+// These were the one thing this report could not see. `state.json` is an
+// EXPORT — the database is the authority, and it is the file that actually
+// grows: on 2026-09-14 one task's `state.sqlite` reached 403 GiB while its
+// `state.json` stayed at 195 KiB. Falling through to `protected` kept it
+// undeletable, which is right, but labelled it "Unrecognised or sensitive
+// file" and left its bytes uncounted in every storage total the founder reads.
+// Naming it canonical keeps it just as undeletable and makes it visible.
+const CANONICAL_STORE_STEMS = new Set(["state", "objective-state", "control-plane"]);
+const STORE_SUFFIX_RE = /^(.+)\.sqlite(-wal|-shm)?$/;
+
+function isCanonicalStoreFile(name) {
+  const match = STORE_SUFFIX_RE.exec(name);
+  return Boolean(match) && CANONICAL_STORE_STEMS.has(match[1]);
+}
 const AUDIT_NAMES = new Set(["audit.ndjson", "cost-events.ndjson", "permissions.ndjson", "wakeups.json"]);
 const DERIVED_NAMES = new Set(["liveness.json", "graph-health.json", "metrics.json", "report.md", "completion-report.md"]);
 
@@ -61,6 +78,7 @@ export function classify(path, { stateRoot }) {
   // A key or certificate is never a retention candidate, whatever else it is.
   if ([".pem", ".key", ".crt", ".p12"].includes(extname(name))) return "protected";
   if (CANONICAL_NAMES.has(name)) return "canonical";
+  if (isCanonicalStoreFile(name)) return "canonical";
   if (AUDIT_NAMES.has(name)) return "append-only-audit";
   if (DERIVED_NAMES.has(name)) return "derived";
 
