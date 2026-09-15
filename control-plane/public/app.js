@@ -405,6 +405,7 @@ function drawHome(snapshot) {
     commandCenter: (root) => renderCommandCenter(root, snapshot, {
       intentStateFor,
       onStart: (args, button, key) => submitIntent("objective.start", args, button, key),
+      onAsk: (args, button, key) => submitIntent("question.ask", args, button, key),
       onOvernightAdd: (args, button, key) => submitIntent("overnight.add", args, button, key),
       onOvernightRemove: (args, button, key) => submitIntent("overnight.remove", args, button, key),
       onOvernightStart: (args, button, key) => submitIntent("overnight.start", args, button, key),

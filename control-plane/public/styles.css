@@ -1071,3 +1071,37 @@ body {
 
 /* Goal rows stack their title over their numbers, like the attention rows. */
 .home-row-body > .home-meta--dim { display: block; margin-top: 2px; }
+
+/* Ask the factory. The answer arrives on a later publish, so the log matters
+   more than the button. */
+.cc-ask { margin-top: 20px; }
+
+.cc-ask-list {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.cc-ask-item {
+  padding: 10px 12px;
+  border: 1px solid var(--border-soft);
+  border-left: 3px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+}
+
+.cc-ask-item--answered { border-left-color: var(--blue); }
+.cc-ask-item--failed { border-left-color: var(--amber); }
+
+.cc-ask-q { display: block; font-size: 0.88rem; font-weight: 600; overflow-wrap: anywhere; }
+
+.cc-ask-a {
+  margin: 6px 0 0;
+  font-size: 0.85rem;
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

@@ -1712,3 +1712,127 @@ export function resolveFounderDecision({ root, hqRoot, statePath, direction }) {
   // text, which the dashboard renders as a string.
   return released ? { ...view, objectiveResume: released } : view;
 }
+
+// ── asking the factory a question ────────────────────────────────────────────
+//
+// Both surfaces need this: the local dashboard's POST /api/founder/questions
+// and the console's `question.ask` intent. It lives here rather than in
+// server.mjs so the two cannot answer the same question differently.
+//
+// The question is passed to `openclaw` as an ARGV ELEMENT through execFile,
+// which spawns no shell — the text is never interpolated into a command line.
+// That is the property that makes this safe to reach from the network at all,
+// and it is asserted by test rather than left to the reader.
+
+export const FOUNDER_QUESTION_TIMEOUT_MS = Math.max(
+  10_000,
+  Number(process.env.FOUNDER_QUESTION_TIMEOUT_MS) || 90_000,
+);
+
+// Bounded because an agent's answer is untrusted output of unknown length, and
+// this record is published. `mirror.mjs` would truncate it later; this keeps the
+// store itself from growing without limit.
+const MAX_ANSWER_CHARS = 12_000;
+
+export function founderQuestionError(error, timeoutMs = FOUNDER_QUESTION_TIMEOUT_MS) {
+  if (error?.killed || error?.code === "ETIMEDOUT") {
+    return `OpenClaw did not answer within ${Math.ceil(timeoutMs / 1000)} seconds. `
+      + "Check Today for active work before asking again.";
+  }
+  if (error?.code) return `OpenClaw could not answer the question (process code ${String(error.code).slice(0, 40)}).`;
+  return "OpenClaw could not answer the question. Check the factory logs for details.";
+}
+
+export function isValidAgentId(agentId) {
+  return /^[a-z0-9][a-z0-9-]*$/.test(String(agentId || ""));
+}
+
+/**
+ * Record a question. Does not run it — the caller decides when, because the
+ * dashboard answers in a detached promise and the intent worker awaits.
+ */
+export function askFounderQuestion(root, { question, agentId = "main" } = {}) {
+  const text = String(question || "").trim();
+  if (!text) {
+    const err = new Error("A question is required.");
+    err.statusCode = 400; throw err;
+  }
+  if (!isValidAgentId(agentId)) {
+    const err = new Error("A valid agentId is required.");
+    err.statusCode = 400; throw err;
+  }
+  return recordQuestion(root, {
+    id: `question-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`,
+    agentId: String(agentId),
+    question: text,
+    status: "queued",
+    askedAt: new Date().toISOString(),
+  });
+}
+
+/**
+ * Run one recorded question and store what came back.
+ *
+ * `execFile` is injected so a test can assert how the process is invoked
+ * without spawning one. Never throws: the outcome is written onto the record,
+ * which is the only thing any screen reads.
+ */
+export async function answerFounderQuestion(root, questionRecord, {
+  execFile: runner = null,
+  timeoutMs = FOUNDER_QUESTION_TIMEOUT_MS,
+} = {}) {
+  const question = updateQuestion(root, questionRecord?.id, {
+    status: "running", startedAt: new Date().toISOString(),
+  });
+  if (!question) return null;
+
+  const execFileAsync = runner || (await defaultExecFile());
+  try {
+    const { stdout } = await execFileAsync(
+      "openclaw",
+      [
+        "agent",
+        "--agent", question.agentId,
+        "--session-key", `agent:${question.agentId}:founder-control-plane`,
+        // The founder's text, as one argv element. execFile spawns no shell.
+        "--message", question.question,
+        "--json",
+        "--timeout", String(Math.floor(timeoutMs / 1000)),
+      ],
+      { timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 },
+    );
+    const envelope = JSON.parse(stdout);
+    const answer = envelope.result?.payloads?.map((item) => item.text).filter(Boolean).join("\n")
+      || envelope.summary
+      || "No answer returned.";
+    return updateQuestion(root, question.id, {
+      status: "answered",
+      answer: String(answer).slice(0, MAX_ANSWER_CHARS),
+      answeredAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    return updateQuestion(root, question.id, {
+      status: "failed",
+      error: founderQuestionError(error, timeoutMs),
+      failedAt: new Date().toISOString(),
+    });
+  }
+}
+
+let cachedExecFile = null;
+async function defaultExecFile() {
+  if (!cachedExecFile) {
+    const { execFile } = await import("node:child_process");
+    const { promisify } = await import("node:util");
+    cachedExecFile = promisify(execFile);
+  }
+  return cachedExecFile;
+}
+
+/** The last N questions, newest first — what the mirror publishes. */
+export function listRecentQuestions(root, { limit = 10 } = {}) {
+  return readControl(root).questions
+    .slice()
+    .sort((a, b) => String(b.askedAt || "").localeCompare(String(a.askedAt || "")))
+    .slice(0, limit);
+}

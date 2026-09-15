@@ -1,7 +1,7 @@
 // What the Home view's buttons can actually cause, and what happens when they
 // press one this machine does not wire.
 //
-// Twelve kinds are allowlisted and eight are handled. A console offering an
+// Thirteen kinds are allowlisted and nine are handled. A console offering an
 // unhandled kind previously enqueued a request that reported `failed` with
 // "no handler registered" — technically true, but `failed` reads as "we tried",
 // and a page cannot tell the founder that nothing was ever going to run.
@@ -132,6 +132,7 @@ test("the console's actions are wired, and the rest still reject with a reason",
   for (const kind of [
     "task.retry", "objective.retry", "decision.resolve",
     "objective.start", "overnight.add", "overnight.remove", "overnight.start", "overnight.stop",
+    "question.ask",
   ]) {
     assert.ok(typeof real[kind] === "function", `${kind} must be wired for the console to offer it`);
   }

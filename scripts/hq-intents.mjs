@@ -151,6 +151,18 @@ export async function handlers() {
       return `overnight run started: ${state.items.length} objective(s) in the plan, ${queued} still queued`;
     },
 
+    // Ask the factory a question. Awaited: the founder is waiting for an
+    // answer, the call is bounded by its own timeout, and the answer IS the
+    // acknowledgement. Which agent answers is this machine's choice, not the
+    // caller's — the allowlist carries no agent id for exactly that reason.
+    "question.ask": async ({ question }) => {
+      const record = control.askFounderQuestion(hqRoot, { question, agentId: "main" });
+      const answered = await control.answerFounderQuestion(hqRoot, record);
+      if (!answered) throw new Error("the question record vanished before it could be answered");
+      if (answered.status === "failed") throw new Error(answered.error || "the factory could not answer");
+      return `answered: ${String(answered.answer || "").slice(0, 400)}`;
+    },
+
     "overnight.stop": async () => {
       const state = overnight.stopOvernight(hqRoot);
       if (state.status !== "stopped" && !state.stopRequested) return "nothing to stop — no overnight run is going";
