@@ -18,6 +18,8 @@ import { presentFounderInbox } from "../../../factory/lib/hq/founder-inbox.mjs";
 const CONTROL_FILE = "control-plane.json";
 
 import { readOvernightQueue } from "./overnightQueue.mjs";
+import { appendInteraction, createInteraction, interactionsPath, mentionWakeups } from "../../../factory/lib/hq/interactions.mjs";
+import { enqueueWakeup } from "../../../factory/lib/wakeups/queue.mjs";
 
 // ── project + model-policy readers (read-only, guarded) ───────────────────────
 
@@ -1917,4 +1919,75 @@ export function listRecentQuestions(root, { limit = 10 } = {}) {
     .slice()
     .sort((a, b) => String(b.askedAt || "").localeCompare(String(a.askedAt || "")))
     .slice(0, limit);
+}
+
+
+// Post a founder comment on a task, record it, and announce any mention.
+//
+// Shared by the dashboard's POST /api/founder/tasks/:id/interactions and by the
+// console's `task.comment` intent, because the two must not drift. A second
+// copy of a control-plane action is how the hosted console ended up recording a
+// founder decision without resuming the work it released — see
+// resumeObjectiveAfterDecision.
+//
+// THE INVARIANT: the author is always the authenticated founder, never a value
+// from the request or the intent payload. Interaction text is untrusted data —
+// stored, redacted, bounded and attributed, and never interpolated into a
+// prompt, a handoff or a command. A mention can cause a WAKEUP and nothing
+// else, and a wakeup carries an identifier only; the queue rejects any item
+// with a command or payload. See factory/lib/hq/interactions.mjs.
+export function postTaskComment({
+  root,
+  hqRoot,
+  taskId,
+  body,
+  kind = "comment",
+  idempotencyKey,
+  readConfig = () => {
+    try { return JSON.parse(readFileSync(join(hqRoot || root, "factory", "factory.config.json"), "utf8")); }
+    catch { return {}; }
+  },
+  enqueue = enqueueWakeup,
+}) {
+  const statePath = findTaskStatePath(root, taskId);
+  if (!statePath) {
+    const err = new Error(`no such task: ${taskId}`);
+    err.statusCode = 404; throw err;
+  }
+
+  const interaction = createInteraction({
+    taskId,
+    kind,
+    author: { type: "human", id: "founder" },
+    body,
+    idempotencyKey,
+  });
+
+  const taskDir = dirname(statePath);
+  const hq = hqRoot || root;
+  // hqRoot threaded so interaction.post is capability-checked. The founder's
+  // authority is superior so this is never refused; the check matters for the
+  // agent callers that come later.
+  const result = appendInteraction(interactionsPath(taskDir), interaction, { hqRoot: hq });
+
+  const notified = [];
+  if (result.accepted) {
+    const cfg = readConfig();
+    const knownAgents = [...new Set(Object.values(cfg.openclawIntegration?.agentIds || {}).filter((value) => typeof value === "string"))];
+    const queuePath = join(dirname(dirname(taskDir)), "wakeups.json");
+    for (const wakeup of mentionWakeups({ interactions: [interaction], knownAgents, objectiveId: interaction.objectiveId })) {
+      // Best effort: failing to announce a mention must not lose the comment.
+      try { enqueue(queuePath, wakeup, { hqRoot: hq }); notified.push(wakeup.actorId); }
+      catch { /* the thread is the record; the wakeup is a hint */ }
+    }
+  }
+
+  return {
+    accepted: result.accepted,
+    duplicate: result.duplicate,
+    interactionId: result.interaction.interactionId,
+    mentions: result.interaction.mentions,
+    notified,
+    redactions: result.interaction.redactions,
+  };
 }
