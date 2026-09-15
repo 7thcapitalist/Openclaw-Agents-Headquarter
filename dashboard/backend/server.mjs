@@ -1781,6 +1781,15 @@ app.use((err, req, res, next) => {
   next(err);
 });
 
+// The founder-facing vocabulary is ONE physical file, shared with the hosted
+// console rather than copied into it. Vercel serves it from control-plane/public/;
+// this maps the same path on disk into the local dashboard's module space. A
+// copy kept in step by discipline is how the two consoles came to disagree —
+// the local one said "Shaping the outcome" while the hosted one said "product".
+app.get("/lib/stage-vocabulary.mjs", (req, res) => {
+  res.type("text/javascript").sendFile(join(ROOT, "control-plane", "public", "stage-vocabulary.mjs"));
+});
+
 app.use(express.static(join(__dirname, "public")));
 
 app.get("/", (_req, res) => {
