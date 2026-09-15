@@ -12,7 +12,7 @@
 
 import { answerableDecisions, freshness, intentsPanel, panelsFor, statsFrom } from "/render.mjs";
 import { renderHome } from "/home.mjs";
-import { renderAgents, renderBoard, renderDeliveries, renderProjects } from "/views.mjs";
+import { renderAgents, renderBoard, renderDeliveries, renderNext, renderProjects } from "/views.mjs";
 import { renderMoney } from "/money.mjs";
 import { renderCommandCenter } from "/command-center.mjs";
 import { renderTaskDetail } from "/task-detail.mjs";
@@ -296,6 +296,7 @@ let boardStalledOnly = false;
 const TABS = [
   ["today", "Today"],
   ["board", "Board"],
+  ["next", "Next"],
   ["deliveries", "Deliveries"],
   ["money", "Money"],
   ["projects", "Projects"],
@@ -372,9 +373,24 @@ function drawHome(snapshot) {
     } else if (activeTab === "money") {
       renderMoney(els.view, snapshot);
     } else if (activeTab === "deliveries") {
-      // onAccept is deliberately null until Launch is wired: a button that
-      // cannot start work must not be offered.
-      renderDeliveries(els.view, snapshot, { onTask: openTask, onAccept: null, intentStateFor });
+      renderDeliveries(els.view, snapshot, { onTask: openTask });
+    } else if (activeTab === "next") {
+      // Two choices, never an automatic start. `objective.start` and
+      // `overnight.add` are both wired, so both buttons can actually complete —
+      // which is what removed the `onAccept: null` that used to sit here.
+      renderNext(els.view, snapshot, {
+        intentStateFor,
+        onStart: (proposal, button, key) => submitIntent(
+          "objective.start",
+          { objective: proposal.title, projectId: proposal.projectId },
+          button, key,
+        ),
+        onQueue: (proposal, button, key) => submitIntent(
+          "overnight.add",
+          { objective: proposal.title, projectId: proposal.projectId },
+          button, key,
+        ),
+      });
     }
     return;
   }

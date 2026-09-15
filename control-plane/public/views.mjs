@@ -220,7 +220,7 @@ const FINISHED = new Set(["merged", "complete", "completed", "merge-ready"]);
  * machine and report-only here: it is a suggestion the founder accepts, never
  * something the factory has already decided.
  */
-export function renderDeliveries(root, snapshot, { onTask = () => {}, onAccept = null, intentStateFor = () => null } = {}) {
+export function renderDeliveries(root, snapshot, { onTask = () => {} } = {}) {
   root.replaceChildren();
   const ops = unavailable(snapshot?.panels?.operations) ? null : snapshot.panels.operations;
   const costByTask = ops?.costs?.byTask || {};
@@ -244,15 +244,6 @@ export function renderDeliveries(root, snapshot, { onTask = () => {}, onAccept =
     }
   }
 
-  // The proposer's next steps, accepted in one click.
-  const proposals = unavailable(snapshot?.panels?.proposals) ? null : snapshot.panels.proposals;
-  const items = list(proposals?.proposals);
-  if (items.length) {
-    root.append(el("h2", "home-heading", "Suggested next"));
-    const wrap = el("div", "home-cards");
-    for (const proposal of items) wrap.append(proposalCard(proposal, onAccept, intentStateFor));
-    root.append(wrap);
-  }
 }
 
 function deliveryCard(task, cost, onTask) {
@@ -278,7 +269,7 @@ function deliveryCard(task, cost, onTask) {
   return card;
 }
 
-function proposalCard(proposal, onAccept, intentStateFor) {
+function proposalCard(proposal, { onStart, onQueue, intentStateFor }) {
   const card = el("article", "home-card home-card--decision");
   const head = el("div", "home-card-head");
   head.append(el("span", "home-chip home-chip--decision", `Suggestion ${proposal.rank ?? ""}`.trim()));
@@ -291,18 +282,35 @@ function proposalCard(proposal, onAccept, intentStateFor) {
   const state = intentStateFor(key);
   if (state) { card.append(intentStatus(state)); return card; }
 
-  if (onAccept) {
-    const actions = el("div", "home-actions");
-    const accept = el("button", "home-option", "Start this");
-    accept.type = "button";
-    accept.addEventListener("click", () => onAccept(proposal, accept, key));
-    actions.append(accept);
-    card.append(actions);
-  } else {
-    // Report-only until Launch exists: say so rather than offering a button
-    // that cannot do anything.
+  // A proposal is aimed at a goal, and a goal may sit above the projects rather
+  // than inside one. With no project there is nowhere to send the work, so the
+  // card says that instead of offering a button that would be refused.
+  if (!proposal.projectId) {
     card.append(el("p", "home-meta home-meta--dim",
-      "Read-only for now — starting work from the console is not wired yet."));
+      "This sits above any single project, so it has no repository to run in. "
+      + "Start it from the command center on Today, aimed at the project you mean."));
+    return card;
+  }
+
+  if (onStart || onQueue) {
+    const actions = el("div", "home-actions");
+    // Two explicit choices, never an automatic start. The proposer proposes;
+    // the founder disposes. The local dashboard deliberately has no write route
+    // for proposals for exactly this reason, and that property is preserved by
+    // making acceptance a click with a stated consequence.
+    if (onStart) {
+      const now = el("button", "home-option", "Start it now");
+      now.type = "button";
+      now.addEventListener("click", () => onStart(proposal, now, key));
+      actions.append(now);
+    }
+    if (onQueue) {
+      const tonight = el("button", "home-option home-option--quiet", "Add it to tonight");
+      tonight.type = "button";
+      tonight.addEventListener("click", () => onQueue(proposal, tonight, key));
+      actions.append(tonight);
+    }
+    card.append(actions);
   }
   return card;
 }
@@ -311,4 +319,131 @@ function extLink(href, label) {
   const a = el("a", "home-link", label);
   a.href = href; a.target = "_blank"; a.rel = "noreferrer";
   return a;
+}
+
+// ── Next ─────────────────────────────────────────────────────────────────────
+//
+// What the factory suggests doing, and the direction that suggestion serves.
+// These were two separate absences: proposals were rendered at the bottom of
+// Deliveries under a card that said starting work was not wired, and the goals
+// panel — published every cycle — was rendered nowhere at all.
+//
+// The framing stays "ranked from canonical state; nothing here starts on its
+// own". That is true, and it is what makes the tab safe to leave open.
+
+/**
+ * The goals roll-up: the one-line answer to "are we getting anywhere".
+ *
+ * Reads `summary` when the machine published one and derives it from the goal
+ * tree otherwise, so a mirror from an older publisher still says something.
+ */
+export function goalsRollup(panels) {
+  const goals = panels?.goals;
+  // A panel the machine never sent and a panel whose builder threw are
+  // different facts. `unavailable()` answers "no data published" for both, so
+  // the absent case is named here before asking it.
+  if (!goals) {
+    return { available: false, reason: "No goals have been published yet." };
+  }
+  // Asked before `unavailable()`, which owns the `configured === false` case
+  // and would answer it with a bare "not configured". Here there is something
+  // truer to say. Same ordering, and the same reason for it, as `budgetModel`
+  // in money.mjs.
+  if (!goals.unavailable && goals.configured === false) {
+    return {
+      available: false,
+      // An empty gauge reads as broken; this reads as true.
+      reason: "No goals are registered yet, so there is no direction to measure against.",
+    };
+  }
+  const reason = unavailable(goals);
+  if (reason) {
+    return { available: false, reason: `The goals panel is unavailable: ${reason}.` };
+  }
+
+  const summary = goals.summary || {};
+  const roots = list(goals.roots).length ? list(goals.roots) : list(goals.goals);
+  const total = num(summary.total);
+
+  return {
+    available: true,
+    state: text(summary.state, "unknown"),
+    percent: num(summary.percent),
+    total,
+    complete: num(summary.complete),
+    blocked: num(summary.blocked),
+    active: num(summary.active),
+    // "23 tracked units" is the tunnel's phrasing and the founder's.
+    line: total
+      ? `${num(summary.complete)} of ${total} tracked units complete`
+        + ` · ${num(summary.blocked)} blocked`
+        + ` · ${num(summary.active)} in flight`
+      : "Nothing is tracked under these goals yet.",
+    roots: roots.map((goal) => ({
+      id: text(goal.id, null),
+      title: text(goal.title, "Untitled goal"),
+      level: text(goal.level, ""),
+      projectId: text(goal.projectId, null),
+      percent: num(goal.progress?.percent),
+      state: text(goal.progress?.state, "unknown"),
+      blocked: num(goal.progress?.blocked),
+      total: num(goal.progress?.total),
+    })),
+  };
+}
+
+export function renderNext(root, snapshot, {
+  onStart = null, onQueue = null, intentStateFor = () => null,
+} = {}) {
+  root.replaceChildren();
+
+  const proposals = unavailable(snapshot?.panels?.proposals) ? null : snapshot.panels.proposals;
+  const items = list(proposals?.proposals);
+
+  root.append(el("p", "view-lede",
+    "Ranked from canonical state. Nothing here starts on its own — you choose what runs, and when."));
+
+  if (items.length) {
+    const wrap = el("div", "home-cards");
+    for (const proposal of items) wrap.append(proposalCard(proposal, { onStart, onQueue, intentStateFor }));
+    root.append(wrap);
+  } else {
+    const reason = unavailable(snapshot?.panels?.proposals);
+    root.append(el("p", "home-calm", reason
+      ? `The factory has not published suggestions: ${reason}`
+      : "The factory has nothing to suggest right now."));
+  }
+
+  // The direction those suggestions serve.
+  const goals = goalsRollup(snapshot?.panels || {});
+  root.append(el("h2", "home-heading", "Where this is going"));
+
+  if (!goals.available) {
+    root.append(el("p", "home-calm home-calm--small", goals.reason));
+    return;
+  }
+
+  root.append(el("p", "home-meta", goals.line));
+
+  if (goals.roots.length) {
+    const listEl = el("ul", "home-list");
+    for (const goal of goals.roots) listEl.append(goalRow(goal));
+    root.append(listEl);
+  }
+}
+
+function goalRow(goal) {
+  const row = el("li", "home-row");
+  const tone = goal.state === "blocked" ? "bad" : goal.state === "complete" ? "good" : "warn";
+  row.append(el("span", `home-dot home-dot--${tone}`));
+
+  const main = el("div", "home-row-body");
+  main.append(el("strong", null, goal.title));
+  const bits = [`${goal.percent}%`];
+  if (goal.total) bits.push(`${goal.total} tracked`);
+  if (goal.blocked) bits.push(`${goal.blocked} blocked`);
+  if (goal.projectId) bits.push(goal.projectId);
+  main.append(el("span", "home-meta home-meta--dim", bits.join(" · ")));
+  row.append(main);
+  return row;
 }

@@ -318,12 +318,19 @@ export function goalsPanel(panels) {
   const reason = unavailable(goals);
   if (reason) return { title: "Goals", note: reason, rows: [] };
 
-  const rows = list(goals.goals).map((goal) => ({
-    primary: text(goal.title || goal.name, "goal"),
-    secondary: text(goal.project || goal.parent, ""),
-    meta: `${num(goal.percent)}%`,
-    tone: goal.blocked ? "bad" : num(goal.percent) >= 100 ? "good" : "muted",
-  }));
+  // Progress lives under `progress`, not on the goal itself. Reading
+  // `goal.percent` gave `num(undefined)` — 0 — so every goal in this fold
+  // reported 0% regardless of its real state.
+  const rows = list(goals.goals).map((goal) => {
+    const percent = num(goal.progress?.percent);
+    const state = text(goal.progress?.state, "");
+    return {
+      primary: text(goal.title || goal.name, "goal"),
+      secondary: text(goal.projectId || goal.project || goal.parent, ""),
+      meta: `${percent}%`,
+      tone: state === "blocked" ? "bad" : percent >= 100 || state === "complete" ? "good" : "muted",
+    };
+  });
 
   return { title: "Goals", note: rows.length ? null : "no goals configured", rows };
 }
