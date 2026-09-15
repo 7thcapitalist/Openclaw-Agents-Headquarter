@@ -12,7 +12,7 @@
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { readState, writeState, resumeState } from "../task-workflow.mjs";
-import { runToTerminal, executeOpenClaw } from "../openclaw-runner.mjs";
+import { runToTerminal, executeOpenClaw, recordRunnerCrash } from "../openclaw-runner.mjs";
 import { classifyBlocker } from "./blocker-class.mjs";
 
 function walkStateFiles(dir, out = []) {
@@ -164,9 +164,18 @@ export async function retryStuckTasks({
       retried.push({ taskId: state.task?.id, stage: revived.currentStage, attempt: revived.autoRetries, status: res.status, reason });
       log(`[auto-retry] ${state.task?.id}: now ${res.status}`);
     } catch (error) {
+      // Settle the task BEFORE reconciling, so the objective node projection
+      // reads the blocker rather than the still-`active` state it died in.
+      //
+      // Recording the error in `retried[]` is not enough on its own: the sweep
+      // had just written a fresh `updatedAt`, so an unsettled task looked
+      // freshly touched and was picked up again on the next pass to fail
+      // identically — and once the retry budget ran out, skipped in silence
+      // from then on. Nothing ever reached the founder.
+      recordRunnerCrash({ statePath, error, now: now() });
       try { reconcileObjectiveNode(stateRoot, statePath, readState(statePath), now()); } catch { /* projection repair is best effort */ }
-      retried.push({ taskId: state.task?.id, stage: revived.currentStage, attempt: revived.autoRetries, error: String(error.message || error), reason });
-      log(`[auto-retry] ${state.task?.id}: threw ${error.message || error}`);
+      retried.push({ taskId: state.task?.id, stage: revived.currentStage, attempt: revived.autoRetries, error: String(error.message || error), reason, settled: "blocked" });
+      log(`[auto-retry] ${state.task?.id}: threw ${error.message || error} — task blocked for the founder`);
     }
   }
 
