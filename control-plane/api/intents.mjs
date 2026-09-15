@@ -87,7 +87,7 @@ export default async function handler(req, res) {
         return sendJson(res, 422, { error: "status must be done, failed or rejected" });
       }
 
-      const record = await report(id, { status, detail: body?.detail ?? null });
+      const record = await report(id, { status, detail: body?.detail ?? null, kind: body?.kind ?? null, args: body?.args ?? null });
       return sendJson(res, 200, record);
     }
 

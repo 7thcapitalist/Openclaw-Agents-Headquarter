@@ -60,7 +60,16 @@ export async function executeIntent(intent, handlers = {}) {
   // chain and be called. The allowlist check above already excludes those, and
   // this is the second lock on the same door.
   if (!Object.prototype.hasOwnProperty.call(handlers, intent.kind)) {
-    return { status: "failed", detail: `no handler registered for ${intent.kind}` };
+    // `rejected`, not `failed`. The two mean different things to a reader: this
+    // machine did not try and fail, it will not do this at all — twelve kinds
+    // are allowlisted and only some are wired. A console that offers an
+    // unhandled kind must show the founder why nothing happened rather than
+    // leaving a request that dies quietly.
+    return {
+      status: "rejected",
+      detail: `"${intent.kind}" is allowlisted but not handled on this machine — nothing was run. `
+        + "It has to be wired in scripts/hq-intents.mjs before the button can work.",
+    };
   }
 
   const handler = handlers[intent.kind];
