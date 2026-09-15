@@ -11,6 +11,7 @@
 // is the DOM and the fetching.
 
 import { answerableDecisions, freshness, intentsPanel, panelsFor, statsFrom } from "/render.mjs";
+import { renderHome } from "/home.mjs";
 
 const TIMEOUT_MS = 12_000;
 
@@ -33,6 +34,7 @@ const els = {
   title: document.getElementById("state-title"),
   body: document.getElementById("state-body"),
   mirror: document.getElementById("mirror"),
+  home: document.getElementById("home"),
   staleBanner: document.getElementById("stale-banner"),
   stats: document.getElementById("stats"),
   panels: document.getElementById("panels"),
@@ -119,28 +121,89 @@ function renderPanels(panels) {
 // Asking is not doing. The button reports that the request was QUEUED, because
 // the machine executes it on its next poll — up to one interval later. Saying
 // "done" here would be the one lie this topology makes easy to tell.
-async function submitIntent(kind, args, button) {
-  const original = button.textContent;
-  button.disabled = true;
-  button.textContent = "Queueing…";
+// What the founder asked for, and what became of it.
+//
+// Keyed by the thing acted on, not by intent id, so a card can find its own
+// pending state on every re-render. This is module state rather than DOM state
+// because Home re-renders wholesale on each publish, and a label written onto a
+// button is erased by the next paint — which is exactly what "I clicked and
+// nothing happened" was: a 4-second "Queued" that reverted, on a card that
+// never changed.
+const pendingIntents = new Map();
+
+export function intentStateFor(key) {
+  return pendingIntents.get(key) || null;
+}
+
+async function submitIntent(kind, args, button, key = null) {
+  const track = key || `${kind}:${JSON.stringify(args)}`;
+  // One click, one intent. Two identical decision.resolve intents were enqueued
+  // 239ms apart on 2026-09-15 and both failed; a second press must not queue a
+  // second request.
+  if (pendingIntents.get(track)?.state === "queued") return;
+
+  pendingIntents.set(track, { state: "queued", kind, at: Date.now(), detail: null });
+  if (button) { button.disabled = true; button.textContent = "Sending…"; }
+  redrawHome();
+
   try {
     const response = await request("/api/intents", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ kind, args }),
     });
-    if (response.status === 401) return showSignIn("That session has expired. Sign in again.");
-    button.textContent = response.ok ? "Queued" : "Could not queue";
-    if (response.ok) await loadIntents();
+    if (response.status === 401) { pendingIntents.delete(track); return showSignIn("That session has expired. Sign in again."); }
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      pendingIntents.set(track, { state: "failed", kind, at: Date.now(), detail: body?.error || `the control plane answered ${response.status}` });
+      redrawHome();
+      return;
+    }
+    const body = await response.json().catch(() => ({}));
+    pendingIntents.set(track, { state: "waiting", kind, at: Date.now(), id: body?.id || null, detail: null });
+    redrawHome();
+    watchIntent(track, body?.id);
   } catch {
-    button.textContent = "Could not queue";
-  } finally {
-    setTimeout(() => {
-      button.disabled = false;
-      button.textContent = original;
-    }, 4000);
+    pendingIntents.set(track, { state: "failed", kind, at: Date.now(), detail: "the control plane could not be reached" });
+    redrawHome();
   }
 }
+
+// Poll the queue for what the machine decided. The worker claims on its own
+// cadence, so this is honest waiting rather than a fake success.
+async function watchIntent(track, id) {
+  if (!id) return;
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    await new Promise((r) => setTimeout(r, 5000));
+    let results;
+    try {
+      const response = await request("/api/intents");
+      if (!response.ok) continue;
+      ({ results } = await response.json());
+    } catch { continue; }
+    const hit = (results || []).find((r) => r.id === id);
+    if (!hit) continue;
+    pendingIntents.set(track, {
+      state: hit.status === "done" ? "done" : "failed",
+      kind: hit.kind || null,
+      at: Date.now(),
+      detail: hit.detail || null,
+    });
+    redrawHome();
+    if (hit.status === "done") await loadMirror();
+    return;
+  }
+  const current = pendingIntents.get(track);
+  if (current) pendingIntents.set(track, { ...current, state: "slow" });
+  redrawHome();
+}
+
+function redrawHome() {
+  if (lastSnapshot) {
+    try { drawHome(lastSnapshot); } catch { /* a redraw must never take the page down */ }
+  }
+}
+
 
 function renderDecisions(decisions) {
   if (!decisions.length) return null;
@@ -207,6 +270,20 @@ async function loadIntents() {
   }
 }
 
+// The last snapshot drawn, so a pending intent can repaint Home without
+// refetching. Home is re-rendered wholesale, so anything written onto the DOM
+// by a click is erased by the next paint unless it lives here.
+let lastSnapshot = null;
+
+function drawHome(snapshot) {
+  lastSnapshot = snapshot;
+  renderHome(els.home, snapshot, {
+    intentStateFor,
+    onAnswer: (decision, choice, button) =>
+      submitIntent("decision.resolve", { decisionId: decision.id, choice }, button, `decision:${decision.id}`),
+  });
+}
+
 function renderMirror(snapshot) {
   const age = freshness(snapshot?.publishedAt);
   view("mirror");
@@ -221,6 +298,11 @@ function renderMirror(snapshot) {
       ? "This snapshot does not say when it was published. Treat everything below as of unknown age."
       : `This snapshot is ${age.label}. The factory machine may be offline, or the publisher stopped — everything below is as of then, not now.`;
   }
+
+  // Home first, and on its own terms. Everything the other four views will
+  // eventually show stays below it, so nothing is lost while Home is the only
+  // view that has been designed.
+  drawHome(snapshot);
 
   renderStats(statsFrom(snapshot?.panels));
   renderPanels(panelsFor(snapshot));
@@ -310,10 +392,16 @@ els.signinForm.addEventListener("submit", async (event) => {
       startPolling();
       return;
     }
+    // 503 is the control plane saying a credential is not configured on the
+    // SERVER. Reporting that as "that password was not accepted" sends the
+    // founder hunting for a typo in a password that was never going to be
+    // checked. Say what is actually wrong.
     showSignIn(
-      response.status === 429
-        ? "Too many attempts. Wait a minute and try again."
-        : "That password was not accepted.",
+      response.status === 503
+        ? "This deployment is missing HQ_VIEW_PASSWORD or HQ_SESSION_SECRET. Nothing typed here can work until they are set."
+        : response.status === 429
+          ? "Too many attempts. Wait a minute and try again."
+          : "That password was not accepted.",
     );
   } catch {
     showSignIn("Could not reach the control plane.");
@@ -337,6 +425,16 @@ els.refresh.addEventListener("click", () => loadMirror());
 async function main() {
   try {
     const response = await request("/api/session");
+    // The same defect on the boot path: an unconfigured deployment answered 503
+    // and fell through to the sign-in form, making a server misconfiguration
+    // indistinguishable from "please log in".
+    if (response.status === 503) {
+      return showState({
+        eyebrow: "Not configured",
+        title: "This deployment is missing a credential.",
+        body: "HQ_VIEW_PASSWORD and HQ_SESSION_SECRET must be set on the deployment before anyone can sign in. The factory machine is unaffected.",
+      });
+    }
     const { authenticated } = await response.json();
     if (authenticated) {
       await loadMirror();

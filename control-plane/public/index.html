@@ -47,9 +47,15 @@
 
       <!-- The mirror itself. -->
       <div id="mirror" hidden>
-        <div class="stale-banner" id="stale-banner" hidden></div>
-        <section class="stat-row" id="stats"></section>
-        <div class="panel-grid" id="panels"></div>
+        <!-- Home. The only view designed so far; everything else sits below it. -->
+        <section class="home" id="home"></section>
+
+        <details class="everything-else">
+          <summary>Everything else</summary>
+          <div class="stale-banner" id="stale-banner" hidden></div>
+          <section class="stat-row" id="stats"></section>
+          <div class="panel-grid" id="panels"></div>
+        </details>
       </div>
     </main>
 

@@ -1,3 +1,4 @@
+import { STAGE_LABEL } from "/lib/stage-vocabulary.mjs";
 import * as objectiveRecovery from "/lib/objectiveRecovery.mjs";
 import * as founderApproval from "/lib/founderApproval.mjs";
 import * as objectiveView from "/lib/objectiveView.mjs";
@@ -864,7 +865,9 @@ import { permissionsPanel } from "/lib/permissionsView.mjs";
   function renderExecutionView(x, thread, timeline) {
     const blocked = x.blocker || null;
     const events = (x.events || []).slice().reverse();
-    const stageLabel = { product: "Shaping the outcome", architect: "Designing the approach", builder: "Building", reviewer: "Independent review", qa: "Quality check", security: "Security check", release: "Preparing delivery" };
+    // From the shared vocabulary, not a local copy: the hosted console renders
+    // the same words from the same file. See control-plane/public/stage-vocabulary.mjs.
+    const stageLabel = STAGE_LABEL;
     const humanStatus = { working: "working", completed: "complete", blocked: "needs attention", failed: "stopped", pending: "waiting" };
     const title = objectiveView.shortObjectiveTitle(x.title || x.objective || "Objective");
     return `<div class="operation-room"><header class="operation-header"><div><span class="eyebrow">${esc(x.project || "Factory")} · live operation</span><h2>${esc(title)}</h2><p>${esc(x.currentActivity || (blocked ? "The team is waiting for a decision." : "The team is coordinating the next move."))}</p></div><div class="operation-stat"><strong>${x.elapsedMs != null ? esc(fmtDuration(x.elapsedMs)) : "—"}</strong><span>in motion</span></div></header>
