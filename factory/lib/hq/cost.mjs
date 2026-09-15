@@ -57,21 +57,32 @@ export function priceUsage(usage, pricing) {
       durationMs: record.durationMs ?? null,
       inputUsdPerMillion: null,
       outputUsdPerMillion: null,
+      cachedInputUsdPerMillion: null,
       costUsd: null,
       pricingSource: "unknown-model",
       pricingLabel: pricing?.unknownModel?.label || "unpriced",
     };
   }
-  const costUsd = ((record.tokensIn * resolved.inputUsdPerMillion) + (record.tokensOut * resolved.outputUsdPerMillion)) / 1_000_000;
+  // Cached input is a separate, much cheaper rate on every provider that
+  // offers it. When the pricing table carries one, bill the cached portion at
+  // it; otherwise fold it into the input rate exactly as before. Callers that
+  // never pass `cachedTokensIn` are unaffected either way.
+  const cachedTokensIn = record.cachedTokensIn ?? 0;
+  const cachedRate = resolved.cachedInputUsdPerMillion;
+  const freshTokensIn = cachedRate == null ? record.tokensIn + cachedTokensIn : record.tokensIn;
+  const cachedCost = cachedRate == null ? 0 : cachedTokensIn * cachedRate;
+  const costUsd = ((freshTokensIn * resolved.inputUsdPerMillion) + cachedCost + (record.tokensOut * resolved.outputUsdPerMillion)) / 1_000_000;
   return {
     provider: record.provider,
     model: record.model,
     pricingKey: resolved.pricingKey,
     tokensIn: record.tokensIn,
     tokensOut: record.tokensOut,
+    cachedTokensIn,
     durationMs: record.durationMs ?? null,
     inputUsdPerMillion: resolved.inputUsdPerMillion,
     outputUsdPerMillion: resolved.outputUsdPerMillion,
+    cachedInputUsdPerMillion: cachedRate,
     costUsd,
     pricingSource: "pricing-file",
     pricingLabel: resolved.label,
@@ -87,11 +98,16 @@ export function priceUsage(usage, pricing) {
  * events in one panel and 85,068 with 2 in another. Same source, same function,
  * one answer.
  *
- * Cached input is priced at the input rate. factory/pricing.json carries no
- * cache-specific rates, and inventing them here would be the "build a second
- * pricer" mistake — so this is explicitly an approximation, marked `calculated`
- * rather than `provider-reported`, and it is still enormously closer than
- * ignoring a 162k-token context entirely.
+ * Cached input is priced at its own rate when factory/pricing.json carries one
+ * for the model, and at the full input rate when it does not. That fallback is
+ * the old behaviour, kept deliberately: a model whose cache rate nobody has
+ * looked up must not silently get a cheaper bill than it earns. Either way the
+ * result is marked `calculated` rather than `provider-reported`.
+ *
+ * This matters more than it looks. The factory's real traffic is ~99% cached
+ * input — a reviewer re-reading the same context on every turn — so billing
+ * the cached portion at the full input rate overstates those stages by close
+ * to an order of magnitude.
  *
  * An event with no price stays null and is marked `unpriced`. It is never
  * zeroed: a missing price must not read as free.
@@ -101,11 +117,11 @@ export function priceCostEvents(events, pricing) {
   let stillUnpriced = 0;
   const priced = (events || []).map((event) => {
     if (event.costMicros != null) return event;
-    const billableInput = (event.inputTokens || 0) + (event.cachedInputTokens || 0);
     const quote = priceUsage({
       provider: event.provider,
       model: event.model,
-      tokensIn: billableInput,
+      tokensIn: event.inputTokens || 0,
+      cachedTokensIn: event.cachedInputTokens || 0,
       tokensOut: event.outputTokens,
     }, pricing);
     if (!quote || quote.costUsd == null) {
@@ -244,6 +260,8 @@ function sanitizeUsage(usage) {
   const tokensOut = intOrNull(source.tokensOut);
   if (!provider || !model || tokensIn == null || tokensOut == null) return null;
   const record = { provider, model, tokensIn, tokensOut };
+  const cachedTokensIn = intOrNull(source.cachedTokensIn);
+  if (cachedTokensIn != null) record.cachedTokensIn = cachedTokensIn;
   const durationMs = intOrNull(source.durationMs);
   if (durationMs != null) record.durationMs = durationMs;
   return record;
@@ -261,11 +279,17 @@ function resolvePricingEntry(usage, pricing) {
     const inputUsdPerMillion = numberOrNull(resolved.inputUsdPerMillion ?? resolved.inputUsd ?? resolved.input);
     const outputUsdPerMillion = numberOrNull(resolved.outputUsdPerMillion ?? resolved.outputUsd ?? resolved.output);
     if (inputUsdPerMillion == null || outputUsdPerMillion == null) continue;
+    // Optional. A model without a cache rate keeps the old behaviour: cached
+    // input is billed at the full input rate.
+    const cachedInputUsdPerMillion = numberOrNull(
+      resolved.cachedInputUsdPerMillion ?? resolved.cachedInputUsd ?? resolved.cachedInput,
+    );
     return {
       pricingKey: candidate.trim(),
       label: stringOrNull(resolved.label) || candidate.trim(),
       inputUsdPerMillion,
       outputUsdPerMillion,
+      cachedInputUsdPerMillion,
     };
   }
   return null;
