@@ -73,9 +73,13 @@ async function call(path, { method = "GET", body = null } = {}) {
 // Imported lazily, and from dashboard/backend/lib, because these are the same
 // entry points the local dashboard uses. Loading them at module scope would
 // make `peek` — which executes nothing — drag in the whole dashboard.
-async function handlers() {
+export async function handlers() {
   const control = await import("../dashboard/backend/lib/founderControlPlane.mjs");
+  const overnight = await import("../dashboard/backend/lib/overnightQueue.mjs");
 
+  // Every handler returns a sentence the console can show the founder. The
+  // return value IS the acknowledgement — there is no second channel — so a
+  // handler that cannot say what it did has not finished doing it.
   return {
     "task.retry": async ({ taskId }) => {
       const statePath = control.findTaskStatePath(hqRoot, taskId);
@@ -98,6 +102,61 @@ async function handlers() {
       if (!statePath) throw new Error(`no such task: ${taskId}`);
       control.resolveFounderDecision({ root: hqRoot, hqRoot, statePath, direction: choice });
       return `recorded decision on ${taskId}`;
+    },
+
+    // Start an outcome from the console. `handleObjectiveStart` awaits planning
+    // and detaches the pipeline — see the comment on that function for why the
+    // line is drawn there rather than around the whole run.
+    "objective.start": async ({ objective, projectId }) => {
+      const { decomposeObjective } = await import("../factory/lib/objective/decompose.mjs");
+      const { runObjective } = await import("../factory/lib/objective/orchestrator.mjs");
+      const result = await control.handleObjectiveStart({
+        root: hqRoot, hqRoot, objective, projectId,
+        decompose: decomposeObjective, runObjective,
+      });
+      if (result.blocked) {
+        return `planned ${result.objectiveId}, then blocked: ${result.nodeCount} high-risk node(s) `
+          + "need the founder approval key before anything runs.";
+      }
+      return `started ${result.objectiveId}: ${result.nodeCount} node(s) planned and running`;
+    },
+
+    // The overnight plan. `repo` is resolved here rather than accepted as an
+    // argument: the allowlist declares only `objective` and `projectId`, and a
+    // path arriving from the network is exactly what the protocol forbids.
+    "overnight.add": async ({ objective, projectId }) => {
+      const project = String(projectId || "").trim();
+      const repo = control.resolveProjectRepo(hqRoot, project);
+      if (!repo) throw new Error(`no repository is registered for project "${project}"`);
+      const state = overnight.addOvernightItem(hqRoot, { objective, projectId: project, repo });
+      return `added to tonight's plan: ${state.items.length} of ${overnight.overnightLimit} objective(s) queued`;
+    },
+
+    "overnight.remove": async ({ itemId }) => {
+      const before = overnight.readOvernightQueue(hqRoot).items.length;
+      const state = overnight.removeOvernightItem(hqRoot, String(itemId || ""));
+      if (state.items.length === before) throw new Error(`no such overnight item: ${itemId}`);
+      return `removed from tonight's plan: ${state.items.length} objective(s) left`;
+    },
+
+    // startOvernight spawns the objective workers as children of whichever
+    // process calls it — here, the intent worker rather than the dashboard.
+    // That is safe in both directions: the shared `status === "running"` guard
+    // in the queue state stops a second runner starting, and `stopOvernight`
+    // signals through that same state rather than through a process handle.
+    "overnight.start": async () => {
+      const scriptPath = resolve(hqRoot, "scripts", "factory-objective.mjs");
+      const state = overnight.startOvernight(hqRoot, { scriptPath });
+      const queued = state.items.filter((item) => item.status === "queued").length;
+      return `overnight run started: ${state.items.length} objective(s) in the plan, ${queued} still queued`;
+    },
+
+    "overnight.stop": async () => {
+      const state = overnight.stopOvernight(hqRoot);
+      if (state.status !== "stopped" && !state.stopRequested) return "nothing to stop — no overnight run is going";
+      // The runner checks the flag between objectives, so the one in flight
+      // finishes. Say that, rather than implying it died mid-build.
+      return "overnight run will stop after the objective now in flight finishes";
     },
   };
 }
@@ -172,16 +231,24 @@ async function loop() {
   }
 }
 
-const mode = process.argv[2] || "once";
-try {
-  if (mode === "once") await once();
-  else if (mode === "loop") await loop();
-  else if (mode === "peek") await peek();
-  else {
-    console.error(`unknown mode: ${mode}. Use once, loop or peek.`);
-    process.exitCode = 2;
+// Run only when invoked as a command. Without this guard, importing the module
+// to inspect the handler map — which is exactly what the wiring test does —
+// would start polling the control plane as a side effect of the import.
+const invokedDirectly = process.argv[1]
+  && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+
+if (invokedDirectly) {
+  const mode = process.argv[2] || "once";
+  try {
+    if (mode === "once") await once();
+    else if (mode === "loop") await loop();
+    else if (mode === "peek") await peek();
+    else {
+      console.error(`unknown mode: ${mode}. Use once, loop or peek.`);
+      process.exitCode = 2;
+    }
+  } catch (error) {
+    console.error(`intent poller error: ${String(error?.message || error).slice(0, 300)}`);
+    process.exitCode = 1;
   }
-} catch (error) {
-  console.error(`intent poller error: ${String(error?.message || error).slice(0, 300)}`);
-  process.exitCode = 1;
 }
