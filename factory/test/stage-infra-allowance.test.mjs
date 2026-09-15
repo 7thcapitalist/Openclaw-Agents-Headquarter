@@ -24,7 +24,9 @@ function state(dispatches, stage = "builder") {
 
 test("attempts are split by whether the stage actually returned a verdict", () => {
   const s = state([verdict("builder"), lost("builder"), lost("builder"), verdict("reviewer")]);
-  assert.deepEqual(countStageAttempts(s, "builder"), { verdicts: 1, infra: 2, total: 3 });
+  // `passes` joined the shape when successes stopped being charged to the
+  // rejection budget; `verdict()` defaults to `fail`, so it is 0 here.
+  assert.deepEqual(countStageAttempts(s, "builder"), { verdicts: 1, infra: 2, passes: 0, total: 3 });
   // Recovery dispatches carry the stage name but are a different job.
   const withRecovery = state([verdict("builder"), { stage: "builder", kind: "recovery-diagnose", outcome: "pass" }]);
   assert.equal(countStageAttempts(withRecovery, "builder").total, 1);

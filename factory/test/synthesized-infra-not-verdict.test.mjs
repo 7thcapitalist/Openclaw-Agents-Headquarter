@@ -2,6 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { countStageAttempts, stageBudgetExceeded } from "../lib/task-workflow.mjs";
 
+// `passes` joined the returned shape when the rejection budget stopped charging
+// successes (see stage-budget-counts-rejections.test.mjs). Both scenarios below
+// are all-`fail`, so it is 0 in each and every other count is unchanged.
+
 // The concurrent review fan-out must write a real `fail` result for a member
 // whose agent could not start, because the engine routes on an outcome. That
 // makes an infrastructure failure look identical to a review rejection in the
@@ -22,14 +26,14 @@ const rejected = () => ({
 
 test("a synthesized could-not-run result is not counted as a rejection", () => {
   const state = { dispatches: [cliFailed(), cliFailed(), cliFailed()] };
-  assert.deepEqual(countStageAttempts(state, "reviewer"), { verdicts: 0, infra: 3, total: 3 });
+  assert.deepEqual(countStageAttempts(state, "reviewer"), { verdicts: 0, infra: 3, passes: 0, total: 3 });
   assert.equal(stageBudgetExceeded(state, "reviewer", { maxAttemptsPerStage: 3 }).exceeded, null);
 });
 
 test("real rejections still spend the rejection budget alongside them", () => {
   const state = { dispatches: [cliFailed(), rejected(), cliFailed(), rejected(), rejected()] };
   const counted = countStageAttempts(state, "reviewer");
-  assert.deepEqual(counted, { verdicts: 3, infra: 2, total: 5 });
+  assert.deepEqual(counted, { verdicts: 3, infra: 2, passes: 0, total: 5 });
   assert.equal(stageBudgetExceeded(state, "reviewer", { maxAttemptsPerStage: 3 }).exceeded, "verdicts");
 });
 

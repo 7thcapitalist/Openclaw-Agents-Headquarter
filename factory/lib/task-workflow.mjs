@@ -399,33 +399,51 @@ export const DEFAULT_MAX_INFRA_ATTEMPTS = 6;
 // Both kinds still have to be bounded — an unreachable route must not retry
 // forever — so they are counted separately against separate allowances rather
 // than one of them being made free.
+// A SUCCESS is not a rejection, and must not be charged to the rejection
+// budget. This is the whole of lifemaxing obj-d4e18cad: the builder's four
+// stage dispatches were fail, pass, pass, and one with no outcome at all, and
+// the two passes were counted as verdicts against it. The task escalated on
+// "builder has returned 3 verdict(s) of 3 allowed" off ONE genuine rejection,
+// at the exact moment its work had been verified green — recovery had just
+// committed the missing test and passed the full gate. Node 2 of
+// FACTORY_GATE_INTEGRITY_2026.
+//
+// Passes are still counted and returned. They are not free and they are not
+// discarded: a stage that keeps passing without the task advancing is a
+// livelock (obj-c58897c0 re-issued six passing recovery dispatches), and a
+// future guard needs the number. It simply is not a REJECTION, which is the
+// only thing `maxAttemptsPerStage` was ever meant to bound.
+const SUCCESS_OUTCOMES = new Set(["pass", "succeeded"]);
+
 export function countStageAttempts(state, stage) {
   const dispatches = (state?.dispatches || []).filter(
     (item) => item.stage === stage && (item.kind === "stage" || !item.kind),
   );
   let verdicts = 0;
   let infra = 0;
+  let passes = 0;
   for (const item of dispatches) {
     // `infraFailure` is set by the concurrent review fan-out, which has to
     // write a real `fail` result for a member whose agent could not start so
     // the engine routes it. That outcome is a routing artifact, not a verdict —
     // nothing judged the work — so it belongs in the infrastructure allowance.
-    if (item.outcome && !item.infraFailure) verdicts += 1;
-    else infra += 1;
+    if (!item.outcome || item.infraFailure) { infra += 1; continue; }
+    if (SUCCESS_OUTCOMES.has(item.outcome)) { passes += 1; continue; }
+    verdicts += 1;
   }
-  return { verdicts, infra, total: dispatches.length };
+  return { verdicts, infra, passes, total: dispatches.length };
 }
 
 // Which budget, if either, this stage has exhausted.
 export function stageBudgetExceeded(state, stage, { maxAttemptsPerStage = 3, maxInfraAttemptsPerStage = DEFAULT_MAX_INFRA_ATTEMPTS } = {}) {
-  const { verdicts, infra } = countStageAttempts(state, stage);
+  const { verdicts, infra, passes } = countStageAttempts(state, stage);
   if (verdicts >= maxAttemptsPerStage) {
-    return { exceeded: "verdicts", verdicts, infra, limit: maxAttemptsPerStage };
+    return { exceeded: "verdicts", verdicts, infra, passes, limit: maxAttemptsPerStage };
   }
   if (infra >= maxInfraAttemptsPerStage) {
-    return { exceeded: "infra", verdicts, infra, limit: maxInfraAttemptsPerStage };
+    return { exceeded: "infra", verdicts, infra, passes, limit: maxInfraAttemptsPerStage };
   }
-  return { exceeded: null, verdicts, infra };
+  return { exceeded: null, verdicts, infra, passes };
 }
 
 export function routeStageFailure(state, { failedStage, targetStage, maxAttemptsPerStage = 3, maxInfraAttemptsPerStage = DEFAULT_MAX_INFRA_ATTEMPTS, now = new Date().toISOString() }) {
