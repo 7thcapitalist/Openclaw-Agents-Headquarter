@@ -132,7 +132,7 @@ test("the console's actions are wired, and the rest still reject with a reason",
   for (const kind of [
     "task.retry", "objective.retry", "decision.resolve",
     "objective.start", "overnight.add", "overnight.remove", "overnight.start", "overnight.stop",
-    "question.ask",
+    "question.ask", "inbox.dismiss", "task.comment",
   ]) {
     assert.ok(typeof real[kind] === "function", `${kind} must be wired for the console to offer it`);
   }
@@ -141,7 +141,12 @@ test("the console's actions are wired, and the rest still reject with a reason",
   const unwired = Object.keys(INTENT_KINDS).filter((k) => !(k in real));
   assert.deepEqual(
     unwired.sort(),
-    ["approval.reject", "approval.submit", "inbox.dismiss", "task.comment"],
+    // Only the two approval kinds remain, and they are held back on purpose:
+    // DC-2026-006 asks whether the factory should trust a second founder
+    // approval key so high-risk builds can be approved from the hosted console,
+    // and its stated default while open is that these stay unwired. That is a
+    // founder decision about a security boundary, not a tidy-up.
+    ["approval.reject", "approval.submit"],
     "if this list changed, wire the console button or update it deliberately",
   );
   for (const kind of unwired) {
