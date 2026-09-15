@@ -10,7 +10,7 @@
 //
 //   default (main / builders inherit)  openai/gpt-5.6-sol  -> openai/gpt-5.6-luna -> Claude
 //     cheap, fast orchestration/routing — never Opus, never a big model for glue.
-//   product                            github-copilot/gpt-4.1 -> gpt-5.4-mini
+//   product                            anthropic/claude-sonnet-5 -> Copilot -> OpenAI
 //   objective decomposition/intake    configured to the architect agent, below
 //     (Claude primary -> Codex/OpenAI fallback), rather than failing when the
 //     Claude seat is exhausted.
@@ -60,7 +60,13 @@ const ROUTES = {
   research: { primary: CLAUDE, fallbacks: [LUNA, OPENAI_MAIN, COPILOT, MINI] },
   learning: { primary: CLAUDE, fallbacks: [LUNA, OPENAI_MAIN, COPILOT, MINI] },
   qa: { primary: COPILOT, fallbacks: [LUNA, OPENAI_MAIN, CLAUDE, MINI] },
-  product: { primary: COPILOT, fallbacks: [LUNA, OPENAI_MAIN, CLAUDE, MINI] },
+  // product moved off the shared OpenAI CLI seat onto Claude (2026-09-15), the
+  // same move release made on 2026-09-07 and for the same reason: it kept
+  // failing "wrote no result file" and blocking objectives before any code was
+  // written. obj-47cf7355 burned all three recovery attempts that way and
+  // cleared its product stage on the first Claude dispatch. Copilot stays first
+  // in the fallbacks so the stage keeps a non-OpenAI second seat.
+  product: { primary: CLAUDE, fallbacks: [COPILOT, LUNA, OPENAI_MAIN, MINI] },
   release: { primary: CLAUDE, fallbacks: [LUNA, OPENAI_MAIN, COPILOT, MINI] },
 };
 

@@ -272,6 +272,47 @@ export function recordDispatchAgentId({ statePath, dispatchId, agentId }) {
   });
 }
 
+// Record which model route a dispatch was sent down, when the runner overrode
+// the agent's own chain. Read by the founder-facing views and by anyone asking
+// "why did this attempt run somewhere else than the last one".
+export function recordDispatchRoute({ statePath, dispatchId, route }) {
+  if (!route) return null;
+  return mutateTransactionalState(statePath, {
+    commandId: `dispatch-route:${dispatchId}:${route}`,
+    toResponse: (state) => (state?.currentDispatch?.id === dispatchId ? state.currentDispatch.route ?? null : null),
+    mutate: (state) => {
+      if (!state || state.currentDispatch?.id !== dispatchId) return undefined;
+      if (state.currentDispatch.route === route) return undefined;
+      const next = structuredClone(state);
+      next.currentDispatch.route = route;
+      return next;
+    },
+  });
+}
+
+// Record that a model route ran this stage and produced no result file, so the
+// next dispatch of the same stage can pick a different one. Keyed by stage, not
+// by dispatch: the point is to inform the RETRY, which is a new dispatch. Bounded
+// and deduped — this is a short avoid-list, not a history.
+export function recordRouteFailure({ statePath, stage, route, limit = 8 }) {
+  const key = String(stage || "").trim();
+  const value = String(route || "").trim();
+  if (!key || !value) return null;
+  return mutateTransactionalState(statePath, {
+    commandId: `route-failure:${key}:${value}`,
+    toResponse: (state) => state?.routeFailures?.[key] ?? null,
+    mutate: (state) => {
+      if (!state) return undefined;
+      const existing = state.routeFailures?.[key] || [];
+      if (existing.includes(value)) return undefined;
+      const next = structuredClone(state);
+      next.routeFailures = { ...(next.routeFailures || {}) };
+      next.routeFailures[key] = [...existing, value].slice(-limit);
+      return next;
+    },
+  });
+}
+
 export function markDispatchRunning({ statePath, dispatchId, now = new Date().toISOString() }) {
   return mutateTransactionalState(statePath, {
     // Stable per dispatch: a retried call after a crash or a timed-out

@@ -4,8 +4,9 @@ import { randomUUID } from "crypto";
 import { setTimeout as delay } from "timers/promises";
 import { existsSync, mkdirSync, unlinkSync, writeFileSync, readFileSync } from "fs";
 import { basename, dirname, join } from "path";
-import { PROTOCOL_VERSION, blockDispatch, computeDispatchPaths, failDispatch, ingestResult, markDispatchRunning, prepareDispatch, readResultFile, recordDispatchAgentId } from "./openclaw-protocol.mjs";
+import { PROTOCOL_VERSION, blockDispatch, computeDispatchPaths, failDispatch, ingestResult, markDispatchRunning, prepareDispatch, readResultFile, recordDispatchAgentId, recordDispatchRoute, recordRouteFailure } from "./openclaw-protocol.mjs";
 import { describeAgentCompletion, parseAgentMeta } from "./hq/agent-meta.mjs";
+import { rotatedRouteFor } from "./agent-routes.mjs";
 import { DEFAULT_MAX_INFRA_ATTEMPTS, STAGES, readState } from "./task-workflow.mjs";
 import { mutateTransactionalState, peekRevision } from "./store/transactional-json.mjs";
 import { recordReleaseDeployment } from "./deploy/record-release.mjs";
@@ -155,12 +156,22 @@ export async function runOneStage({ hqRoot, statePath, agentIds = {}, maxAttempt
   // The agent will self-report either the logical actor or this runtime id.
   // Persist the routing decision so ingest recognises both.
   recordDispatchAgentId({ statePath, dispatchId: prepared.dispatchId, agentId });
+  // A route that answered and wrote nothing will do it again. If this stage has
+  // already burned one, send the retry down a different one — preferring another
+  // provider, because the failure is a seat/session problem rather than a model
+  // one. null means nothing has failed yet, or there is nowhere else to go.
+  const exhaustedRoutes = readState(statePath).routeFailures?.[prepared.stage] || [];
+  const modelOverride = rotatedRouteFor(agentId, exhaustedRoutes);
+  if (modelOverride) {
+    recordDispatchRoute({ statePath, dispatchId: prepared.dispatchId, route: modelOverride });
+  }
   const sessionKey = `agent:${agentId}:factory-${prepared.dispatchId}`;
   let response;
   const startedAt = Date.now();
   try {
     const executed = existsSync(prepared.resultPath) ? {} : await execute({
       agentId,
+      model: modelOverride,
       messageFile: prepared.promptPath,
       sessionKey,
       cwd: prepared.cwd,
@@ -186,6 +197,12 @@ export async function runOneStage({ hqRoot, statePath, agentIds = {}, maxAttempt
         stdout: executed?.stdout,
         stderr: executed?.stderr,
       });
+      // Only a route that RAN and delivered nothing is worth avoiding. An agent
+      // that could not be reached says nothing about the route, and blacklisting
+      // it would push healthy work off its configured seat on a transient blip.
+      if (diagnostic.completed) {
+        recordRouteFailure({ statePath, stage: prepared.stage, route: diagnostic.route || modelOverride || agentMeta?.model || null });
+      }
       response = failDispatch({ statePath, dispatchId: prepared.dispatchId, error: diagnostic.summary, maxAttemptsPerStage, maxInfraAttemptsPerStage });
       observeDispatchState({ hqRoot, statePath, phase: "failed", dispatchId: prepared.dispatchId, agentMeta, error: diagnostic.summary });
     } else {
@@ -625,14 +642,20 @@ export async function runConcurrentGroupIfReady({ hqRoot, statePath, agentIds = 
   return response;
 }
 
-export async function executeOpenClaw({ agentId, messageFile, sessionKey, cwd }) {
+export async function executeOpenClaw({ agentId, model, messageFile, sessionKey, cwd }) {
   // Run the agent inside its assigned worktree. Both callers already pass
   // `cwd: state.worktree`; without forwarding it here the `openclaw agent`
   // process inherited the dashboard's cwd, so a relative-path edit could land
   // in the source checkout instead of the isolated worktree.
   return execFileAsync(
     "openclaw",
-    ["agent", "--agent", agentId, "--session-key", sessionKey, "--message-file", messageFile, "--json", "--timeout", "3600"],
+    [
+      "agent", "--agent", agentId,
+      // Only present when the retry is deliberately rotating off a route that
+      // ran without delivering; otherwise the agent's own chain decides.
+      ...(model ? ["--model", model] : []),
+      "--session-key", sessionKey, "--message-file", messageFile, "--json", "--timeout", "3600",
+    ],
     { cwd: cwd || undefined, timeout: 60 * 60 * 1000, maxBuffer: 8 * 1024 * 1024 }
   );
 }
@@ -731,9 +754,14 @@ function writeMissingResultDiagnostic({ worktree, dispatchId, stage, actor, sess
       "",
     ].filter((line) => line !== null);
     writeFileSync(join(worktree, rel), lines.join("\n"), "utf8");
-    return { rel, summary };
+    return { rel, summary, completed: finished.completed, route: route || null };
   } catch {
-    return { rel: null, summary: `${summary} (diagnostic artifact could not be written)` };
+    return {
+      rel: null,
+      summary: `${summary} (diagnostic artifact could not be written)`,
+      completed: finished.completed,
+      route: route || null,
+    };
   }
 }
 

@@ -37,9 +37,14 @@ test("model policy is idempotent and moves product primary off OpenAI", () => {
     primary: "openai/gpt-5.6-sol",
     fallbacks: ["openai/gpt-5.6-luna", "anthropic/claude-sonnet-5", "openai/gpt-5.4-mini", "github-copilot/gpt-4.1"],
   });
+  // Claude, not Copilot, since 2026-09-15: product kept failing "wrote no result
+  // file" on the shared OpenAI seat and blocking objectives before any code was
+  // written (obj-47cf7355). Copilot stays first in the fallbacks so the stage
+  // still has a non-OpenAI second seat. The rule this test guards is unchanged —
+  // product does not run on the OpenAI primary.
   assert.deepEqual(first.nextConfig.agents.entries.product.model, {
-    primary: "github-copilot/gpt-4.1",
-    fallbacks: ["openai/gpt-5.6-luna", "openai/gpt-5.6-sol", "anthropic/claude-sonnet-5", "openai/gpt-5.4-mini"],
+    primary: "anthropic/claude-sonnet-5",
+    fallbacks: ["github-copilot/gpt-4.1", "openai/gpt-5.6-luna", "openai/gpt-5.6-sol", "openai/gpt-5.4-mini"],
   });
   assert.deepEqual(first.nextConfig.agents.entries.architect.model, {
     primary: "anthropic/claude-sonnet-5",
