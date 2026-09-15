@@ -160,6 +160,29 @@ export function prepareDispatch({ hqRoot, statePath, now = new Date().toISOStrin
       const recovery = state.recovery?.active;
       const stage = recovery?.failedStage || state.currentStage;
       const { dispatchId, resultPath, attempt } = computeDispatchPaths({ state, stage, statePath });
+      // A dispatch id must be unique for the life of the task. #219 fixed the
+      // derivation that broke this (recovery.active.attempt restarts at 1 per
+      // incident); this enforces the invariant instead of assuming it, because
+      // the failure is silent and total.
+      //
+      // Both halves of the machinery key off the id as an idempotency key:
+      // `ingest:<dispatchId>` and `running:<dispatchId>`. The command ledger
+      // treats a repeat as "already applied, here is the earlier response" and
+      // never runs the mutation — so a reused id means a real agent result is
+      // read, acknowledged, and silently discarded, leaving recovery.active
+      // pinned on the same phase forever.
+      //
+      // That is what happened to obj-c58897c0-integration: ids
+      // `-recovery-1-diagnose` (x3), `-recovery-2-diagnose` (x2) and
+      // `-recovery-3-diagnose` (x2) were each issued more than once, six
+      // passing diagnoses were dropped, and the task never advanced.
+      if ((state.dispatches || []).some((d) => (d.id || d.dispatchId) === dispatchId)) {
+        throw new Error(
+          `Refusing to reuse dispatch id "${dispatchId}" for task ${state.task?.id}: `
+          + "an earlier dispatch already used it, and the idempotency ledger would silently "
+          + "discard this dispatch's result instead of applying it.",
+        );
+      }
       const dispatch = {
         id: dispatchId,
         stage,
