@@ -1292,7 +1292,7 @@ export function readState(path) {
 // like the one this store exists to remove. Routing every writeState() call
 // through the same mutateTransactionalState() keeps there being exactly one.
 export function writeState(path, state) {
-  mutateTransactionalState(path, { commandId: `writeState:${randomUUID()}`, mutate: () => state });
+  mutateTransactionalState(path, { commandId: `writeState:${randomUUID()}`, replayable: false, mutate: () => state });
 }
 
 export function verifyEvidence(paths, worktree) {

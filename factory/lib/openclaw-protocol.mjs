@@ -152,6 +152,12 @@ export function prepareDispatch({ hqRoot, statePath, now = new Date().toISOStrin
     // after the first commits, and by then it observes the dispatch the
     // first one just created and takes the early-return branch below.
     commandId: `prepare:${randomUUID()}`,
+    // The key is a fresh UUID, so this command is never presented twice and
+    // its stored response can never be read. Keeping the row preserves the
+    // audit chain; keeping the payload cost 195 KiB per call, including on the
+    // no-op early-return path below — which is where the 2026-09-14 write
+    // storm's 403 GiB actually went.
+    replayable: false,
     now,
     mutate: (state) => {
       if (!state) throw new Error(`No state at ${statePath}`);
@@ -249,8 +255,13 @@ function dispatchIdentityMismatch(result, dispatch) {
 // the agent will report.
 export function recordDispatchAgentId({ statePath, dispatchId, agentId }) {
   if (!agentId) return null;
-  const nextState = mutateTransactionalState(statePath, {
+  return mutateTransactionalState(statePath, {
     commandId: `agent-id:${dispatchId}:${agentId}`,
+    // Stable key, so the stored response IS what a replay returns. Store the
+    // one field the caller reads rather than the whole document.
+    toResponse: (state) => (state?.currentDispatch?.id === dispatchId
+      ? state.currentDispatch.agentId ?? null
+      : null),
     mutate: (state) => {
       if (!state || state.currentDispatch?.id !== dispatchId) return undefined;
       if (state.currentDispatch.agentId === agentId) return undefined;
@@ -259,15 +270,15 @@ export function recordDispatchAgentId({ statePath, dispatchId, agentId }) {
       return next;
     },
   });
-  return nextState?.currentDispatch?.id === dispatchId ? (nextState.currentDispatch.agentId ?? null) : null;
 }
 
 export function markDispatchRunning({ statePath, dispatchId, now = new Date().toISOString() }) {
-  const nextState = mutateTransactionalState(statePath, {
+  return mutateTransactionalState(statePath, {
     // Stable per dispatch: a retried call after a crash or a timed-out
     // response replays the original success instead of erroring on
     // "already running".
     commandId: `running:${dispatchId}`,
+    toResponse: (state) => dispatchResponse(state.currentDispatch, state),
     now,
     mutate: (state) => {
       assertCurrentDispatch(state, dispatchId);
@@ -281,7 +292,6 @@ export function markDispatchRunning({ statePath, dispatchId, now = new Date().to
       return next;
     },
   });
-  return dispatchResponse(nextState.currentDispatch, nextState);
 }
 
 // The commit at the worktree's HEAD, or null when the worktree is not a git
@@ -309,8 +319,11 @@ export function ingestResult({ statePath, result, agentMeta = null, maxAttemptsP
   // same result must apply exactly once and both observe the same outcome,
   // never advance the workflow twice.
   const commandId = `ingest:${result.dispatchId}`;
-  const next = mutateTransactionalState(statePath, {
+  return mutateTransactionalState(statePath, {
     commandId,
+    // Stable key. This is the projection the caller returns anyway, and it is
+    // now also what the ledger stores and what a replay hands back.
+    toResponse: terminalResponse,
     now,
     mutate: (state) => {
       assertCurrentDispatch(state, result.dispatchId);
@@ -403,12 +416,12 @@ export function ingestResult({ statePath, result, agentMeta = null, maxAttemptsP
       return completed;
     },
   });
-  return terminalResponse(next);
 }
 
 export function failDispatch({ statePath, dispatchId, error, maxAttemptsPerStage = 3, maxInfraAttemptsPerStage = DEFAULT_MAX_INFRA_ATTEMPTS, now = new Date().toISOString() }) {
-  const next = mutateTransactionalState(statePath, {
+  return mutateTransactionalState(statePath, {
     commandId: `fail:${dispatchId}`,
+    toResponse: terminalResponse,
     now,
     mutate: (state) => {
       assertCurrentDispatch(state, dispatchId);
@@ -439,7 +452,6 @@ export function failDispatch({ statePath, dispatchId, error, maxAttemptsPerStage
         : startRecovery(blocked, { failedStage: dispatch.stage, actor: dispatch.actor, error: String(error), source: "harness", maxRecoveryAttempts: state.recovery?.maxAttempts || 3, now });
     },
   });
-  return terminalResponse(next);
 }
 
 // Park a dispatch that failed for a DETERMINISTIC reason the retry ladder can
@@ -457,8 +469,9 @@ export function failDispatch({ statePath, dispatchId, error, maxAttemptsPerStage
 // So: record the dispatch as failed, state the real cause, and block on
 // `decision-required` WITHOUT routeStageFailure or startRecovery.
 export function blockDispatch({ statePath, dispatchId, error, now = new Date().toISOString() }) {
-  const next = mutateTransactionalState(statePath, {
+  return mutateTransactionalState(statePath, {
     commandId: `block:${dispatchId}`,
+    toResponse: terminalResponse,
     now,
     mutate: (state) => {
       assertCurrentDispatch(state, dispatchId);
@@ -480,7 +493,6 @@ export function blockDispatch({ statePath, dispatchId, error, now = new Date().t
       return blocked;
     },
   });
-  return terminalResponse(next);
 }
 
 export function readResultFile(path) {

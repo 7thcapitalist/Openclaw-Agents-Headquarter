@@ -113,6 +113,9 @@ export async function lookupPullRequest({ ownerRepo, number, timeoutMs = 20_000 
 function recordMerge(statePath, lookup, at) {
   return mutateTransactionalState(statePath, {
     commandId: `merge-reconcile:${statePath}:${lookup.mergeCommitSha || lookup.mergedAt || at}`,
+    // Stable key — re-running the sweep must not double-apply — so the stored
+    // response is what a replay returns. The caller reads only the status.
+    toResponse: (state) => ({ status: state?.status ?? null }),
     mutate: (state) => {
       if (state.status !== ELIGIBLE_STATUS) return state;
       const next = structuredClone(state);

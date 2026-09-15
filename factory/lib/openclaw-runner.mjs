@@ -251,6 +251,7 @@ export function writeCompletionReport({ statePath }) {
     const generatedAt = new Date().toISOString();
     mutateTransactionalState(statePath, {
       commandId: `completion-report:${randomUUID()}`,
+      replayable: false,
       now: () => generatedAt,
       mutate: (current) => {
         const next = structuredClone(current);
@@ -279,6 +280,7 @@ export function publishAndRecord({ hqRoot, statePath, publish = publishMergeRead
   }
   mutateTransactionalState(statePath, {
     commandId: `github-publish:${randomUUID()}`,
+    replayable: false,
     mutate: (current) => {
       const next = structuredClone(current);
       next.githubPublish = result;
@@ -433,6 +435,7 @@ export function recordRunnerCrash({ statePath, error, now = new Date().toISOStri
   try {
     const next = mutateTransactionalState(statePath, {
       commandId: `runner-crash:${randomUUID()}`,
+      replayable: false,
       now,
       mutate: (state) => {
         if (!state) return undefined;
@@ -570,6 +573,7 @@ export async function runConcurrentGroupIfReady({ hqRoot, statePath, agentIds = 
   }
   mutateTransactionalState(statePath, {
     commandId: `group-collected:${randomUUID()}`,
+    replayable: false,
     mutate: (current) => {
       const next = structuredClone(current);
       delete next.yieldedGroup;
@@ -721,6 +725,9 @@ function redactTail(value) {
 function markYielded(statePath, dispatchId, stage) {
   mutateTransactionalState(statePath, {
     commandId: `yielded:${dispatchId}`,
+    // Stable key, but nothing reads the return: store the marker, not the
+    // document.
+    toResponse: (state) => ({ yieldedAt: state?.currentDispatch?.yieldedAt ?? null }),
     mutate: (current) => {
       if (current.currentDispatch?.id !== dispatchId) return undefined;
       const next = structuredClone(current);
@@ -734,6 +741,7 @@ function markYielded(statePath, dispatchId, stage) {
 function markYieldedGroup(statePath, members) {
   mutateTransactionalState(statePath, {
     commandId: `yielded-group:${randomUUID()}`,
+    replayable: false,
     mutate: (current) => {
       const next = structuredClone(current);
       next.yieldedGroup = members.map(({ dispatchId, stage, resultPath }) => ({ dispatchId, stage, resultPath }));
@@ -750,6 +758,7 @@ function markYieldedGroup(statePath, members) {
 function touchState(statePath, expectDispatchId = null) {
   mutateTransactionalState(statePath, {
     commandId: `heartbeat:${randomUUID()}`,
+    replayable: false,
     mutate: (current) => {
       if (expectDispatchId && current.currentDispatch?.id !== expectDispatchId) throw new Error("Yielded dispatch ownership changed");
       const next = structuredClone(current);

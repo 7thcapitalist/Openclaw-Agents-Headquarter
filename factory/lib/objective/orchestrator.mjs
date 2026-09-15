@@ -85,6 +85,7 @@ export function readObjState(path) { return readTransactionalState(path, { forma
 function mutate(path, fn) {
   return mutateTransactionalState(path, {
     commandId: `mutate:${randomUUID()}`,
+    replayable: false,
     mutate: (state) => {
       const next = structuredClone(state);
       fn(next);
@@ -575,7 +576,7 @@ export function resumeObjectiveNodes({ hqRoot = null, objectivePath, nodeIds, no
         continue;
       }
       revived.autoRetries = state.autoRetries || 0;
-      mutateTransactionalState(node.statePath, { commandId: `resume:${nodeId}:${randomUUID()}`, mutate: () => revived });
+      mutateTransactionalState(node.statePath, { commandId: `resume:${nodeId}:${randomUUID()}`, replayable: false, mutate: () => revived });
 
       mutate(objectivePath, (s) => {
         const target = s.nodes[nodeId] || (s.integration?.id === nodeId ? s.integration : null);

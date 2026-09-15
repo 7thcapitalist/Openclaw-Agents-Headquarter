@@ -20,7 +20,13 @@
 //                        a revision was reached and by which command)
 //   events            — append-only projection of state.events[] entries
 //   commands          — idempotency ledger: command_id -> the response it
-//                        produced, so a replayed command never re-executes
+//                        produced, so a replayed command never re-executes.
+//                        The response is what the caller gets back on a
+//                        replay, so it must be small: storing a full state
+//                        document per mutation is what turned one task's
+//                        write loop into 403 GiB on 2026-09-14. Callers
+//                        shrink it with `toResponse`, or declare the command
+//                        unreplayable when its key is a fresh UUID.
 //   stages            — queryable projection of state.stages{}
 //   dispatches        — append-only projection of state.dispatches[]
 //   recovery_attempts — append-only projection of state.recovery.attempts[]
@@ -35,6 +41,11 @@ import { chmodSync, existsSync, mkdirSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
 export const SCHEMA_VERSION = 1;
+
+// Marks a ledger row whose response was deliberately not stored. A JSON object
+// rather than a bare null so it is distinguishable from a command that
+// genuinely returned null, and so it needs no schema change.
+export const UNREPLAYABLE = "__unreplayable";
 
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
 const BUSY_RETRIES = 30;
@@ -329,7 +340,7 @@ export function listQuarantine(handle, entityId = null) {
 // current revision that does not match throws StaleRevisionError instead of
 // applying the mutation — for callers (dashboard actions) that read state in
 // an earlier, separate step and must not act on data that has since moved.
-export function mutateEntity(handle, { entityId, commandId, expectedRevision = null, mutate, now = () => new Date().toISOString() }) {
+export function mutateEntity(handle, { entityId, commandId, expectedRevision = null, mutate, replayable = true, now = () => new Date().toISOString() }) {
   assertId(entityId);
   if (!commandId || !String(commandId).trim()) throw new Error("mutateEntity requires a non-empty commandId.");
   const { db } = handle;
@@ -339,7 +350,18 @@ export function mutateEntity(handle, { entityId, commandId, expectedRevision = n
       const existingCommand = db.prepare("SELECT response_json FROM commands WHERE command_id = ?").get(commandId);
       if (existingCommand) {
         db.exec("COMMIT");
-        return JSON.parse(existingCommand.response_json);
+        const replayed = JSON.parse(existingCommand.response_json);
+        // A command that declared itself unreplayable has been presented
+        // twice, which its caller said was impossible. Say so loudly rather
+        // than handing back the placeholder as if it were a real response.
+        if (replayed && typeof replayed === "object" && replayed[UNREPLAYABLE] === true) {
+          throw new Error(
+            `Command "${commandId}" was recorded as unreplayable (its key is generated fresh per call) `
+            + "but has now been presented twice. Its response was never stored, so there is nothing to "
+            + "replay. Give this command a stable, meaningful commandId instead.",
+          );
+        }
+        return replayed;
       }
       const current = readEntityRow(db, entityId);
       // The size ceiling is checked here, inside the transaction and before the
@@ -387,7 +409,7 @@ export function mutateEntity(handle, { entityId, commandId, expectedRevision = n
       const result = mutate(current);
       const response = result && "response" in result ? result.response : (result?.nextState ?? current?.state ?? null);
       if (!result || result.nextState === undefined) {
-        recordCommand(db, commandId, entityId, response, now());
+        recordCommand(db, commandId, entityId, response, now(), replayable);
         db.exec("COMMIT");
         return response;
       }
@@ -401,7 +423,7 @@ export function mutateEntity(handle, { entityId, commandId, expectedRevision = n
       projectStages(db, entityId, nextState.stages || {});
       projectDispatches(db, entityId, current?.state?.dispatches || [], nextState.dispatches || []);
       projectRecoveryAttempts(db, entityId, current?.state?.recovery?.attempts || [], nextState.recovery?.attempts || []);
-      recordCommand(db, commandId, entityId, response, at);
+      recordCommand(db, commandId, entityId, response, at, replayable);
       db.exec("COMMIT");
       return response;
     } catch (error) {
@@ -420,9 +442,15 @@ export function mutateEntity(handle, { entityId, commandId, expectedRevision = n
   });
 }
 
-function recordCommand(db, commandId, entityId, response, at) {
+// The audit chain — which command ran, against which entity, when — is the row
+// itself, and it is always kept. Only the PAYLOAD is dropped for a command that
+// can never be replayed, because a key generated fresh on every call is never
+// presented a second time and its stored response is therefore dead weight: at
+// a 195 KiB state document, 2.21M of those dead rows are 403 GiB.
+function recordCommand(db, commandId, entityId, response, at, replayable = true) {
+  const stored = replayable ? (response ?? null) : { [UNREPLAYABLE]: true };
   db.prepare("INSERT INTO commands (command_id, entity_id, applied_at, response_json) VALUES (?, ?, ?, ?)")
-    .run(commandId, entityId, at, JSON.stringify(response ?? null));
+    .run(commandId, entityId, at, JSON.stringify(stored));
 }
 
 function upsertEntity(db, entityId, revision, state, createdAt, updatedAt) {
