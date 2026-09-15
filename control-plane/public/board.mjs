@@ -16,6 +16,19 @@ const REVIEW_STAGES = new Set(["reviewer", "qa", "security"]);
 const ASSIGNED_STAGES = new Set(["product", "architect"]);
 const DONE_STATUS = new Set(["merge-ready", "merged", "complete", "completed"]);
 
+// How long a card may sit unchanged before the board says so. Three days, not
+// hours: the factory legitimately takes a long time on one stage, and a board
+// that cries stalled at every overnight gap is a board nobody reads. The
+// number is rendered on screen, so it can never be inferred wrongly.
+export const STALLED_AFTER_DAYS = 3;
+
+// Every column except Done. A finished card is SUPPOSED to stop moving, and
+// marking it stalled would turn the most reassuring thing on the board into a
+// warning. Blocked is included deliberately: "blocked" and "blocked and
+// forgotten for eight days" are different situations and only the second one
+// is an emergency.
+const NEVER_STALLED = new Set(["Done"]);
+
 /**
  * Which column a task belongs in.
  *
@@ -36,6 +49,42 @@ export function boardColumn(task) {
   return "Inbox";
 }
 
+/**
+ * How long since this task last MOVED.
+ *
+ * `updatedAt` is the last recorded state transition — a stage passing, a
+ * dispatch failing, a blocker being set. It is NOT the last time an agent did
+ * anything: a reviewer can burn an hour on a task whose state never changes.
+ * Everything here says "movement" for that reason, and the view must not
+ * relabel it "activity" or "last seen".
+ *
+ * Returns null when there is no timestamp, so a card with no movement to
+ * report shows nothing rather than "moved 56 years ago".
+ */
+export function movement(updatedAt, { now = Date.now(), column = null } = {}) {
+  const at = Date.parse(updatedAt || "");
+  if (!Number.isFinite(at)) return null;
+  const ms = Math.max(0, now - at);
+  const days = ms / 86_400_000;
+  return {
+    ms,
+    days: Math.floor(days),
+    label: `moved ${spoken(ms)}`,
+    // A column that is allowed to stall decides this, not the age alone.
+    stalled: days >= STALLED_AFTER_DAYS && !NEVER_STALLED.has(column),
+  };
+}
+
+function spoken(ms) {
+  const minutes = Math.round(ms / 60_000);
+  if (minutes < 2) return "just now";
+  if (minutes < 90) return `${minutes} minutes ago`;
+  const hours = Math.round(ms / 3_600_000);
+  if (hours < 36) return `${hours} hours ago`;
+  const days = Math.round(ms / 86_400_000);
+  return `${days} day${days === 1 ? "" : "s"} ago`;
+}
+
 /** How far through the seven stages this task is, for a progress hint. */
 export function stagePosition(stage) {
   const index = STAGES.indexOf(stage);
@@ -46,7 +95,7 @@ export function stagePosition(stage) {
  * The board, grouped and ordered. Pure: takes published task rows, returns what
  * a view draws, so both surfaces group identically.
  */
-export function buildBoard(tasks = []) {
+export function buildBoard(tasks = [], { now = Date.now() } = {}) {
   const columns = Object.fromEntries(BOARD_COLUMNS.map((c) => [c, []]));
   for (const task of tasks || []) {
     if (!task?.taskId) continue;
@@ -65,6 +114,10 @@ export function buildBoard(tasks = []) {
       assignee: task.assignee || null,
       risk: task.risk || null,
       updatedAt: task.updatedAt || null,
+      // Already carried on every row and never rendered, which is how work
+      // that had not moved in eight days looked identical to work that moved
+      // an hour ago.
+      movement: movement(task.updatedAt, { now, column }),
       prUrl: task.prUrl || null,
     });
   }
@@ -77,7 +130,14 @@ export function buildBoard(tasks = []) {
     columns,
     counts: Object.fromEntries(BOARD_COLUMNS.map((c) => [c, columns[c].length])),
     total: (tasks || []).filter((t) => t?.taskId).length,
+    stalled: BOARD_COLUMNS.reduce((sum, c) => sum + columns[c].filter((card) => card.movement?.stalled).length, 0),
+    stalledAfterDays: STALLED_AFTER_DAYS,
   };
+}
+
+/** Narrow to what has stopped moving. Pure, so both surfaces filter alike. */
+export function filterStalled(tasks = [], { now = Date.now() } = {}) {
+  return (tasks || []).filter((task) => movement(task?.updatedAt, { now, column: boardColumn(task) })?.stalled);
 }
 
 // One line for what is happening, without repeating itself.

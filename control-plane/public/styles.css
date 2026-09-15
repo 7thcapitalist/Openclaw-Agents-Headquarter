@@ -780,3 +780,39 @@ body {
 .home-health-row--fail .home-health-status { color: #f85149; }
 .home-health-row--warn .home-health-status { color: #d29922; }
 .home-health-row--ok .home-health-status { color: #2ea043; }
+
+/* Work that has stopped moving. The board used to render an eight-day-old
+   card identically to one that moved an hour ago. */
+.board-filter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.board-filter-btn {
+  min-height: 40px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--line, #30363d);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.board-filter-btn.is-on {
+  border-color: #d29922;
+  background: rgba(210, 153, 34, 0.14);
+  color: #e3b341;
+}
+.board-card-moved {
+  margin-top: 6px;
+  font-size: 0.72rem;
+  color: var(--muted, #8a8f98);
+}
+.board-card-moved.is-stalled { color: #e3b341; }
+.board-card--stalled {
+  border-left: 3px solid #d29922;
+  background: rgba(210, 153, 34, 0.05);
+}
