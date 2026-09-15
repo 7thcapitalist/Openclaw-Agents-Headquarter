@@ -13,6 +13,7 @@
 import { answerableDecisions, freshness, intentsPanel, panelsFor, statsFrom } from "/render.mjs";
 import { renderHome } from "/home.mjs";
 import { renderAgents, renderBoard, renderDeliveries, renderProjects } from "/views.mjs";
+import { renderMoney } from "/money.mjs";
 import { renderTaskDetail } from "/task-detail.mjs";
 
 const TIMEOUT_MS = 12_000;
@@ -295,6 +296,7 @@ const TABS = [
   ["today", "Today"],
   ["board", "Board"],
   ["deliveries", "Deliveries"],
+  ["money", "Money"],
   ["projects", "Projects"],
   ["agents", "Agents"],
 ];
@@ -366,6 +368,8 @@ function drawHome(snapshot) {
       });
     } else if (activeTab === "agents") {
       renderAgents(els.view, snapshot);
+    } else if (activeTab === "money") {
+      renderMoney(els.view, snapshot);
     } else if (activeTab === "deliveries") {
       // onAccept is deliberately null until Launch is wired: a button that
       // cannot start work must not be offered.
