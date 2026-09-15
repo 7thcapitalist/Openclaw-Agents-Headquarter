@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import { proposerPanel } from "../../dashboard/backend/public/lib/proposerView.mjs";
 
@@ -12,12 +13,23 @@ const proposal = (over = {}) => ({
   ...over,
 });
 
-test("a ranked proposal shows its reasoning and the numbers behind it", () => {
+test("a goal-derived proposal does not echo goal-projection prose or counts", () => {
   const html = proposerPanel({ available: true, proposals: [proposal()], considered: { goals: 3 } });
-  assert.match(html, /12 items of 20/);
-  assert.match(html, /12 blocked/);
   assert.match(html, /openclaw-factory/);
-  assert.match(html, /Source: goal projection/);
+  assert.doesNotMatch(html, /12 items of 20/);
+  assert.doesNotMatch(html, /12 blocked/);
+  assert.doesNotMatch(html, /Source: goal projection/);
+});
+
+test("the Proposed work panel is wired to the proposals payload, not goal projection data", () => {
+  const source = readFileSync(new URL("../../dashboard/backend/public/app.js", import.meta.url), "utf8");
+  assert.match(source, /const \[[^\]]*\bproposals\b[^\]]*\] = await Promise\.all/);
+  assert.match(source, /apiJson\("\/api\/hq\/proposals"\)/);
+  assert.match(source, /proposerPanel\(proposals,/);
+
+  const html = proposerPanel({ available: true, proposals: [], considered: { goals: 1 } });
+  assert.match(html, /Nothing is blocked, recurring or untouched across 1 goal/);
+  assert.doesNotMatch(html, /goal projection/i);
 });
 
 test("the panel states that it never starts work", () => {

@@ -40,6 +40,7 @@ test("renders the hierarchy, rollups, and blocked counts", () => {
   assert.match(html, /2 blocked/);
   assert.match(html, /40% · 4\/10/);
   assert.match(html, /50% · 2\/4/);
+  assert.match(html, /goal projection/);
 });
 
 test("a goal with no linked canonical work says so rather than reporting 0%", () => {
