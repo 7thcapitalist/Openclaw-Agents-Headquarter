@@ -1414,7 +1414,11 @@ app.get("/api/hq/agents", async (_req, res) => {
   }
 });
 
-for (const name of ["agents", "tasks", "sops", "reports", "logs"]) {
+// `agents` is the only collection left: a fallback roster for an install with
+// no factory/agents.json. `tasks`, `sops`, `reports` and `logs` were retired
+// on 2026-09-15 along with the four pages that read them — each was a 3-byte
+// empty array that nothing ever wrote to.
+for (const name of ["agents"]) {
   app.get(`/api/hq/${name}`, (_req, res) => {
     try {
       res.json({ [name]: readHqCollection(ROOT, name) });
@@ -1484,95 +1488,12 @@ app.get("/api/agents/:project/:id/outputs/latest", (req, res) => {
   }
 });
 
-app.get("/api/runs", (req, res) => {
-  try {
-    const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 80));
-    const project = typeof req.query.project === "string" ? req.query.project : "";
-    const agentId = typeof req.query.agentId === "string" ? req.query.agentId : "";
-    const status = typeof req.query.status === "string" ? req.query.status : "all";
-    const rows = db
-      .prepare(`SELECT * FROM agent_runs ORDER BY id DESC LIMIT ?`)
-      .all(limit * 2);
-    let filtered = rows.map((r) => {
-      const parts = splitAgentKey(r.agent_key);
-      const artifacts = parseArtifactsJson(r.artifacts_json);
-      const { artifacts_json: _aj, ...rest } = r;
-      return {
-        ...rest,
-        project: parts?.project,
-        agentId: parts?.id,
-        duration_ms: runDurationMs(r.started_at, r.ended_at),
-        artifacts,
-        artifactsPreview:
-          artifacts.length > 0
-            ? artifacts.map((x) => x.title).join(" · ")
-            : null,
-      };
-    });
-    if (project) {
-      filtered = filtered.filter((r) => String(r.agent_key).startsWith(`${project}/`));
-    }
-    if (agentId && project) {
-      const key = `${project}/${agentId}`;
-      filtered = filtered.filter((r) => r.agent_key === key);
-    }
-    if (status !== "all") {
-      filtered = filtered.filter((r) => r.status === status);
-    }
-    filtered = filtered.slice(0, limit);
-    res.json({ runs: filtered });
-  } catch (e) {
-    res.status(500).json({ error: String(e.message || e) });
-  }
-});
-
-app.get("/api/runs/:runId", (req, res) => {
-  try {
-    const id = Number(req.params.runId);
-    if (!Number.isFinite(id)) return res.status(400).json({ error: "Invalid run id" });
-    const row = db.prepare(`SELECT * FROM agent_runs WHERE id = ?`).get(id);
-    if (!row) return res.status(404).json({ error: "Not found" });
-    const parts = splitAgentKey(row.agent_key);
-    const dir =
-      parts && existsSync(agentDir(ROOT, parts.project, parts.id))
-        ? agentDir(ROOT, parts.project, parts.id)
-        : null;
-    const logTail = dir ? tailLog(dir, 80) : "";
-    let outputMarkdown = null;
-    let outputHtml = null;
-    if (dir && row.output_file) {
-      const safeName = row.output_file.replace(/[/\\]/g, "");
-      const p = join(dir, "outputs", safeName);
-      const outRoot = join(dir, "outputs");
-      if (existsSync(p) && p.startsWith(outRoot)) {
-        try {
-          const md = readFileSync(p, "utf8").slice(0, 400000);
-          outputMarkdown = md;
-          if (p.endsWith(".md")) outputHtml = renderUntrustedMarkdown(md);
-        } catch {
-          /* ignore */
-        }
-      }
-    }
-    const artifacts = parseArtifactsJson(row.artifacts_json);
-    const { artifacts_json: _ar, ...runRow } = row;
-    res.json({
-      run: {
-        ...runRow,
-        project: parts?.project,
-        agentId: parts?.id,
-        duration_ms: runDurationMs(row.started_at, row.ended_at),
-        artifacts,
-      },
-      logTail,
-      outputMarkdown,
-      outputHtml,
-    });
-  } catch (e) {
-    res.status(400).json({ error: String(e.message || e) });
-  }
-});
-
+// `/api/runs` and `/api/runs/:runId` were removed on 2026-09-15 with the Runs
+// and Logs pages that were their only callers. Both read `agent_runs`, a
+// pre-factory table holding a single row; the factory records its work in the
+// task state store, and the execution view renders that. Agent Lab's own
+// last-run lookup (`/api/agents/:project/:id`) is unaffected and still reads
+// the table directly.
 app.get("/api/outputs/cards", async (_req, res) => {
   try {
     const agents = await buildEnrichedAgents(db, ROOT);

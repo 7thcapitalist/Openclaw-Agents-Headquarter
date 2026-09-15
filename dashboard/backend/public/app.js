@@ -174,30 +174,51 @@ import { permissionsPanel } from "/lib/permissionsView.mjs";
     return Object.fromEntries((Array.isArray(list) ? list : []).map((x) => [x.id, x]));
   }
 
-  function projectName(projects, id) {
-    return byId(projects)[id]?.name || id || "Global HQ";
-  }
-
   function workTargets(state, projects = state.projects || []) {
     return state.headquarters
       ? [...projects, { ...state.headquarters, isHeadquarters: true }]
       : projects;
   }
 
-  function agentName(agents, id) {
-    if (id === "operator") return "Operator";
-    return byId(agents)[id]?.name || id || "-";
-  }
-
   function riskSeverityOrder(a, b) {
     return (SEVERITY_RANK[a.severity] ?? 3) - (SEVERITY_RANK[b.severity] ?? 3);
   }
+
+  // Four surfaces retired on 2026-09-15. Each read a 3-byte file or a
+  // pre-factory table that the factory has never written to, while the real
+  // answer to the same question already existed elsewhere and was better.
+  const RETIRED = {
+    sops: {
+      title: "SOPs",
+      why: "This page read dashboard/backend/data/hq/sops.json, which was an empty array. Nothing ever wrote to it.",
+      instead: null,
+    },
+    logs: {
+      title: "Logs",
+      why: "This page read the pre-factory agent_runs table, which holds one row. The factory records its work somewhere else entirely.",
+      instead: ["#/today", "Open a task from Today — its execution view has the real timeline and evidence"],
+    },
+    reports: {
+      title: "Reports",
+      why: "This page read dashboard/backend/data/hq/reports.json, which was an empty array. Real per-task reports have existed all along on a route this page never called.",
+      instead: ["#/today", "Today lists what finished; opening one shows its real report"],
+    },
+    runs: {
+      title: "Runs",
+      why: "Same pre-factory agent_runs table as Logs — one row, never written to by the factory.",
+      instead: ["#/today", "Open a task from Today for the stage-by-stage execution record"],
+    },
+  };
 
   function parseRoute() {
     const raw = (location.hash || "#/today").replace(/^#\/?/, "");
     const segs = raw.split("/").filter(Boolean);
     if (!segs.length || segs[0] === "today" || segs[0] === "home") return { name: "today" };
-    if (["agents", "projects", "tasks", "sops", "logs", "reports", "runs"].includes(segs[0])) return { name: segs[0] };
+    if (["agents", "projects", "tasks"].includes(segs[0])) return { name: segs[0] };
+    // SOPs, Logs, Reports and Runs were retired. A bookmark to one of them
+    // must say where its content went; falling through to Today would look
+    // like the page had simply moved.
+    if (RETIRED[segs[0]]) return { name: "retired", id: segs[0] };
     if (segs[0] === "project" && segs[1]) return { name: "project", id: segs[1] };
     if (segs[0] === "agent" && segs[1] && segs[2]) return { name: "agent", project: segs[1], id: segs[2], tab: segs[3] || "overview" };
     if (segs[0] === "run" && segs[1]) return { name: "run", id: Number(segs[1]) };
@@ -210,10 +231,6 @@ import { permissionsPanel } from "/lib/permissionsView.mjs";
       ["#/agents", "agents", "Agents"],
       ["#/projects", "projects", "Projects"],
       ["#/tasks", "tasks", "Board"],
-      ["#/sops", "sops", "SOPs"],
-      ["#/logs", "logs", "Logs"],
-      ["#/reports", "reports", "Reports"],
-      ["#/runs", "runs", "Runs"],
     ];
     nav.innerHTML = items.map(([href, id, label]) => `<a href="${href}" data-nav="${id}">${esc(label)}</a>`).join("");
     nav.querySelectorAll("a").forEach((a) => {
@@ -242,36 +259,8 @@ import { permissionsPanel } from "/lib/permissionsView.mjs";
     return apiJson("/api/hq/learning");
   }
 
-  // The older seed HQ store (dashboard/backend/data/hq/*.json). Still used by
-  // the Task Board / SOPs / Reports pages below, which have no real backing
-  // system yet — those pages are clearly labelled as example data, never
-  // presented as the founder's real company.
-  async function loadHq() {
-    return apiJson("/api/hq");
-  }
-
   function pill(text, kind) {
     return `<span class="badge ${kind || "badge-type"}">${esc(text)}</span>`;
-  }
-
-  function demoBanner(label) {
-    return `<div class="demo-banner">${esc(
-      label || "Example data — not the real company. See Today / Projects / Agents for the real Headquarters Integration Layer data."
-    )}</div>`;
-  }
-
-  function taskCard(t, projects, agents) {
-    return `
-      <article class="task-card priority-${esc(String(t.priority || "low").toLowerCase())}">
-        <div class="task-title">${esc(t.title)}</div>
-        <div class="task-meta">${esc(projectName(projects, t.projectId))} · ${esc(agentName(agents, t.assignedAgent))}</div>
-        <div class="task-detail">${esc(t.expectedOutput || "")}</div>
-        <div class="task-footer">
-          ${pill(t.priority || "Low", "badge-priority")}
-          ${t.approvalRequired ? pill("Approval", "badge-warn") : ""}
-          ${t.dueDate ? `<span class="muted small">${esc(t.dueDate)}</span>` : ""}
-        </div>
-      </article>`;
   }
 
   // ── Today: the founder observability surface ───────────────────
@@ -865,7 +854,7 @@ import { permissionsPanel } from "/lib/permissionsView.mjs";
     return `<span class="badge ${tone}">${esc(status || "pending")}</span>`;
   }
 
-  function renderExecutionView(x, thread, timeline) {
+  function renderExecutionView(x, thread, timeline, report = null) {
     const blocked = x.blocker || null;
     const events = (x.events || []).slice().reverse();
     // From the shared vocabulary, not a local copy: the hosted console renders
@@ -876,7 +865,7 @@ import { permissionsPanel } from "/lib/permissionsView.mjs";
     return `<div class="operation-room"><header class="operation-header"><div><span class="eyebrow">${esc(x.project || "Factory")} · live operation</span><h2>${esc(title)}</h2><p>${esc(x.currentActivity || (blocked ? "The team is waiting for a decision." : "The team is coordinating the next move."))}</p></div><div class="operation-stat"><strong>${x.elapsedMs != null ? esc(fmtDuration(x.elapsedMs)) : "—"}</strong><span>in motion</span></div></header>
       <div class="operation-lane">${(x.stages || []).map((s, i) => `<div class="lane-step lane-${esc(s.status)}"><div class="lane-marker">${s.status === "completed" ? "✓" : s.status === "working" ? "●" : "○"}</div><div class="lane-copy"><span>${esc(humanStatus[s.status] || s.status)}</span><strong>${esc(s.agent || "Factory team")}</strong><p>${esc(s.activity || stageLabel[s.stage] || s.stage)}</p>${s.status === "working" ? `<em>Working now</em>` : ""}</div>${i < (x.stages || []).length - 1 ? `<div class="lane-connector"></div>` : ""}</div>`).join("")}</div>
       ${blocked ? `<section class="operation-callout ${blocked.autoRecovering ? "is-recovering" : ""}"><span class="eyebrow">${blocked.autoRecovering ? "Factory recovery" : blocked.needsFounder ? "Your attention" : "Needs attention"}</span><strong>${esc(blocked.headline || "The team needs your direction")}</strong><p>${esc(blocked.detail || (blocked.needsFounder ? "This is the point where the factory cannot safely decide for you." : "The team will continue when this is resolved."))}</p></section>` : ""}
-      <div class="operation-grid"><section><div class="operation-section-title"><span class="eyebrow">Handoffs &amp; activity</span><h3>Watch the team work</h3></div><div class="handoff-stream">${events.length ? events.map((e) => `<div class="handoff-item"><span class="handoff-line"></span><time>${esc(fmtTime(e.at))}</time><div><strong>${esc(e.source || "Factory")}${e.destination ? ` <span>→</span> ${esc(e.destination)}` : ""}</strong><p>${esc(e.message)}</p></div></div>`).join("") : `<p class="quiet-state">The first handoff is being prepared.</p>`}</div></section><aside><div class="operation-section-title"><span class="eyebrow">Evidence</span><h3>Confidence</h3></div><div class="confidence-list"><div><strong>${(x.stages || []).filter((s) => s.status === "completed").length}</strong><span>stages complete</span></div><div><strong>${(x.evidence || []).length}</strong><span>proof artifacts</span></div><div><strong>${blocked ? "Paused" : "Protected"}</strong><span>${blocked ? "awaiting direction" : "within factory gates"}</span></div></div>${x.github?.prUrl ? `<a class="btn secondary" href="${esc(x.github.prUrl)}" target="_blank" rel="noreferrer">Open delivery ↗</a>` : ""}</aside></div>${thread === undefined ? "" : interactionsSection(thread, { esc, fmtTime })}${timeline === undefined ? "" : runTimelineSection(timeline, { esc, fmtTime })}</div>`;
+      <div class="operation-grid"><section><div class="operation-section-title"><span class="eyebrow">Handoffs &amp; activity</span><h3>Watch the team work</h3></div><div class="handoff-stream">${events.length ? events.map((e) => `<div class="handoff-item"><span class="handoff-line"></span><time>${esc(fmtTime(e.at))}</time><div><strong>${esc(e.source || "Factory")}${e.destination ? ` <span>→</span> ${esc(e.destination)}` : ""}</strong><p>${esc(e.message)}</p></div></div>`).join("") : `<p class="quiet-state">The first handoff is being prepared.</p>`}</div></section><aside><div class="operation-section-title"><span class="eyebrow">Evidence</span><h3>Confidence</h3></div><div class="confidence-list"><div><strong>${(x.stages || []).filter((s) => s.status === "completed").length}</strong><span>stages complete</span></div><div><strong>${(x.evidence || []).length}</strong><span>proof artifacts</span></div><div><strong>${blocked ? "Paused" : "Protected"}</strong><span>${blocked ? "awaiting direction" : "within factory gates"}</span></div></div>${x.github?.prUrl ? `<a class="btn secondary" href="${esc(x.github.prUrl)}" target="_blank" rel="noreferrer">Open delivery ↗</a>` : ""}${report ? `<button class="btn secondary" data-open-report="${esc(report.id)}" data-open-report-kind="${esc(report.kind)}">Read the report</button>` : ""}</aside></div>${thread === undefined ? "" : interactionsSection(thread, { esc, fmtTime })}${timeline === undefined ? "" : runTimelineSection(timeline, { esc, fmtTime })}</div>`;
   }
 
   async function openExecutionView(id) {
@@ -885,7 +874,8 @@ import { permissionsPanel } from "/lib/permissionsView.mjs";
     const refresh = async () => {
       try {
         const execution = await apiJson(`/api/founder/objectives/${encodeURIComponent(id)}/execution`);
-        if (!modal.hidden) modalBody.innerHTML = renderExecutionView(execution);
+        if (!modal.hidden) modalBody.innerHTML = renderExecutionView(execution, undefined, undefined, { kind: "objective", id });
+        wireReportButton();
         if (execution.status !== "active" && executionPoll) { clearInterval(executionPoll); executionPoll = null; }
       } catch (e) {
         if (!modal.hidden) modalBody.innerHTML = `<p class="danger-text">${esc(e.message)}</p>`;
@@ -893,6 +883,14 @@ import { permissionsPanel } from "/lib/permissionsView.mjs";
     };
     await refresh();
     executionPoll = setInterval(refresh, 2500);
+  }
+
+  // The execution modal repaints every 2.5s while a task is active, so its
+  // report button is re-bound on each paint rather than delegated once.
+  function wireReportButton() {
+    const btn = modalBody.querySelector("[data-open-report]");
+    if (!btn) return;
+    btn.onclick = () => openReportDrilldown(btn.dataset.openReportKind, btn.dataset.openReport);
   }
 
   function wireInteractionForm(taskId) {
@@ -937,8 +935,9 @@ import { permissionsPanel } from "/lib/permissionsView.mjs";
           apiJson(`/api/founder/tasks/${encodeURIComponent(id)}/interactions`).catch(() => null),
           apiJson(`/api/founder/tasks/${encodeURIComponent(id)}/timeline`).catch(() => null),
         ]);
-        if (!modal.hidden) modalBody.innerHTML = renderExecutionView(execution, thread, timeline);
+        if (!modal.hidden) modalBody.innerHTML = renderExecutionView(execution, thread, timeline, { kind: "task", id });
         wireInteractionForm(id);
+        wireReportButton();
         if (execution.status !== "active" && executionPoll) { clearInterval(executionPoll); executionPoll = null; }
       } catch (e) {
         if (!modal.hidden) modalBody.innerHTML = `<p class="danger-text">${esc(e.message)}</p>`;
@@ -1602,142 +1601,16 @@ import { permissionsPanel } from "/lib/permissionsView.mjs";
       </article>`;
   }
 
-  async function renderSops() {
-    const d = await loadHq();
+  // What a retired page says now. It names what it used to read and why that
+  // was never going to be right, and points at the surface that answers the
+  // same question for real — rather than 404ing or silently redirecting.
+  function renderRetired(r) {
+    const page = RETIRED[r.id];
+    if (!page) return renderToday();
     app.innerHTML = `
-      ${demoBanner()}
-      <div class="page-head">
-        <div><h1 class="page-title">SOPs</h1><p class="muted">Example operating procedures seeded for demo purposes — not real company SOPs.</p></div>
-        <button class="btn secondary" id="edit-sops">Edit SOPs JSON</button>
-      </div>
-      ${["global", "project"].map((scope) => `
-        <h2 class="section-title">${scope === "global" ? "Global SOPs" : "Project SOPs"}</h2>
-        ${(d.sops || []).filter((s) => s.scope === scope).map((s) => `
-          <article class="card">
-            <div class="card-head">
-              <div><h3 class="card-title">${esc(s.title)}</h3><div class="card-meta">${esc(projectName(d.projects, s.projectId))} · Owner: ${esc(agentName(d.agents, s.ownerAgent))}</div></div>
-            </div>
-            <p>${esc(s.body)}</p>
-          </article>`).join("") || `<p class="muted">No ${esc(scope)} SOPs yet.</p>`}
-      `).join("")}`;
-    document.getElementById("edit-sops").onclick = () => editCollection("sops", d.sops);
-  }
-
-  async function renderLogs() {
-    const d = await loadHq();
-    const runRows = await apiJson("/api/runs?limit=20").catch(() => ({ runs: [] }));
-    app.innerHTML = `
-      <h1 class="page-title">Logs</h1>
-      <div class="log-grid">
-        ${logSection("Daily / Decision / Task Logs (example data)", d.logs, d)}
-        ${logSection("Agent Run Logs (real — Agent Lab)", (runRows.runs || []).map((r) => ({
-          type: "agent-run",
-          title: `${r.agent_key} ${r.status}`,
-          detail: r.summary || r.error_message || "",
-          createdAt: r.started_at,
-          source: "agent-lab"
-        })), d)}
-      </div>`;
-  }
-
-  function logSection(title, rows, d) {
-    return `
-      <section>
-        <h2 class="section-title">${esc(title)}</h2>
-        ${(rows || []).map((l) => `
-          <div class="feed-item">
-            ${pill(l.type || "log", l.type === "error" ? "health-failed" : "badge-type")}
-            <strong>${esc(l.title)}</strong>
-            <div class="muted small">${esc(projectName(d.projects || [], l.projectId))} · ${esc(agentName(d.agents || [], l.agentId))} · ${esc(fmtTime(l.createdAt))}</div>
-            <p>${esc(l.detail)}</p>
-          </div>`).join("") || `<p class="muted">No logs.</p>`}
-      </section>`;
-  }
-
-  async function renderReports() {
-    const d = await loadHq();
-    app.innerHTML = `
-      ${demoBanner()}
-      <div class="page-head">
-        <div><h1 class="page-title">Reports</h1><p class="muted">Example daily/CEO/weekly reports seeded for demo purposes — no real reports have been generated yet.</p></div>
-        <button class="btn secondary" id="edit-reports">Edit reports JSON</button>
-      </div>
-      ${["daily-brief", "project-ceo-report", "weekly-project-review"].map((type) => `
-        <h2 class="section-title">${esc(reportLabel(type))}</h2>
-        ${(d.reports || []).filter((r) => r.type === type).map((r) => `
-          <article class="card">
-            <div class="card-head">
-              <div><h3 class="card-title">${esc(r.title)}</h3><div class="card-meta">${esc(projectName(d.projects, r.projectId))} · ${esc(agentName(d.agents, r.agentId))} · ${esc(fmtTime(r.createdAt))}</div></div>
-            </div>
-            <p><strong>${esc(r.summary)}</strong></p>
-            <p>${esc(r.body)}</p>
-          </article>`).join("") || `<p class="muted">No reports yet.</p>`}
-      `).join("")}`;
-    document.getElementById("edit-reports").onclick = () => editCollection("reports", d.reports);
-  }
-
-  function reportLabel(type) {
-    if (type === "daily-brief") return "Charles Daily Brief";
-    if (type === "project-ceo-report") return "Project CEO Reports";
-    return "Weekly Project Reviews";
-  }
-
-  async function editCollection(name, value) {
-    openModal(`Edit ${name}`, `
-      <p class="muted">Edit carefully. This writes <code>dashboard/backend/data/hq/${esc(name)}.json</code>.</p>
-      <textarea class="editor tall" id="collection-editor">${esc(JSON.stringify(value, null, 2))}</textarea>
-      <div class="row-actions"><button class="btn" id="save-collection">Save</button></div>`);
-    document.getElementById("save-collection").onclick = async () => {
-      try {
-        const parsed = JSON.parse(document.getElementById("collection-editor").value);
-        await apiJson(`/api/hq/${encodeURIComponent(name)}`, {
-          method: "PUT",
-          body: JSON.stringify({ [name]: parsed }),
-        });
-        closeModal();
-        showToast(`${name} saved.`);
-        route();
-      } catch (e) {
-        showToast(String(e.message || e), true);
-      }
-    };
-  }
-
-  // ── Runs — real Agent Lab run history ───────────────────────────
-
-  async function renderRuns() {
-    const d = await apiJson("/api/runs?limit=80");
-    app.innerHTML = `
-      <h1 class="page-title">Runs</h1>
-      <p class="muted">Real Agent Lab run history.</p>
-      <div class="timeline">
-        ${(d.runs || []).map((r) => `
-          <div class="timeline-item ${r.status}">
-            <div><strong>${esc(r.agent_key)}</strong> · ${pill(r.status, r.status === "success" ? "health-healthy" : r.status === "failed" ? "health-failed" : "badge-type")}</div>
-            <div class="muted small">${esc(fmtTime(r.started_at))}</div>
-            <div class="small">${esc(r.summary || r.error_message || "")}</div>
-            <a href="#/run/${r.id}">Open run</a>
-          </div>`).join("") || `<p class="muted">No runs yet.</p>`}
-      </div>`;
-  }
-
-  async function renderRunDetail(route) {
-    const d = await apiJson("/api/runs/" + route.id);
-    const r = d.run;
-    app.innerHTML = `
-      <p><a href="#/runs">Back to Runs</a></p>
-      <h1 class="page-title">Run #${r.id}</h1>
-      <div class="card">
-        <p><strong>Agent</strong> ${esc(r.project)}/${esc(r.agentId)}</p>
-        <p><strong>Status</strong> ${esc(r.status)}</p>
-        <p><strong>Started</strong> ${esc(fmtTime(r.started_at))}</p>
-        <p><strong>Ended</strong> ${esc(fmtTime(r.ended_at))}</p>
-        <p><strong>Summary</strong> ${esc(r.summary || "-")}</p>
-        <p><strong>Error</strong> ${esc(r.error_message || "-")}</p>
-      </div>
-      <h2 class="section-title">Log tail</h2>
-      <pre class="code">${esc(d.logTail || "")}</pre>
-      ${d.outputHtml ? `<h2 class="section-title">Output</h2><div class="card md-body">${d.outputHtml}</div>` : ""}`;
+      <h1 class="page-title">${esc(page.title)} has been retired</h1>
+      <p class="muted">${esc(page.why)}</p>
+      ${page.instead ? `<p><a href="${esc(page.instead[0])}">${esc(page.instead[1])}</a></p>` : ""}`;
   }
 
   async function renderLabAgent(route) {
@@ -1752,7 +1625,6 @@ import { permissionsPanel } from "/lib/permissionsView.mjs";
         <p><strong>Last run</strong> ${esc(a.lastRun?.status || "-")} · ${esc(fmtTime(a.lastRun?.ended_at || a.lastRun?.started_at))}</p>
         <div class="row-actions">
           <button class="btn" id="run-lab-agent">Run now</button>
-          <a class="btn secondary" href="#/runs">Run history</a>
         </div>
       </div>
       <h2 class="section-title">Latest output</h2>
@@ -1782,11 +1654,7 @@ import { permissionsPanel } from "/lib/permissionsView.mjs";
       else if (r.name === "projects") await renderProjects();
       else if (r.name === "project") await renderProject(r);
       else if (r.name === "tasks") await renderTasks();
-      else if (r.name === "sops") await renderSops();
-      else if (r.name === "logs") await renderLogs();
-      else if (r.name === "reports") await renderReports();
-      else if (r.name === "runs") await renderRuns();
-      else if (r.name === "run") await renderRunDetail(r);
+      else if (r.name === "retired") renderRetired(r);
       else if (r.name === "agent") await renderLabAgent(r);
       else await renderToday();
     } catch (e) {
