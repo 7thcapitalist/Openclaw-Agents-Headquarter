@@ -52,6 +52,11 @@ export const INTENT_KINDS = Object.freeze({
   "overnight.start":     { args: [],                         maxLen: {} },
   "overnight.stop":      { args: [],                         maxLen: {} },
   "task.comment":        { args: ["taskId", "body"],         maxLen: { taskId: 100, body: 4000 } },
+  // Ask the factory a question. Deliberately NOT carrying an agent id: which
+  // agent answers is a choice this machine makes, not one the network gets to
+  // name. The text becomes an argv element to `openclaw agent --message`,
+  // which spawns no shell — see answerFounderQuestion.
+  "question.ask":        { args: ["question"],               maxLen: { question: 2000 } },
 });
 
 export const INTENT_STATUSES = Object.freeze(["pending", "claimed", "done", "failed", "rejected"]);

@@ -6,6 +6,10 @@ import { join } from "node:path";
 const root = join(import.meta.dirname, "..", "..");
 const app = readFileSync(join(root, "dashboard/backend/public/app.js"), "utf8");
 const server = readFileSync(join(root, "dashboard/backend/server.mjs"), "utf8");
+// Answering a founder question moved out of server.mjs so the local dashboard
+// and the console's `question.ask` intent run the same code. The guarantees
+// below did not move — only the file that has to carry them.
+const controlPlane = readFileSync(join(root, "dashboard/backend/lib/founderControlPlane.mjs"), "utf8");
 
 test("founder UI keeps the Headquarters repo available as a work target", () => {
   assert.match(app, /function workTargets\(state, projects = state\.projects \|\| \[\]\)/);
@@ -22,13 +26,14 @@ test("founder UI keeps the Headquarters repo available as a work target", () => 
 test("founder questions never block the request on the model", () => {
   // The dispatch is still bounded, and the bound is passed through to OpenClaw.
   assert.match(server, /FOUNDER_QUESTION_TIMEOUT_MS/);
-  assert.match(server, /String\(Math\.floor\(FOUNDER_QUESTION_TIMEOUT_MS \/ 1000\)\)/);
+  assert.match(controlPlane, /FOUNDER_QUESTION_TIMEOUT_MS/);
+  assert.match(controlPlane, /String\(Math\.floor\(timeoutMs \/ 1000\)\)/);
   // Asking is accepted immediately and answered out of band.
   assert.match(server, /void runFounderQuestion\(item\);/);
   assert.match(server, /res\.status\(202\)\.json\(\{ question: item \}\)/);
   assert.match(server, /app\.get\("\/api\/founder\/questions\/:id"/);
   // A timeout is recorded as question state, never surfaced as a raw HTTP error.
-  assert.match(server, /status: "failed", error: questionError\(error\)/);
+  assert.match(controlPlane, /status: "failed",\s*\n?\s*error: founderQuestionError\(error, timeoutMs\)/);
   // The client still degrades gracefully if a proxy times out anyway.
   assert.match(app, /res\.status === 524 \|\| res\.status === 504/);
 });

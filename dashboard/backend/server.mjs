@@ -84,8 +84,8 @@ import {
   readObjectiveReport,
   readTaskCompletionReport,
   readTaskEvidence,
-  recordQuestion,
-  updateQuestion,
+  askFounderQuestion,
+  answerFounderQuestion,
   listPendingQuestions,
   resolveFounderDecision,
   resolveProjectRepo,
@@ -708,26 +708,11 @@ app.get("/api/hq/role-policy", (_req, res) => {
   catch (e) { res.status(500).json({ error: String(e.message || e) }); }
 });
 
-function questionError(error) {
-  if (error?.killed || error?.code === "ETIMEDOUT") {
-    const seconds = Math.ceil(FOUNDER_QUESTION_TIMEOUT_MS / 1000);
-    return `OpenClaw did not answer within ${seconds} seconds. Check Today for active work before asking again.`;
-  }
-  if (error?.code) return `OpenClaw could not answer the question (process code ${String(error.code).slice(0, 40)}).`;
-  return "OpenClaw could not answer the question. Check the factory logs for details.";
-}
-
+// Answering lives in founderControlPlane.mjs so this route and the console's
+// `question.ask` intent run the same code. It was inline here, and a second
+// copy in the intent worker is how two surfaces start answering differently.
 async function runFounderQuestion(questionRecord) {
-  const question = updateQuestion(ROOT, questionRecord.id, { status: "running", startedAt: new Date().toISOString() });
-  if (!question) return;
-  try {
-    const { stdout } = await execFileAsync("openclaw", ["agent", "--agent", question.agentId, "--session-key", `agent:${question.agentId}:founder-control-plane`, "--message", question.question, "--json", "--timeout", String(Math.floor(FOUNDER_QUESTION_TIMEOUT_MS / 1000))], { timeout: FOUNDER_QUESTION_TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024 });
-    const envelope = JSON.parse(stdout);
-    const answer = envelope.result?.payloads?.map((item) => item.text).filter(Boolean).join("\n") || envelope.summary || "No answer returned.";
-    updateQuestion(ROOT, question.id, { status: "answered", answer, answeredAt: new Date().toISOString() });
-  } catch (error) {
-    updateQuestion(ROOT, question.id, { status: "failed", error: questionError(error), failedAt: new Date().toISOString() });
-  }
+  return answerFounderQuestion(ROOT, questionRecord, { timeoutMs: FOUNDER_QUESTION_TIMEOUT_MS });
 }
 
 function resumePendingFounderQuestions() {
@@ -736,14 +721,14 @@ function resumePendingFounderQuestions() {
 
 app.post("/api/founder/questions", (req, res) => {
   try {
-    const agentId = String(req.body?.agentId || "main").trim();
-    const question = String(req.body?.question || "").trim();
-    if (!/^[a-z0-9][a-z0-9-]*$/.test(agentId) || !question) return res.status(400).json({ error: "A valid agentId and question are required." });
-    const item = recordQuestion(ROOT, { id: `question-${Date.now().toString(36)}`, agentId, question, status: "queued", askedAt: new Date().toISOString() });
+    const item = askFounderQuestion(ROOT, {
+      question: req.body?.question,
+      agentId: String(req.body?.agentId || "main").trim(),
+    });
     void runFounderQuestion(item);
     res.status(202).json({ question: item });
   } catch (e) {
-    res.status(500).json({ error: String(e.message || e) });
+    res.status(e?.statusCode || 500).json({ error: String(e.message || e) });
   }
 });
 

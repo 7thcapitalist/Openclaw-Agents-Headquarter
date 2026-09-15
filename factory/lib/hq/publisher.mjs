@@ -26,6 +26,7 @@ import { buildGoalsSnapshot } from "./goals.mjs";
 import { buildOperationsSnapshot } from "./operations.mjs";
 import { buildReadinessSnapshot } from "./readiness.mjs";
 import { buildOvernightPanel } from "./overnight.mjs";
+import { buildQuestionsPanel } from "./questions.mjs";
 import { buildWorkProposals } from "./proposer.mjs";
 import { buildMirrorSnapshot, MIRROR_CONTRACT } from "./mirror.mjs";
 import { buildTaskDetail } from "./task-detail.mjs";
@@ -55,7 +56,7 @@ async function gather(name, produce) {
  * the dependency runs the other way round, and inverting it here would make
  * the factory's libraries need the dashboard in order to load.
  */
-export async function collectSources({ hqRoot, tasks = [], readOvernight = null, now = new Date() } = {}) {
+export async function collectSources({ hqRoot, tasks = [], readOvernight = null, readQuestions = null, now = new Date() } = {}) {
   const panels = await Promise.all([
     gather("company", () => buildCompanyState({ hqRoot, tasks, now })),
     gather("goals", () => buildGoalsSnapshot({ hqRoot })),
@@ -86,6 +87,17 @@ export async function collectSources({ hqRoot, tasks = [], readOvernight = null,
       const { queue, limit } = readOvernight() || {};
       return buildOvernightPanel(queue, { limit, now });
     }),
+    // What the founder asked, and what came back. Injected for the same reason
+    // as the overnight plan: the store is reached through dashboard/.
+    gather("questions", () => {
+      if (typeof readQuestions !== "function") {
+        return buildQuestionsPanel(null, {
+          now,
+          reason: "The publisher was started without a reader for the question record.",
+        });
+      }
+      return buildQuestionsPanel(readQuestions(), { now });
+    }),
   ]);
 
   return Object.fromEntries(panels.map(({ name, value }) => [name, value]));
@@ -99,8 +111,8 @@ export async function collectSources({ hqRoot, tasks = [], readOvernight = null,
  * strips secrets, host paths, reasoning blocks and oversized fields whatever
  * key they sit under.
  */
-export async function buildSnapshot({ hqRoot, tasks = [], readOvernight = null, publisher = "factory-machine", now = new Date() } = {}) {
-  const sources = await collectSources({ hqRoot, tasks, readOvernight, now });
+export async function buildSnapshot({ hqRoot, tasks = [], readOvernight = null, readQuestions = null, publisher = "factory-machine", now = new Date() } = {}) {
+  const sources = await collectSources({ hqRoot, tasks, readOvernight, readQuestions, now });
   return buildMirrorSnapshot({
     hqRoot,
     sources,

@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 
 import { discoverFactoryTasks } from "../dashboard/backend/lib/founderControlPlane.mjs";
 import { overnightLimit, readOvernightQueue } from "../dashboard/backend/lib/overnightQueue.mjs";
+import { listRecentQuestions } from "../dashboard/backend/lib/founderControlPlane.mjs";
 import { readState } from "../factory/lib/task-workflow.mjs";
 import { buildSnapshot, buildTaskDetails, publishSnapshot, publishTaskDetail } from "../factory/lib/hq/publisher.mjs";
 import { DEFAULTS, failureAlert, nextDelayMs, shouldPublish, snapshotFingerprint } from "../factory/lib/hq/publish-cadence.mjs";
@@ -59,6 +60,17 @@ function overnight() {
   }
 }
 
+// What the founder asked the factory. Injected like the overnight plan, and
+// for the same reason.
+function questions() {
+  try {
+    return listRecentQuestions(hqRoot, { limit: 10 });
+  } catch (error) {
+    console.warn(`question record unavailable: ${String(error?.message || error).slice(0, 200)}`);
+    return null;
+  }
+}
+
 function tasks() {
   try {
     return discoverFactoryTasks(hqRoot);
@@ -90,7 +102,7 @@ function report(result) {
 async function attempt(state) {
   let snapshot;
   try {
-    snapshot = await buildSnapshot({ hqRoot, tasks: tasks(), readOvernight: overnight });
+    snapshot = await buildSnapshot({ hqRoot, tasks: tasks(), readOvernight: overnight, readQuestions: questions });
   } catch (error) {
     return { ok: false, reason: `snapshot build failed: ${String(error?.message || error).slice(0, 200)}` };
   }
@@ -142,7 +154,7 @@ async function once() {
 }
 
 async function dryRun() {
-  const snapshot = await buildSnapshot({ hqRoot, tasks: tasks(), readOvernight: overnight });
+  const snapshot = await buildSnapshot({ hqRoot, tasks: tasks(), readOvernight: overnight, readQuestions: questions });
   console.log(
     JSON.stringify(
       {

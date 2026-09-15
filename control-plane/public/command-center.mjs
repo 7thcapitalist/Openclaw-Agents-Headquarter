@@ -116,6 +116,38 @@ export function overnightPlan(panels) {
   };
 }
 
+/**
+ * What has been asked, and what came back.
+ *
+ * The answer arrives on a later publish, not in the intent's acknowledgement,
+ * so the page must be able to say "still waiting" without looking broken.
+ */
+export function questionLog(panels, { limit = 3 } = {}) {
+  const panel = panels?.questions;
+  if (!panel) return { available: false, reason: null, items: [] };
+  if (unavailable(panel) || panel.available === false) {
+    return {
+      available: false,
+      reason: text(panel.reason, null) || "The question record could not be read.",
+      items: [],
+    };
+  }
+  return {
+    available: true,
+    reason: null,
+    items: list(panel.questions).slice(0, limit).map((item) => ({
+      id: text(item?.id, null),
+      question: text(item?.question, "(no question recorded)"),
+      status: text(item?.status, "queued"),
+      answer: text(item?.answer, null),
+      answerTruncated: Boolean(item?.answerTruncated),
+      agentId: text(item?.agentId, null),
+      error: text(item?.error, null),
+      pending: item?.status === "queued" || item?.status === "running",
+    })).filter((item) => item.id),
+  };
+}
+
 export function commandCenterModel(snapshot) {
   const panels = snapshot?.panels || {};
   const targets = launchTargets(panels);
@@ -128,6 +160,7 @@ export function commandCenterModel(snapshot) {
       ? null
       : "No projects have been published yet, so there is nowhere to send work.",
     overnight: overnightPlan(panels),
+    questions: questionLog(panels),
   };
 }
 
@@ -160,6 +193,7 @@ function projectSelect(targets, id) {
  */
 export function renderCommandCenter(root, snapshot, {
   onStart = null,
+  onAsk = null,
   onOvernightAdd = null,
   onOvernightRemove = null,
   onOvernightStart = null,
@@ -201,6 +235,8 @@ export function renderCommandCenter(root, snapshot, {
     section.append(form);
     if (state) section.append(intentStatus(state));
   }
+
+  if (onAsk) section.append(askBlock(model.questions, onAsk, intentStateFor));
 
   section.append(overnightBlock(model.overnight, model.targets, {
     onOvernightAdd, onOvernightRemove, onOvernightStart, onOvernightStop, intentStateFor,
@@ -314,6 +350,70 @@ function overnightBlock(plan, targets, {
   for (const key of ["overnight:start", "overnight:stop"]) {
     const state = intentStateFor(key);
     if (state) block.append(intentStatus(state));
+  }
+
+  return block;
+}
+
+
+/**
+ * Ask the factory a question.
+ *
+ * The answer comes back on a later publish rather than in the reply to the
+ * click, so the log below is the real output and the intent state is only the
+ * receipt. Every answer is written with textContent — it is an agent's output,
+ * and it is rendered as text, never as markup.
+ */
+function askBlock(log, onAsk, intentStateFor) {
+  const block = el("div", "cc-ask");
+  block.append(el("h3", "cc-subtitle", "Ask the factory"));
+
+  const form = el("form", "cc-form cc-form--compact");
+  const input = el("input", "cc-objective cc-objective--one-line");
+  input.type = "text";
+  input.placeholder = "Ask about the company, a project, or what the factory is doing";
+  input.setAttribute("aria-label", "Question for the factory");
+  const row = el("div", "cc-row");
+  const ask = el("button", "btn-ghost", "Ask");
+  ask.type = "submit";
+  row.append(ask);
+  form.append(input, row);
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const question = input.value.trim();
+    if (!question) { input.focus(); return; }
+    onAsk({ question }, ask, "question:ask");
+    input.value = "";
+  });
+  block.append(form);
+
+  const state = intentStateFor("question:ask");
+  if (state) block.append(intentStatus(state));
+
+  if (!log.available) {
+    if (log.reason) block.append(el("p", "home-meta home-meta--dim", log.reason));
+    return block;
+  }
+
+  if (log.items.length) {
+    const listEl = el("ul", "cc-ask-list");
+    for (const item of log.items) {
+      const row = el("li", `cc-ask-item cc-ask-item--${item.status}`);
+      row.append(el("strong", "cc-ask-q", item.question));
+      if (item.pending) {
+        // Named, so a slow answer does not read as a broken page.
+        row.append(el("p", "home-meta home-meta--dim", "Waiting for the factory to answer."));
+      } else if (item.status === "failed") {
+        row.append(el("p", "cc-night-error", item.error || "The factory could not answer."));
+      } else {
+        row.append(el("p", "cc-ask-a", item.answer || "No answer returned."));
+        const meta = [item.agentId, item.answerTruncated ? "answer shown in part" : null]
+          .filter(Boolean).join(" · ");
+        if (meta) row.append(el("span", "home-meta home-meta--dim", meta));
+      }
+      listEl.append(row);
+    }
+    block.append(listEl);
   }
 
   return block;
