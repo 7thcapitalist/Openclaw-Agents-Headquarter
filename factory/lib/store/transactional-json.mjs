@@ -20,7 +20,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { basename, dirname, extname, join } from "node:path";
 import { assertSupportedVersion } from "./durable-version.mjs";
 import { randomUUID } from "node:crypto";
-import { CorruptStateError, StateStoreFullError, StaleRevisionError, importLegacyState, maxStateBytes, mutateEntity, openStateDb, peekEntity, quarantineRow, stateStoreBytes } from "./sqlite-state.mjs";
+import { CorruptStateError, StateStoreFullError, StaleRevisionError, importLegacyState, maxStateBytes, mutateEntity, openStateDb, peekEntity, quarantineRow, readEntityEvents, stateStoreBytes } from "./sqlite-state.mjs";
 
 export { StaleRevisionError, CorruptStateError, StateStoreFullError, maxStateBytes, stateStoreBytes };
 
@@ -89,7 +89,25 @@ export function readTransactionalState(jsonPath, { format = "task-state" } = {})
     throw error;
   }
   assertSupportedVersion(row.state?.version, { format, path: jsonPath });
-  return row.state;
+  return rehydrateEvents(handle, row.state);
+}
+
+// The stored document keeps only a bounded tail of state.events[] (see
+// windowStateEvents in sqlite-state.mjs). The `events` table holds the whole
+// history, so readers are handed the whole history here — the audit envelope,
+// the activity projection, the run timeline and the objective orchestrator's
+// maxParallel derivation all read `state.events` and all of them need history,
+// not a tail. Rehydrating at this single funnel is what lets the document
+// shrink without any of them changing or noticing.
+//
+// The tail in the document is not the source of truth and is not merged with
+// the table: the table already contains every event the tail does.
+function rehydrateEvents(handle, state) {
+  if (!state || !Array.isArray(state.events)) return state;
+  if (!state.eventsDropped) return state;
+  const history = readEntityEvents(handle, ENTITY_ID);
+  if (history.length < state.events.length) return state;
+  return { ...state, events: history };
 }
 
 export function peekRevision(jsonPath) {
