@@ -67,7 +67,6 @@ openclaw-startup-hq/
 │   └── public/              # browser UI
 ├── scripts/                 # create/register/start/stop agent helpers
 ├── agents/                  # runnable worker-agent folders
-├── examples/hq/             # sample HQ JSON state
 └── docs/screenshots/        # dashboard screenshots for GitHub
 ```
 
@@ -129,7 +128,6 @@ git clone https://github.com/7thcapitalist/Openclaw-Agents-Headquarter.git
 cd Openclaw-Agents-Headquarter
 cp .env.example .env
 npm run setup
-npm run seed:hq
 npm run register:example
 npm run dev
 ```
