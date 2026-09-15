@@ -33,6 +33,27 @@ export const MIRROR_CONTRACT = "hq.mirror/1";
 // diffs and pasted logs are out of scope; their paths are not.
 const MAX_FIELD = 4000;
 
+// A verdict is not a file body, and truncating one costs the founder the single
+// most useful text on the task screen.
+//
+// MAX_FIELD exists to stop evidence bodies, diffs and pasted logs travelling,
+// and 4,000 characters is the right ceiling for that. But it fires on the wrong
+// things too: a reviewer's verdict in the LifeMax run ran ~2,800 characters and
+// only just survived, and blocker summaries and recovery errors run longer.
+//
+// Raising MAX_FIELD globally would re-admit exactly what it was built to keep
+// out, so the higher ceiling is OPT-IN and scoped to the per-task detail
+// document, which is the only place a full verdict is the point. The main
+// mirror's boundary is unchanged — every existing field still truncates at
+// 4,000 — and FORBIDDEN_KEYS drops body/diff/patch/content outright at any
+// length in both.
+const LONG_FIELD_KEYS = new Set([
+  "summary", "reason", "why", "error", "message", "whatFailed",
+  "whatItNeedsFromFounder", "whatHappensAfterApproval", "whatFactoryTried",
+  "recommendation", "question", "verdict", "detail",
+]);
+const MAX_LONG_FIELD = 12_000;
+
 // Keys whose values are never published whatever they contain. Belt to
 // sanitize()'s braces: the walk would scrub a recognisable secret, but a value
 // under one of these names should not travel even if it looks harmless.
@@ -58,7 +79,7 @@ const ABSOLUTE_PATH = /(?:\/(?:home|Users|root|var|etc|opt|srv|tmp)\/[^\s"'`,;:)
  * depth. Returns the sanitized value plus a report of what was removed, so a
  * publisher can log that redaction happened without logging what was redacted.
  */
-export function sanitize(value, { hqRoot = null, report = { secrets: [], paths: 0, truncated: 0, dropped: [], reasoning: 0 }, key = null } = {}) {
+export function sanitize(value, { hqRoot = null, report = { secrets: [], paths: 0, truncated: 0, dropped: [], reasoning: 0 }, key = null, allowLongFields = false } = {}) {
   if (value === null || value === undefined) return { value, report };
 
   if (typeof value === "string") {
@@ -83,15 +104,23 @@ export function sanitize(value, { hqRoot = null, report = { secrets: [], paths: 
     out = scrubbed.text;
     for (const hit of scrubbed.hits) report.secrets.push(hit.name);
 
-    if (out.length > MAX_FIELD) {
-      out = `${out.slice(0, MAX_FIELD)}… [truncated]`;
+    const long = allowLongFields && LONG_FIELD_KEYS.has(key);
+    const ceiling = long ? MAX_LONG_FIELD : MAX_FIELD;
+    if (out.length > ceiling) {
+      // The mirror's marker is unchanged, byte for byte. On the opt-in path the
+      // marker also names the limit and says the full text still exists, so a
+      // reader of a verdict knows whether they have all of it and where the
+      // rest is — which is the whole reason that path exists.
+      out = long
+        ? `${out.slice(0, ceiling)}…\n\n[truncated at ${ceiling} characters — the full text is on the factory machine in this task's state]`
+        : `${out.slice(0, ceiling)}… [truncated]`;
       report.truncated += 1;
     }
     return { value: out, report };
   }
 
   if (Array.isArray(value)) {
-    const out = value.map((item) => sanitize(item, { hqRoot, report }).value);
+    const out = value.map((item) => sanitize(item, { hqRoot, report, key, allowLongFields }).value);
     return { value: out, report };
   }
 
@@ -99,7 +128,7 @@ export function sanitize(value, { hqRoot = null, report = { secrets: [], paths: 
     const out = {};
     for (const [k, v] of Object.entries(value)) {
       if (FORBIDDEN_KEYS.has(k)) { report.dropped.push(k); continue; }
-      out[k] = sanitize(v, { hqRoot, report, key: k }).value;
+      out[k] = sanitize(v, { hqRoot, report, key: k, allowLongFields }).value;
     }
     return { value: out, report };
   }
@@ -116,11 +145,11 @@ export function sanitize(value, { hqRoot = null, report = { secrets: [], paths: 
  * path — it is a boundary, not a second way to read state — and makes the
  * boundary testable against fixtures containing deliberately planted secrets.
  */
-export function buildMirrorSnapshot({ hqRoot = null, sources = {}, now = new Date().toISOString(), publisher = null } = {}) {
+export function buildMirrorSnapshot({ hqRoot = null, sources = {}, now = new Date().toISOString(), publisher = null, allowLongFields = false } = {}) {
   const report = { secrets: [], paths: 0, truncated: 0, dropped: [], reasoning: 0 };
   const clean = {};
   for (const [name, source] of Object.entries(sources)) {
-    clean[name] = sanitize(source, { hqRoot, report }).value;
+    clean[name] = sanitize(source, { hqRoot, report, allowLongFields }).value;
   }
 
   return {
@@ -141,8 +170,9 @@ export function buildMirrorSnapshot({ hqRoot = null, sources = {}, now = new Dat
       reasoningBlocksStripped: report.reasoning,
       keysDropped: [...new Set(report.dropped)].sort(),
       maxFieldLength: MAX_FIELD,
+      maxLongFieldLength: MAX_LONG_FIELD,
     },
   };
 }
 
-export { FORBIDDEN_KEYS, MAX_FIELD, ABSOLUTE_PATH };
+export { FORBIDDEN_KEYS, MAX_FIELD, MAX_LONG_FIELD, LONG_FIELD_KEYS, ABSOLUTE_PATH };

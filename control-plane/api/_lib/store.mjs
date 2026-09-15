@@ -77,6 +77,56 @@ export function isNotFound(error) {
   return /\b(not found|no such (?:blob|key|object)|does not exist)\b/i.test(String(error.message || ""));
 }
 
+// One blob per task, under a prefix — the same shape _lib/queue.mjs uses for
+// intents, and for the same reason: a fixed single document cannot be addressed
+// per record, and PATHNAME above is deliberately fixed.
+const TASK_PREFIX = "mirror/tasks/";
+
+// A task id reaches this from a query string, so it is validated as a path
+// segment before it is ever concatenated into a blob key. Anything else is a
+// miss, never a traversal.
+const TASK_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
+
+export function taskPathname(taskId) {
+  const id = String(taskId || "");
+  if (!TASK_ID.test(id)) return null;
+  return `${TASK_PREFIX}${id}.json`;
+}
+
+export async function writeTaskDetail(taskId, detail) {
+  const authorization = token();
+  const pathname = taskPathname(taskId);
+  if (!pathname) throw new Error("invalid task id");
+  const { put } = await blob();
+  const body = JSON.stringify(detail);
+  const result = await put(pathname, body, {
+    access: "private", contentType: "application/json", allowOverwrite: true,
+    addRandomSuffix: false, cacheControlMaxAge: 0, token: authorization,
+  });
+  return { pathname: result.pathname, size: body.length };
+}
+
+export async function readTaskDetail(taskId) {
+  const authorization = token();
+  const pathname = taskPathname(taskId);
+  if (!pathname) return null;
+  const { head } = await blob();
+  let meta;
+  try {
+    meta = await head(pathname, { token: authorization });
+  } catch (error) {
+    if (isNotFound(error)) return null;
+    throw error;
+  }
+  if (!meta?.downloadUrl && !meta?.url) return null;
+  const response = await fetch(meta.downloadUrl || meta.url, {
+    headers: { authorization: `Bearer ${authorization}` }, cache: "no-store",
+  });
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(`blob read failed: ${response.status}`);
+  return await response.json();
+}
+
 export async function writeSnapshot(snapshot) {
   // Before the package load, so an unconfigured deployment still reports a
   // missing token rather than a missing module.
