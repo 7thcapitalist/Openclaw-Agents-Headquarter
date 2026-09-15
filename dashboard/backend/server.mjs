@@ -67,6 +67,7 @@ import {
 } from "./lib/hqSchemas.mjs";
 import { enrichHqAgentsWithLifecycle } from "./lib/agentLifecycle.mjs";
 import { buildReadinessReport } from "./lib/readiness.mjs";
+import { buildReadinessSnapshot, rollUp as rollUpReadiness } from "../../factory/lib/hq/readiness.mjs";
 import {
   buildFounderOverview,
   buildObjectivesView,
@@ -1253,6 +1254,36 @@ app.get("/api/system/readiness", async (_req, res) => {
     res.json(await buildReadinessReport(db, ROOT));
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+// The health report both surfaces render.
+//
+// `/api/system/readiness` above is the dashboard's own, deeper check and stays
+// as it is. It cannot be the published one: it takes this process's SQLite
+// handle and reads `dashboard/backend/lib/`, and `factory/` must not import
+// from `dashboard/`. So the factory-side snapshot is the shared base — it is
+// what the publisher sends to the console — and this route adds the one check
+// only the dashboard can make, so the local panel is a superset rather than a
+// second, differently-shaped answer to the same question.
+app.get("/api/hq/readiness", async (_req, res) => {
+  try {
+    const snapshot = await buildReadinessSnapshot({ hqRoot: ROOT });
+    let database = { status: "ok", detail: "the dashboard database answers queries" };
+    try {
+      db.prepare("SELECT 1 AS ok").get();
+    } catch (e) {
+      database = { status: "fail", detail: `the dashboard database did not answer: ${String(e.message || e)}` };
+    }
+    const checks = { ...snapshot.checks, database };
+    res.json({
+      ...snapshot,
+      checks,
+      status: rollUpReadiness(checks),
+      warnings: database.status === "fail" ? [...snapshot.warnings, `database: ${database.detail}`] : snapshot.warnings,
+    });
+  } catch (e) {
+    res.status(500).json({ version: 1, available: false, readOnly: true, status: "unknown", checks: {}, warnings: [], error: String(e.message || e) });
   }
 });
 

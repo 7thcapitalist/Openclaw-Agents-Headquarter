@@ -24,6 +24,7 @@ import { buildDecisionHistory } from "./decision-history.mjs";
 import { buildDeploymentsSnapshot } from "./deployments.mjs";
 import { buildGoalsSnapshot } from "./goals.mjs";
 import { buildOperationsSnapshot } from "./operations.mjs";
+import { buildReadinessSnapshot } from "./readiness.mjs";
 import { buildWorkProposals } from "./proposer.mjs";
 import { buildMirrorSnapshot, MIRROR_CONTRACT } from "./mirror.mjs";
 import { buildTaskDetail } from "./task-detail.mjs";
@@ -66,6 +67,10 @@ export async function collectSources({ hqRoot, tasks = [], now = new Date() } = 
     // console offers a proposal as a suggestion the founder accepts, never as
     // something the factory has already decided.
     gather("proposals", () => buildWorkProposals({ hqRoot })),
+    // Is the machine healthy. Published because the outage that started the
+    // 2026-09-14 incident was visible to `/api/system/readiness` and to
+    // nothing the founder could actually look at — least of all from a phone.
+    gather("readiness", () => buildReadinessSnapshot({ hqRoot })),
   ]);
 
   return Object.fromEntries(panels.map(({ name, value }) => [name, value]));

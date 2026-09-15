@@ -1601,3 +1601,22 @@ ul.timeline time { color: var(--muted); margin-right: 6px; }
   /* Six columns cannot sit side by side on a phone; stack them. */
   .kanban { display: flex; flex-direction: column; gap: 14px; }
 }
+
+/* System readiness. Worst check first; every row names what it is and what it
+   found, because "degraded" on its own is not something anyone can act on. */
+.readiness-list{margin:0;padding:0;list-style:none;display:grid;gap:.2rem}
+.readiness-row{padding:.8rem 0;border-top:1px solid #202938}
+.readiness-row:first-child{border-top:0;padding-top:0}
+.readiness-head{display:flex;justify-content:space-between;gap:.9rem;align-items:baseline}
+.readiness-head strong{font-size:.92rem;font-weight:650}
+.readiness-head em{flex:0 0 auto;font-style:normal;text-transform:uppercase;font-size:.68rem;letter-spacing:.07em}
+.readiness-detail{margin:.3rem 0 0;color:#8290a6;font-size:.78rem;line-height:1.45}
+.readiness-sublist{margin:.5rem 0 0;padding:0;list-style:none;display:grid;gap:.3rem}
+.readiness-sublist li{display:flex;flex-wrap:wrap;gap:.5rem;align-items:baseline;font-size:.76rem}
+.readiness-sub-name{font-weight:600}
+.readiness-sub-value{color:#8290a6}
+/* The id is for copying, never the headline. */
+.readiness-sublist .mono-id{
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  font-size:.68rem;color:#6d7b90;word-break:break-all
+}
