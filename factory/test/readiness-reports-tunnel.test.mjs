@@ -91,6 +91,34 @@ test("no tunnel at all is a fact, not a failure", async () => {
   }
 });
 
+// The aggregate `ok` is what the founder's readiness panel calls "ready".
+// The tunnel must not be able to drag it down: a box with no tunnel is
+// local-only, not unhealthy, and saying otherwise would make the panel report
+// something untrue about the machine.
+test("a tunnel that is down does not make Headquarters itself unready", async () => {
+  const rule = (checks) =>
+    Object.values(checks).every((c) => c.advisory || c.ok || c.detected === false);
+  const healthy = {
+    dashboard: { ok: true }, db: { ok: true }, hqData: { ok: true },
+    pm2: { ok: true }, openclaw: { ok: true },
+    tailscale: { ok: false, detected: false },
+  };
+
+  const report = await withFakeCloudflared({
+    "/quicktunnel": json({ hostname: "example.trycloudflare.com" }),
+    "/ready": json({ status: 503, readyConnections: 0 }),
+  }, () => buildReadinessReport(db, ROOT));
+
+  // The check itself reports the truth...
+  assert.equal(report.checks.tunnel.ok, false);
+  assert.equal(report.checks.tunnel.advisory, true, "the tunnel is advisory, not load-bearing");
+  // ...but it is excluded from the verdict, so an otherwise-healthy host
+  // stays ready with the tunnel in any state.
+  assert.equal(rule({ ...healthy, tunnel: report.checks.tunnel }), true,
+    "a down tunnel must not flip a healthy host to unready");
+  assert.equal(rule({ ...healthy, tunnel: { ok: true, advisory: true } }), true);
+});
+
 test("a metrics server that hangs does not hold the Today tab open", async () => {
   const started = Date.now();
   const report = await withFakeCloudflared({

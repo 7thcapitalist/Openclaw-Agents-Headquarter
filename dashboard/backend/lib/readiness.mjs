@@ -15,7 +15,11 @@ export async function buildReadinessReport(db, root) {
     pm2: { ok: false },
     openclaw: { ok: false },
     tailscale: { ok: false, detected: false },
-    tunnel: { ok: false, url: null, connections: 0 },
+    // `advisory`: reported, never fatal. The tunnel is how the founder reaches
+    // Headquarters from outside; it is not something Headquarters needs in
+    // order to be healthy. A box with no tunnel is local-only, which is a fact
+    // to show, not a reason to call the whole control plane unready.
+    tunnel: { ok: false, url: null, connections: 0, advisory: true },
   };
 
   try {
@@ -116,7 +120,7 @@ export async function buildReadinessReport(db, root) {
   }
 
   return {
-    ok: Object.values(checks).every((check) => check.ok || check.detected === false),
+    ok: Object.values(checks).every((check) => check.advisory || check.ok || check.detected === false),
     checkedAt: new Date().toISOString(),
     root,
     checks,
