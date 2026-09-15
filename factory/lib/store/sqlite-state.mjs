@@ -47,6 +47,50 @@ export const SCHEMA_VERSION = 1;
 // genuinely returned null, and so it needs no schema change.
 export const UNREPLAYABLE = "__unreplayable";
 
+// state.events[] is append-only inside the state document, and the whole
+// document is rewritten on every mutation — so a long task pays for its entire
+// event history on every single write. That is quadratic in write traffic, not
+// in file size, which is why no disk alarm catches it: 5,000 mutations measured
+// a 521.6 KiB entity row rewritten in place 5,000 times.
+//
+// The fix is a window, not a deletion. The `events` table is already the
+// append-only projection of this array, indexed on (entity_id, seq), so the
+// full history is already durable outside the document. What the document
+// keeps is a bounded tail for readers that want recent events cheaply;
+// `readTransactionalState` rehydrates the whole history from the table, so
+// every reader still sees exactly what it saw before.
+//
+// `eventsDropped` counts what has been evicted from the head. It is what makes
+// the projection correct once the array stops growing monotonically — see
+// projectEvents.
+export const DEFAULT_EVENTS_WINDOW = 200;
+
+export function eventsWindow(env = process.env) {
+  const raw = Number(env.FACTORY_STATE_EVENTS_WINDOW);
+  if (!Number.isInteger(raw) || raw < 1) return DEFAULT_EVENTS_WINDOW;
+  return raw;
+}
+
+export function eventsTotal(state) {
+  const dropped = Number(state?.eventsDropped);
+  const kept = Array.isArray(state?.events) ? state.events.length : 0;
+  return (Number.isInteger(dropped) && dropped > 0 ? dropped : 0) + kept;
+}
+
+// Returns `state` untouched when it is already within the window, so the common
+// case allocates nothing and the stored document is byte-identical to before.
+export function windowStateEvents(state, limit = eventsWindow()) {
+  const events = Array.isArray(state?.events) ? state.events : null;
+  if (!events || events.length <= limit) return state;
+  const removed = events.length - limit;
+  const dropped = Number(state.eventsDropped);
+  return {
+    ...state,
+    events: events.slice(removed),
+    eventsDropped: (Number.isInteger(dropped) && dropped > 0 ? dropped : 0) + removed,
+  };
+}
+
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
 const BUSY_RETRIES = 30;
 const BUSY_RETRY_DELAY_MS = 20;
@@ -393,7 +437,7 @@ export function mutateEntity(handle, { entityId, commandId, expectedRevision = n
               ],
               updatedAt: at,
             };
-            upsertEntity(db, entityId, (current.revision ?? 0) + 1, failed, current.state.createdAt || at, at);
+            upsertEntity(db, entityId, (current.revision ?? 0) + 1, windowStateEvents(failed), current.state.createdAt || at, at);
             db.exec("COMMIT");
           } else {
             db.exec("ROLLBACK");
@@ -413,13 +457,17 @@ export function mutateEntity(handle, { entityId, commandId, expectedRevision = n
         db.exec("COMMIT");
         return response;
       }
-      const nextState = result.nextState;
+      // Window BEFORE the row is written, project from the windowed document.
+      // Order matters: the projection reads `eventsDropped`, which windowing is
+      // what sets.
+      const priorTotal = eventsTotal(current?.state);
+      const nextState = windowStateEvents(result.nextState);
       const nextRevision = (current?.revision ?? 0) + 1;
       const at = now();
       upsertEntity(db, entityId, nextRevision, nextState, current ? current.state.createdAt || at : at, at);
       db.prepare("INSERT INTO state_revisions (entity_id, revision, command_id, at) VALUES (?, ?, ?, ?)")
         .run(entityId, nextRevision, commandId, at);
-      projectEvents(db, entityId, nextRevision, current?.state?.events || [], nextState.events || []);
+      projectEvents(db, entityId, nextRevision, priorTotal, nextState);
       projectStages(db, entityId, nextState.stages || {});
       projectDispatches(db, entityId, current?.state?.dispatches || [], nextState.dispatches || []);
       projectRecoveryAttempts(db, entityId, current?.state?.recovery?.attempts || [], nextState.recovery?.attempts || []);
@@ -466,13 +514,32 @@ function upsertEntity(db, entityId, revision, state, createdAt, updatedAt) {
   `).run(entityId, revision, state.status ?? null, state.currentStage ?? null, JSON.stringify(state), createdAt, updatedAt);
 }
 
-function projectEvents(db, entityId, revision, oldEvents, newEvents) {
-  if (newEvents.length <= oldEvents.length) return;
+// Compares TOTALS (kept + previously dropped), never array lengths. Once the
+// array is windowed it stops growing, so a length comparison would read "no
+// new events" on every mutation after the first eviction and silently stop
+// projecting — losing exactly the history this window depends on the table to
+// hold.
+function projectEvents(db, entityId, revision, priorTotal, nextState) {
+  const events = Array.isArray(nextState?.events) ? nextState.events : [];
+  const added = eventsTotal(nextState) - priorTotal;
+  if (added <= 0) return;
   const stmt = db.prepare("INSERT INTO events (entity_id, revision, at, type, payload_json) VALUES (?, ?, ?, ?, ?)");
-  for (let i = oldEvents.length; i < newEvents.length; i++) {
-    const event = newEvents[i];
+  for (const event of events.slice(Math.max(0, events.length - added))) {
     stmt.run(entityId, revision, event?.at || new Date().toISOString(), event?.type || "event", JSON.stringify(event ?? {}));
   }
+}
+
+// The full, ordered history for an entity — the audit record. Insertion order
+// is the authority (seq), not `at`, which is agent-supplied and can skew.
+export function readEntityEvents(handle, entityId) {
+  assertId(entityId);
+  return handle.db
+    .prepare("SELECT payload_json FROM events WHERE entity_id = ? ORDER BY seq")
+    .all(entityId)
+    .map((row) => {
+      try { return JSON.parse(row.payload_json); } catch { return null; }
+    })
+    .filter((event) => event !== null);
 }
 
 function projectStages(db, entityId, stages) {
@@ -539,10 +606,15 @@ export function importLegacyState(handle, { entityId, state, sourcePath = null, 
       if (existing) { db.exec("COMMIT"); return { imported: false, revision: existing.revision }; }
       const at = now();
       const commandId = `import:${entityId}`;
-      upsertEntity(db, entityId, 1, state, state?.createdAt || at, state?.updatedAt || at);
+      // A legacy file can carry a very long history. Project all of it, store
+      // the bounded tail — the table is what the readers are rehydrated from.
+      const imported = windowStateEvents(state);
+      upsertEntity(db, entityId, 1, imported, state?.createdAt || at, state?.updatedAt || at);
       db.prepare("INSERT INTO state_revisions (entity_id, revision, command_id, at) VALUES (?, ?, ?, ?)")
         .run(entityId, 1, commandId, at);
-      projectEvents(db, entityId, 1, [], state.events || []);
+      // Project from `state` (the whole legacy history), not `imported` (the
+      // tail) — otherwise the import is where the audit record gets truncated.
+      projectEvents(db, entityId, 1, 0, state);
       projectStages(db, entityId, state.stages || {});
       projectDispatches(db, entityId, [], state.dispatches || []);
       projectRecoveryAttempts(db, entityId, [], state.recovery?.attempts || []);
