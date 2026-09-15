@@ -13,7 +13,8 @@
 import { answerableDecisions, freshness, intentsPanel, panelsFor, statsFrom } from "/render.mjs";
 import { renderHome } from "/home.mjs";
 import { renderAgents, renderBoard, renderDeliveries, renderProjects } from "/views.mjs";
-import { renderLaunch, setLaunchRerender } from "/launch.mjs";
+import { launchModel, renderLaunch, setLaunchRerender } from "/launch.mjs";
+import { renderNext, setNextRerender } from "/next.mjs";
 import { renderTaskDetail } from "/task-detail.mjs";
 
 const TIMEOUT_MS = 12_000;
@@ -206,6 +207,7 @@ async function watchIntent(track, id) {
 }
 
 setLaunchRerender(() => redrawHome());
+setNextRerender(() => redrawHome());
 
 function redrawHome() {
   if (lastSnapshot) {
@@ -294,6 +296,7 @@ const TABS = [
   ["today", "Today"],
   ["launch", "Launch"],
   ["board", "Board"],
+  ["next", "Next"],
   ["deliveries", "Deliveries"],
   ["projects", "Projects"],
   ["agents", "Agents"],
@@ -363,10 +366,16 @@ function drawHome(snapshot) {
       renderAgents(els.view, snapshot);
     } else if (activeTab === "launch") {
       renderLaunch(els.view, snapshot, { onIntent: submitIntent, intentStateFor });
+    } else if (activeTab === "next") {
+      renderNext(els.view, snapshot, {
+        onIntent: submitIntent,
+        intentStateFor,
+        // Launch publishes what can actually be handed work, including whether
+        // a project is paused. Next reuses that rather than re-deciding it.
+        projectsFor: (snap) => launchModel(snap).projects,
+      });
     } else if (activeTab === "deliveries") {
-      // onAccept is deliberately null until Launch is wired: a button that
-      // cannot start work must not be offered.
-      renderDeliveries(els.view, snapshot, { onTask: openTask, onAccept: null, intentStateFor });
+      renderDeliveries(els.view, snapshot, { onTask: openTask });
     }
     return;
   }

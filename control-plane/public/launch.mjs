@@ -224,8 +224,36 @@ function composer(model, { onIntent, intentStateFor }) {
 // actually does — including, in as many words, that it spends money.
 function confirmation(pending, project, model, { onIntent }) {
   if (pending.when === "release") return releaseConfirmation(model, { onIntent });
-  const now = pending.when === "now";
-  const card = el("section", `launch-confirm launch-confirm--${pending.when}`);
+  return outcomeConfirmation({
+    when: pending.when,
+    objective: pending.objective,
+    project,
+    onConfirm: (kind, args, button, key) => {
+      onIntent(kind, args, button, key);
+      draft.confirming = null;
+      draft.objective = "";
+      rerender();
+    },
+    onCancel: () => { draft.confirming = null; rerender(); },
+  });
+}
+
+/**
+ * The read-back, as one component.
+ *
+ * Exported because the Next tab accepts a proposal into exactly this flow. A
+ * second confirmation written beside this one is how the two screens would
+ * come to warn about spending in different words, and the wording IS the
+ * safeguard — it is the last thing between a mis-tap and hours of unattended
+ * spend.
+ *
+ * `when` is "now" (start an objective) or "night" (join tonight's plan).
+ * `onConfirm` receives the intent to enqueue rather than enqueuing it, so the
+ * caller keeps ownership of its own draft state.
+ */
+export function outcomeConfirmation({ when, objective, project, onConfirm, onCancel }) {
+  const now = when === "now";
+  const card = el("section", `launch-confirm launch-confirm--${when}`);
   card.append(el("span", "launch-confirm-eyebrow", now ? "Start this now?" : "Add this to tonight?"));
 
   const line = el("p", "launch-confirm-line");
@@ -238,22 +266,19 @@ function confirmation(pending, project, model, { onIntent }) {
 
   // Verbatim, not summarised. The whole point is that the founder reads back
   // exactly what will run.
-  card.append(el("blockquote", "launch-confirm-objective", pending.objective));
+  card.append(el("blockquote", "launch-confirm-objective", objective));
 
   card.append(el("p", "launch-confirm-cost", now
     ? "This runs unattended and spends real money on model calls. It goes through the usual gates — high-risk work still stops for your signature."
-    : "Nothing runs now. It joins tonight's plan below, which you release yourself."));
+    : "Nothing runs now. It joins tonight's plan, which you release yourself."));
 
   const actions = el("div", "launch-actions");
   const go = action(now ? "Yes, start it" : "Yes, plan it", "primary", () => {
     const kind = now ? "objective.start" : "overnight.add";
-    onIntent(kind, { objective: pending.objective, projectId: project.key }, go, `${kind}:${project.key}`);
-    draft.confirming = null;
-    draft.objective = "";
-    rerender();
+    onConfirm(kind, { objective, projectId: project.key }, go, `${kind}:${project.key}`);
   });
   actions.append(go);
-  actions.append(action("Cancel", "secondary", () => { draft.confirming = null; rerender(); }));
+  actions.append(action("Cancel", "secondary", () => onCancel()));
   card.append(actions);
   return card;
 }

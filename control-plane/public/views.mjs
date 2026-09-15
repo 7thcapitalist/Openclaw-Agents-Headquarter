@@ -4,7 +4,6 @@
 import { list, money, num, text, unavailable } from "./render.mjs";
 import { BOARD_COLUMNS, buildBoard, filterByProject } from "./board.mjs";
 import { stageLabel, taskTitle, taskOutcomeLine } from "./stage-vocabulary.mjs";
-import { intentStatus } from "./home.mjs";
 
 function el(tag, className, textContent) {
   const node = document.createElement(tag);
@@ -182,7 +181,7 @@ const FINISHED = new Set(["merged", "complete", "completed", "merge-ready"]);
  * machine and report-only here: it is a suggestion the founder accepts, never
  * something the factory has already decided.
  */
-export function renderDeliveries(root, snapshot, { onTask = () => {}, onAccept = null, intentStateFor = () => null } = {}) {
+export function renderDeliveries(root, snapshot, { onTask = () => {} } = {}) {
   root.replaceChildren();
   const ops = unavailable(snapshot?.panels?.operations) ? null : snapshot.panels.operations;
   const costByTask = ops?.costs?.byTask || {};
@@ -206,15 +205,9 @@ export function renderDeliveries(root, snapshot, { onTask = () => {}, onAccept =
     }
   }
 
-  // The proposer's next steps, accepted in one click.
-  const proposals = unavailable(snapshot?.panels?.proposals) ? null : snapshot.panels.proposals;
-  const items = list(proposals?.proposals);
-  if (items.length) {
-    root.append(el("h2", "home-heading", "Suggested next"));
-    const wrap = el("div", "home-cards");
-    for (const proposal of items) wrap.append(proposalCard(proposal, onAccept, intentStateFor));
-    root.append(wrap);
-  }
+  // Proposals moved to their own tab on 2026-09-15. Deliveries answers "what
+  // did this produce"; what to do next is a different question, and it now has
+  // somewhere the founder can act on it rather than a read-only footnote.
 }
 
 function deliveryCard(task, cost, onTask) {
@@ -237,35 +230,6 @@ function deliveryCard(task, cost, onTask) {
   card.append(idLine(task.taskId));
   card.addEventListener("click", (e) => { if (e.target.tagName !== "A") onTask(task.taskId); });
   card.addEventListener("keydown", (e) => { if (e.key === "Enter") onTask(task.taskId); });
-  return card;
-}
-
-function proposalCard(proposal, onAccept, intentStateFor) {
-  const card = el("article", "home-card home-card--decision");
-  const head = el("div", "home-card-head");
-  head.append(el("span", "home-chip home-chip--decision", `Suggestion ${proposal.rank ?? ""}`.trim()));
-  if (proposal.projectId) head.append(el("span", "home-meta", proposal.projectId));
-  card.append(head);
-  card.append(el("h3", "home-question", text(proposal.title, "A next step")));
-  if (proposal.why) card.append(el("p", "home-why", text(proposal.why, "")));
-
-  const key = `proposal:${proposal.goalId || proposal.title}`;
-  const state = intentStateFor(key);
-  if (state) { card.append(intentStatus(state)); return card; }
-
-  if (onAccept) {
-    const actions = el("div", "home-actions");
-    const accept = el("button", "home-option", "Start this");
-    accept.type = "button";
-    accept.addEventListener("click", () => onAccept(proposal, accept, key));
-    actions.append(accept);
-    card.append(actions);
-  } else {
-    // Report-only until Launch exists: say so rather than offering a button
-    // that cannot do anything.
-    card.append(el("p", "home-meta home-meta--dim",
-      "Read-only for now — starting work from the console is not wired yet."));
-  }
   return card;
 }
 
