@@ -14,6 +14,8 @@
 // created 21 hours ago whose last real event was 16 hours ago is reported as
 // STALE, not "working for 21 hours" (see `stale` / `staleAfterMinutes`).
 
+import { readConfiguredSeats, resolveSeat } from "./seats.mjs";
+
 const TERMINAL_STATUSES = new Set(["merge-ready", "merged"]);
 
 /**
@@ -26,11 +28,13 @@ const TERMINAL_STATUSES = new Set(["merge-ready", "merged"]);
  * @param {number}[input.staleAfterMinutes=120]  non-terminal task/agent with no activity past this is STALE
  * @returns {{ agents: Array, unassignedTasks: Array, summary: object }}
  */
-export function buildAgentActivity({ agents = [], tasks = [], now = new Date(), runtime = null, staleAfterMinutes = 120 }) {
+export function buildAgentActivity({ agents = [], tasks = [], now = new Date(), runtime = null, staleAfterMinutes = 120, seats = null }) {
   const taskList = Array.isArray(tasks) ? tasks.filter(Boolean) : [];
   const nowMs = now instanceof Date ? now.getTime() : new Date(now).getTime();
   const staleMs = Math.max(1, Number(staleAfterMinutes) || 120) * 60 * 1000;
   const runtimeByAgent = (runtime && runtime.byAgent) || {};
+  // Configured seats read once for the whole roster, not per agent.
+  const seatTable = seats || readConfiguredSeats();
 
   // Match a task's actor to a registry agent by id or by harness agent id(s).
   const byId = new Map(agents.map((a) => [a.id, a]));
@@ -104,6 +108,11 @@ export function buildAgentActivity({ agents = [], tasks = [], now = new Date(), 
       harnessFallback: agent.harnessFallback || null,
       runtimeAgentId,
       runtimeResolved: Boolean(rt),
+      // WHICH MODEL this role actually routes to. `harness` is the family
+      // (openclaw / claude / codex) and never answered that. Prefers the live
+      // runtime and falls back to the configured seat, saying which it used —
+      // the runtime read is unavailable far more often than not.
+      modelSeat: resolveSeat({ runtimeAgentId, runtimeModel: rt?.model || null, seats: seatTable.seats, defaultSeat: seatTable.defaultSeat }),
       capabilities: agent.capabilities,
       registryStatus: agent.status || "idle",
       status,

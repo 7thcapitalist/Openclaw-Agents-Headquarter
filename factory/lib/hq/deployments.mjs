@@ -47,7 +47,19 @@ export function buildDeploymentsSnapshot({ hqRoot, now = new Date().toISOString(
       name: project.name || key,
       kind: project.kind || null,
       state,
-      productionUrl: status.productionUrl || null,
+      // Whether this row is the Headquarters rather than a company project.
+      //
+      // company-state deliberately excludes the headquarters entry ("company
+      // projects only — never the Headquarters") while this panel included it,
+      // so one snapshot reported 1 project and 2 for the same registry. Neither
+      // was wrong; they were answering different questions and neither said so.
+      // Flagging the row lets the console reconcile them.
+      isHeadquarters: project.kind === "headquarters",
+      // A URL the registry declares is better than nothing when the release
+      // stage has never written a deployment record — which is the case for
+      // every project here today.
+      productionUrl: status.productionUrl || project.productionUrl || null,
+      productionUrlSource: status.productionUrl ? "deployment-record" : project.productionUrl ? "registry" : null,
       health: status.health || null,
       lastDeploymentAt: status.lastDeploymentAt || null,
       founderActionRequired: Boolean(status.founderActionRequired),
@@ -67,7 +79,11 @@ export function buildDeploymentsSnapshot({ hqRoot, now = new Date().toISOString(
     available: true,
     readOnly: true,
     summary: {
-      projects: deployments.length,
+      // Counts company projects, matching company-state's definition. The
+      // headquarters is counted separately rather than folded in, so the two
+      // panels can no longer disagree about how many projects exist.
+      projects: deployments.filter((d) => !d.isHeadquarters).length,
+      infrastructure: deployments.filter((d) => d.isHeadquarters).length,
       deployed: count((d) => d.state === "deployed"),
       failed: count((d) => d.state === "failed"),
       neverDeployed: count((d) => d.state === "not_deployed"),

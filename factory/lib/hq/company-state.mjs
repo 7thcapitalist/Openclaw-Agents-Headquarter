@@ -18,6 +18,9 @@ import { readRepoAwareness, summariseRepoAwareness } from "./github.mjs";
 import { readOpenclawRuntime, readOpenclawActivity, reconcileRoster } from "./runtime.mjs";
 import { discoverProjects } from "./discovery.mjs";
 import { readDeploymentStatus } from "../deploy/status.mjs";
+import { readCostEvents, summarizeCostLedger } from "./cost-ledger.mjs";
+import { loadPricing, priceCostEvents } from "./cost.mjs";
+import { costLedgerPath } from "./budget-snapshot.mjs";
 
 const FOUNDER = { name: "João Vitor", headquarters: "OpenClaw Agents Headquarter" };
 
@@ -104,6 +107,18 @@ export async function buildCompanyState({
   const externalByKey = new Map(external.map((e) => [e.project, e]));
   const companyExternal = external.filter((e) => e.project !== headquartersEntry?.key);
 
+  // Per-project spend, from the same priced ledger operations and budgets read,
+  // so all three agree by construction rather than by coincidence.
+  const spendByProject = new Map();
+  try {
+    const ledger = summarizeCostLedger(priceCostEvents(readCostEvents(costLedgerPath(hqRoot)), loadPricing(hqRoot)).events);
+    for (const [key, bucket] of Object.entries(ledger.byProject || {})) {
+      spendByProject.set(key, { costMicros: bucket.costMicros, unpricedEvents: bucket.unpricedEvents, events: bucket.events });
+    }
+  } catch (error) {
+    warnings.push({ code: "project-spend-unavailable", message: String(error?.message || error).slice(0, 200) });
+  }
+
   // ---- final project rows (company projects only — never the Headquarters) ----
   const projects = companyProjects.map((p) => {
     const projectTasks = tasksByProject.get(p.key) || [];
@@ -132,6 +147,19 @@ export async function buildCompanyState({
       activeTasks: projectTasks.filter((t) => t.status === "active").map(slimTask),
       blockedTasks: projectTasks.filter((t) => t.status === "blocked").map(slimTask),
       taskCount: projectTasks.length,
+      // The FULL status vocabulary, not just the two statuses that happen to
+      // have their own arrays.
+      //
+      // `activeTasks` and `blockedTasks` cover `active` and `blocked` only, so
+      // lifemaxing rendered as "0 active, 0 blocked, 3 tasks" — reading as an
+      // idle project when in fact two had shipped and one had failed. Nothing
+      // was wrong with the join; the vocabulary was simply incomplete, and a
+      // console cannot show counts it is never given.
+      taskCounts: countByStatus(projectTasks),
+      // What this project has cost, joined from the same ledger the budgets and
+      // operations panels read. A project row with no spend on it forced the
+      // console to either omit cost per project or re-derive it.
+      spend: spendByProject.get(p.key) || null,
       externalSummary: externalByKey.get(p.key)?.summary || null,
       intelligenceWarnings: p.intelligence?.warnings || [],
       deployment,
@@ -304,6 +332,18 @@ function deriveTaskDecisions(tasks) {
       resumable: false,
     })));
   return [...blocked, ...deferred];
+}
+
+// Every status the factory can put a task in, counted. Statuses the workflow
+// never emits stay absent rather than being reported as zero, so a new status
+// shows up as itself instead of being silently dropped.
+export function countByStatus(tasks) {
+  const counts = {};
+  for (const task of tasks) {
+    const status = String(task?.status || "unknown");
+    counts[status] = (counts[status] || 0) + 1;
+  }
+  return counts;
 }
 
 function slimTask(task) {

@@ -47,8 +47,27 @@ function taskOperations(statePath, warnings) {
   try { const path = join(dir, "liveness.json"); if (existsSync(path)) liveness = JSON.parse(readFileSync(path, "utf8")); } catch (error) { warnings.push(`task ${taskId} liveness unavailable: ${error.message}`); }
   try { audit = readAuditEvents(join(dir, "audit.ndjson")); } catch (error) { warnings.push(`task ${taskId} audit unavailable: ${error.message}`); }
   try { lease = readLease(join(dirname(dirname(dir)), "leases"), taskId); } catch (error) { warnings.push(`task ${taskId} lease unavailable: ${error.message}`); }
-  return { taskId, status: state?.status || "unknown", stage: state?.currentStage || null, actor: state?.currentDispatch?.agentId || state?.currentDispatch?.actor || null,
-    updatedAt: state?.updatedAt || null, liveness: sanitizeLiveness(liveness), lease: lease ? { actorId: lease.actorId, runId: lease.runId, expiresAt: lease.expiresAt } : null, audit };
+  const stage = state?.currentStage || null;
+  return {
+    taskId,
+    // Without a projectId the console cannot group a task list by project
+    // without parsing the id string, which is not a contract.
+    projectId: state?.task?.project || null,
+    status: state?.status || "unknown",
+    stage,
+    // `actor` is whichever runtime happens to hold the CURRENT dispatch and is
+    // null whenever nothing is in flight — which is most of the time, and is
+    // why the live mirror shows `actor: null` on nearly every row. The
+    // assignment is the durable answer to "whose stage is this".
+    assignee: (stage && state?.assignments?.[stage]) || null,
+    actor: state?.currentDispatch?.agentId || state?.currentDispatch?.actor || null,
+    risk: state?.task?.risk || null,
+    createdAt: state?.createdAt || null,
+    updatedAt: state?.updatedAt || null,
+    liveness: sanitizeLiveness(liveness),
+    lease: lease ? { actorId: lease.actorId, runId: lease.runId, expiresAt: lease.expiresAt } : null,
+    audit,
+  };
 }
 
 function stateFiles(root, out = []) { if (!existsSync(root)) return out; for (const entry of safeReadDir(root)) { const path = join(root, entry.name); if (entry.isDirectory()) stateFiles(path, out); else if (entry.isFile() && entry.name === "state.json") out.push(path); } return out; }
