@@ -56,6 +56,10 @@ export function launchModel(snapshot) {
     projects: list(panel.projects).map((project) => ({
       key: text(project?.key, ""),
       name: text(project?.name, project?.key || "Untitled project"),
+      // The factory itself is a legitimate target — it is how most of this
+      // repository got built — but it is flagged so the picker can label it
+      // the way the tunnel does and never default to it.
+      isHeadquarters: project?.isHeadquarters === true,
       launchable: project?.launchable === true,
       blockedReason: project?.blockedReason || null,
     })).filter((project) => project.key),
@@ -104,14 +108,19 @@ export function renderLaunch(root, snapshot, { onIntent = () => {}, intentStateF
     return model;
   }
 
-  // Default to the first project that can actually be launched into, so the
-  // common case is one tap and some typing.
+  // Default to the first ordinary project that can actually be launched into,
+  // so the common case is one tap and some typing. The factory is never the
+  // default even when it is the only launchable target: handing work to the
+  // machine that runs the factory is always a deliberate choice.
   if (!draft.projectKey) {
-    draft.projectKey = (model.projects.find((p) => p.launchable) || model.projects[0]).key;
+    const preferred = model.projects.find((p) => p.launchable && !p.isHeadquarters)
+      || model.projects.find((p) => !p.isHeadquarters)
+      || model.projects[0];
+    draft.projectKey = preferred.key;
   }
 
   root.append(composer(model, { onIntent, intentStateFor }));
-  root.append(plan(model));
+  root.append(plan(model, { onIntent, intentStateFor }));
   return model;
 }
 
@@ -125,7 +134,9 @@ function composer(model, { onIntent, intentStateFor }) {
     const chip = el("button", `launch-project${project.key === draft.projectKey ? " is-selected" : ""}${project.launchable ? "" : " is-blocked"}`);
     chip.type = "button";
     // The human name leads; the key is small and muted, for recognition only.
-    chip.append(el("strong", null, project.name));
+    // "(factory)" is the tunnel dashboard's own wording for the headquarters
+    // entry — the same thing must be called the same thing on both surfaces.
+    chip.append(el("strong", null, project.isHeadquarters ? `${project.name} (factory)` : project.name));
     chip.append(el("span", "home-id", project.key));
     if (!project.launchable) {
       // Shown, not hidden: "it is not there" and "it is paused" are different
@@ -180,8 +191,9 @@ function composer(model, { onIntent, intentStateFor }) {
     return box;
   }
 
-  if (draft.confirming) {
-    box.append(confirmation(draft.confirming, selected, { onIntent }));
+  // A release confirmation belongs to the plan below, not to this box.
+  if (draft.confirming && draft.confirming.when !== "release") {
+    box.append(confirmation(draft.confirming, selected, model, { onIntent }));
     return box;
   }
 
@@ -193,7 +205,7 @@ function composer(model, { onIntent, intentStateFor }) {
   const queued = model.overnight.items.filter((i) => i.status === "queued").length;
   if (queued >= model.overnight.limit) {
     box.append(el("p", "launch-blocked-note",
-      `Tonight's plan is full at ${model.overnight.limit}. Remove something on the machine before adding more.`));
+      `Tonight's plan is full at ${model.overnight.limit}. Remove one below before adding more.`));
   }
   return box;
 
@@ -210,15 +222,18 @@ function composer(model, { onIntent, intentStateFor }) {
 
 // The read-back. Project by name, objective verbatim, and what pressing again
 // actually does — including, in as many words, that it spends money.
-function confirmation(pending, project, { onIntent }) {
+function confirmation(pending, project, model, { onIntent }) {
+  if (pending.when === "release") return releaseConfirmation(model, { onIntent });
   const now = pending.when === "now";
   const card = el("section", `launch-confirm launch-confirm--${pending.when}`);
   card.append(el("span", "launch-confirm-eyebrow", now ? "Start this now?" : "Add this to tonight?"));
 
   const line = el("p", "launch-confirm-line");
   line.append(document.createTextNode(now ? "The factory will start work on " : "Tonight the factory will work on "));
-  line.append(el("strong", null, project.name));
-  line.append(document.createTextNode(", trying to make this true:"));
+  line.append(el("strong", null, project.isHeadquarters ? `${project.name} (factory)` : project.name));
+  line.append(document.createTextNode(project.isHeadquarters
+    ? " — the machine this console runs on — trying to make this true:"
+    : ", trying to make this true:"));
   card.append(line);
 
   // Verbatim, not summarised. The whole point is that the founder reads back
@@ -227,7 +242,7 @@ function confirmation(pending, project, { onIntent }) {
 
   card.append(el("p", "launch-confirm-cost", now
     ? "This runs unattended and spends real money on model calls. It goes through the usual gates — high-risk work still stops for your signature."
-    : "Nothing runs now. It joins tonight's plan, and starting the night is a separate action on the machine."));
+    : "Nothing runs now. It joins tonight's plan below, which you release yourself."));
 
   const actions = el("div", "launch-actions");
   const go = action(now ? "Yes, start it" : "Yes, plan it", "primary", () => {
@@ -243,16 +258,88 @@ function confirmation(pending, project, { onIntent }) {
   return card;
 }
 
-function plan(model) {
+// Releasing the night spends real money unattended on work queued earlier, so
+// it gets the same second press as starting an objective — and the read-back
+// names every objective, because "8 queued" is a count, not a thing anyone has
+// actually read.
+function releaseConfirmation(model, { onIntent }) {
+  const queued = model.overnight.items.filter((item) => item.status === "queued");
+  const card = el("section", "launch-confirm launch-confirm--release");
+  card.append(el("span", "launch-confirm-eyebrow", "Release tonight's plan?"));
+  card.append(el("p", "launch-confirm-line",
+    `The factory will work through ${queued.length} objective${queued.length === 1 ? "" : "s"}, one at a time, starting now:`));
+
+  const listEl = el("ol", "launch-confirm-list");
+  for (const item of queued) {
+    const row = el("li");
+    row.append(el("span", "launch-confirm-item", item.objective));
+    row.append(el("span", "home-id", item.projectId));
+    listEl.append(row);
+  }
+  card.append(listEl);
+
+  card.append(el("p", "launch-confirm-cost",
+    "This runs unattended and spends real money on model calls, for hours. Stopping later lets the objective in flight finish first — it does not kill it."));
+
+  const actions = el("div", "launch-actions");
+  const go = action("Yes, run tonight's plan", "primary", () => {
+    onIntent("overnight.start", {}, go, "overnight.start");
+    draft.confirming = null;
+    rerender();
+  });
+  actions.append(go);
+  actions.append(action("Cancel", "secondary", () => { draft.confirming = null; rerender(); }));
+  card.append(actions);
+  return card;
+}
+
+const RUN_STATUS = {
+  running: "The overnight run is going now.",
+  stopped: "The last run was stopped.",
+  complete: "The last run finished everything on the plan.",
+  "needs-attention": "The last run ended with something unfinished.",
+};
+
+function plan(model, { onIntent, intentStateFor }) {
   const section = el("section", "launch-plan");
-  const heading = el("h2", "home-heading", "Tonight's plan");
-  section.append(heading);
+  section.append(el("h2", "home-heading", "Tonight's plan"));
 
   const queued = model.overnight.items.filter((item) => item.status === "queued").length;
+  const running = model.overnight.status === "running";
+  const lede = RUN_STATUS[model.overnight.status];
   section.append(el("p", "home-meta home-meta--dim",
-    model.overnight.status === "running"
-      ? "The overnight run is going now."
-      : `${queued} of ${model.overnight.limit} planned${queued ? "" : " — nothing is waiting for tonight"}.`));
+    `${lede ? `${lede} ` : ""}${queued} of ${model.overnight.limit} planned${queued || running ? "" : " — nothing is waiting for tonight"}.`));
+
+  // Whatever is already in flight, honestly, before any control is offered.
+  for (const key of ["overnight.start", "overnight.stop"]) {
+    const state = intentStateFor(key);
+    if (state) section.append(intentStatus(state));
+  }
+
+  if (draft.confirming?.when === "release") {
+    section.append(releaseConfirmation(model, { onIntent }));
+  } else if (running) {
+    // Stopping is cheap and reversible, so it needs no second press. It must
+    // not promise more than it does: the objective in flight finishes first.
+    const stop = action("Stop the run", "secondary", () => {
+      onIntent("overnight.stop", {}, stop, "overnight.stop");
+      rerender();
+    });
+    const actions = el("div", "launch-actions");
+    actions.append(stop);
+    section.append(actions);
+    section.append(el("p", "launch-confirm-cost",
+      "Stopping lets the objective in flight finish, then ends the run. It does not kill work already started."));
+  } else if (queued) {
+    // No dead controls: the release button exists only when there is something
+    // to release.
+    const actions = el("div", "launch-actions");
+    actions.append(action("Run tonight's plan now", "primary", () => {
+      draft.confirming = { when: "release" };
+      rerender();
+    }));
+    section.append(actions);
+  }
 
   if (!model.overnight.items.length) return section;
 
@@ -267,6 +354,20 @@ function plan(model) {
     row.append(meta);
     if (item.error) row.append(el("p", "launch-item-error", item.error));
     row.append(el("div", "home-id", item.id));
+
+    const removeState = intentStateFor(`overnight.remove:${item.id}`);
+    if (removeState) row.append(intentStatus(removeState));
+    // Removing is only offered for what can actually be removed. The machine
+    // refuses to edit a plan mid-run, so drawing the control there would be a
+    // button that cannot complete.
+    else if (item.status === "queued" && !running) {
+      const remove = action("Remove", "secondary", () => {
+        onIntent("overnight.remove", { itemId: item.id }, remove, `overnight.remove:${item.id}`);
+        rerender();
+      });
+      remove.className = "launch-btn launch-btn--secondary launch-btn--small";
+      row.append(remove);
+    }
     rows.append(row);
   }
   section.append(rows);

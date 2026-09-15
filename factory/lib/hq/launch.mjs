@@ -60,11 +60,7 @@ export function launchableProjects({ hqRoot, warnings = [] }) {
   }
   const paused = pausedProjects(hqRoot);
   return entries
-    // The Headquarters is infrastructure the company runs on, not a project
-    // the founder hands product work to. company-state excludes it for the
-    // same reason; a picker that offers it invites starting an objective
-    // against the factory itself from a phone.
-    .filter((project) => project?.key && project.kind !== "headquarters")
+    .filter((project) => project?.key)
     .map((project) => {
       const isPaused = paused.has(project.key);
       let hasRepo = false;
@@ -74,6 +70,18 @@ export function launchableProjects({ hqRoot, warnings = [] }) {
       return {
         key: project.key,
         name: project.name || project.key,
+        // The factory working on itself is how most of this repository got
+        // built, and the tunnel dashboard has always offered it —
+        // `workTargets()` appends the headquarters entry and labels it
+        // "(factory)". A console that cannot do what the tunnel does is the
+        // complaint this screen exists to answer, so it is offered here too,
+        // flagged and sorted last so it is never the accidental default.
+        //
+        // This is a LAUNCH target only. `company-state` still excludes the
+        // headquarters from `company.projects`, because that panel feeds the
+        // portfolio roll-up and counting the factory there would corrupt every
+        // number in it.
+        isHeadquarters: project.kind === "headquarters",
         // Why this project cannot be launched into, in the founder's words, or
         // null. The console shows the reason rather than hiding the row: "it
         // is not there" and "it is paused" are different problems.
@@ -81,7 +89,12 @@ export function launchableProjects({ hqRoot, warnings = [] }) {
         launchable: !isPaused && hasRepo,
       };
     })
-    .sort((a, b) => Number(b.launchable) - Number(a.launchable) || a.name.localeCompare(b.name));
+    // The factory sorts last whatever its state, so the thumb never lands on
+    // it by accident; otherwise launchable first, then by name.
+    .sort((a, b) =>
+      Number(a.isHeadquarters) - Number(b.isHeadquarters)
+      || Number(b.launchable) - Number(a.launchable)
+      || a.name.localeCompare(b.name));
 }
 
 export function overnightPlan({ hqRoot, warnings = [] }) {

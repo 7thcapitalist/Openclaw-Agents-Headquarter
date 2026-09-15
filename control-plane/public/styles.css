@@ -933,3 +933,24 @@ body {
 .launch-item-status { margin-left: 8px; }
 .launch-item--failed .launch-item-status { color: #f85149; }
 .launch-item-error { margin: 0; font-size: 0.78rem; color: #f85149; }
+
+/* Releasing the night reads back every objective, because "8 queued" is a
+   count and not a thing anyone has read. */
+.launch-confirm--release { border-color: #d29922; }
+.launch-confirm-list {
+  margin: 0;
+  padding-left: 20px;
+  display: grid;
+  gap: 6px;
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+.launch-confirm-item { display: block; overflow-wrap: anywhere; }
+.launch-btn--small {
+  flex: 0 0 auto;
+  min-height: 36px;
+  padding: 6px 12px;
+  font-size: 0.8rem;
+  font-weight: 500;
+  justify-self: start;
+}

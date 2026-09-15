@@ -151,6 +151,42 @@ async function handlers() {
       return `queued for tonight on ${projectId} (${queue.items.length} of 8): ${summarize(objective)} [${added?.id || "?"}]`;
     },
 
+    // Releasing the night is the second action that spends real money
+    // unattended, and the only one that spends it on work queued earlier. It
+    // gets the same read-back on the console as starting an objective.
+    //
+    // `startOvernight` reconciles a stranded queue before it decides anything,
+    // so a night abandoned by a restarted dashboard no longer blocks the next
+    // one — which matters most here, because a phone has no other recovery.
+    "overnight.start": async () => {
+      const { startOvernight } = await import("../dashboard/backend/lib/overnightQueue.mjs");
+      const queue = startOvernight(hqRoot, { scriptPath: join(hqRoot, "scripts", "factory-objective.mjs") });
+      const queued = queue.items.filter((item) => item.status === "queued").length;
+      const running = queue.items.find((item) => item.status === "running");
+      return `overnight run is ${queue.status}`
+        + (running ? `, on ${summarize(running.objective)}` : "")
+        + `, ${queued} still queued`;
+    },
+
+    // Stopping and removing are cheap and reversible, so they need no
+    // confirmation beyond the button. Stopping lets the item in flight finish
+    // — it does not kill a running objective, and must not claim to.
+    "overnight.stop": async () => {
+      const { stopOvernight } = await import("../dashboard/backend/lib/overnightQueue.mjs");
+      const queue = stopOvernight(hqRoot);
+      return queue.status === "running"
+        ? "stop requested — the objective in flight finishes first, then the run ends"
+        : `overnight run is ${queue.status}`;
+    },
+
+    "overnight.remove": async ({ itemId }) => {
+      const { removeOvernightItem, readOvernightQueue } = await import("../dashboard/backend/lib/overnightQueue.mjs");
+      const before = readOvernightQueue(hqRoot).items.length;
+      const queue = removeOvernightItem(hqRoot, String(itemId));
+      if (queue.items.length === before) throw new Error(`nothing in tonight's plan has the id ${itemId}`);
+      return `removed from tonight's plan — ${queue.items.length} left`;
+    },
+
     "decision.resolve": async ({ decisionId, choice }) => {
       // decisionId is "<taskId>:<decision>" — the same id the inbox renders.
       const taskId = String(decisionId).split(":")[0];

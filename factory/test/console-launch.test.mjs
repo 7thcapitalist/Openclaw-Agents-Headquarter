@@ -83,15 +83,47 @@ function hq({ projects, control = null, queue = null, git = false }) {
   return dir;
 }
 
-test("the Headquarters is never offered as somewhere to send product work", () => {
-  // A picker that offers the factory itself invites starting an objective
-  // against the machine from a phone.
-  const dir = hq({ projects: [
-    { key: "openclaw-factory", name: "HQ", kind: "headquarters", repo: "." },
-    { key: "lifemaxing", name: "LifeMax", repo: "." },
-  ] });
-  const keys = launchableProjects({ hqRoot: dir }).map((p) => p.key);
-  assert.deepEqual(keys, ["lifemaxing"]);
+test("the factory is offered, flagged, and sorted last", () => {
+  // The factory working on itself is how most of this repository got built and
+  // the tunnel dashboard has always allowed it. It is offered here too, but it
+  // sorts last so a thumb never lands on it by accident.
+  const dir = hq({
+    projects: [
+      { key: "openclaw-factory", name: "HQ", kind: "headquarters", repo: "." },
+      { key: "lifemaxing", name: "LifeMax", repo: "." },
+    ],
+    git: true,
+  });
+  const projects = launchableProjects({ hqRoot: dir });
+  assert.deepEqual(projects.map((p) => p.key), ["lifemaxing", "openclaw-factory"]);
+  assert.equal(projects[1].isHeadquarters, true);
+  assert.equal(projects[1].launchable, true);
+  assert.equal(projects[0].isHeadquarters, false);
+});
+
+test("the factory sorts last even when every other project is blocked", () => {
+  // Otherwise "launchable first" would float the factory to the top precisely
+  // when the founder is least likely to be looking for it.
+  const dir = hq({
+    projects: [
+      { key: "openclaw-factory", name: "HQ", kind: "headquarters", repo: "." },
+      { key: "ghost", name: "Ghost", repo: "~/nope" },
+    ],
+    git: true,
+  });
+  const projects = launchableProjects({ hqRoot: dir });
+  assert.deepEqual(projects.map((p) => p.key), ["ghost", "openclaw-factory"]);
+});
+
+test("the factory still has to pass the same gates as anything else", () => {
+  const dir = hq({
+    projects: [{ key: "openclaw-factory", name: "HQ", kind: "headquarters", repo: "." }],
+    control: { version: 1, projects: { "openclaw-factory": { status: "paused" } } },
+    git: true,
+  });
+  const [factory] = launchableProjects({ hqRoot: dir });
+  assert.equal(factory.launchable, false);
+  assert.equal(factory.blockedReason, "paused");
 });
 
 test("a paused project is shown with its reason, not hidden", () => {
@@ -355,7 +387,160 @@ test("starting an objective never builds a shell string", async () => {
 test("planning the night never starts the night", async () => {
   const source = await import("node:fs").then((fs) =>
     fs.readFileSync(new URL("../../scripts/hq-intents.mjs", import.meta.url), "utf8"));
-  const handler = source.slice(source.indexOf('"overnight.add"'), source.indexOf('"decision.resolve"'));
-  assert.match(handler, /addOvernightItem/);
-  assert.ok(!/startOvernight/.test(handler), "adding to the plan must not begin spending");
+  // Bounded to the add handler, and asserting on a CALL rather than a mention:
+  // `overnight.start` sits right after it and its comment names the function.
+  const handler = source.slice(source.indexOf('"overnight.add"'), source.indexOf('"overnight.start"'));
+  assert.match(handler, /addOvernightItem\(/);
+  assert.ok(!/startOvernight\(/.test(handler), "adding to the plan must not begin spending");
+});
+
+// ── releasing, stopping and removing the night ────────────────────────────
+
+const night = (items, status = "idle") => snapshot({ overnight: { status, items } });
+const queuedItem = (id, objective) => ({ id, objective, projectId: "lifemaxing", status: "queued" });
+
+test("releasing the night reads back every objective before it spends anything", async () => {
+  const restore = installDom();
+  try {
+    const sent = [];
+    const { view } = await mountLaunch(night([
+      queuedItem("night-a", "Give settings a save button"),
+      queuedItem("night-b", "Fix the streak across timezones"),
+    ]), sent);
+
+    buttonSaying(view, "Run tonight's plan now").click();
+    assert.deepEqual(sent, [], "the night was released without being read back");
+
+    const confirm = view.byClass("launch-confirm--release")[0];
+    assert.ok(confirm, "no release confirmation was shown");
+    // A count is not a read-back. Every objective is named.
+    assert.match(confirm.textContent, /Give settings a save button/);
+    assert.match(confirm.textContent, /Fix the streak across timezones/);
+    assert.match(confirm.textContent, /2 objectives/);
+    assert.match(confirm.textContent, /spends real money/);
+
+    buttonSaying(view, "Yes, run tonight's plan").click();
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].kind, "overnight.start");
+    assert.deepEqual(sent[0].args, {}, "overnight.start declares no args and must send none");
+  } finally { restore(); }
+});
+
+test("cancelling a release enqueues nothing", async () => {
+  const restore = installDom();
+  try {
+    const sent = [];
+    const { view } = await mountLaunch(night([queuedItem("night-a", "Something costly")]), sent);
+    buttonSaying(view, "Run tonight's plan now").click();
+    buttonSaying(view, "Cancel").click();
+    assert.deepEqual(sent, []);
+    assert.equal(view.byClass("launch-confirm--release").length, 0);
+  } finally { restore(); }
+});
+
+test("an empty plan offers no way to release it", async () => {
+  // No dead controls: a button that cannot complete is not drawn.
+  const restore = installDom();
+  try {
+    const { view } = await mountLaunch(night([]), []);
+    assert.equal(buttonSaying(view, "Run tonight's plan now"), undefined);
+  } finally { restore(); }
+});
+
+test("a running night offers stop, not release, and does not overpromise", async () => {
+  const restore = installDom();
+  try {
+    const sent = [];
+    const { view } = await mountLaunch(
+      night([{ id: "night-a", objective: "In flight", projectId: "lifemaxing", status: "running" }], "running"), sent);
+
+    assert.equal(buttonSaying(view, "Run tonight's plan now"), undefined, "a running night must not offer another release");
+    const stop = buttonSaying(view, "Stop the run");
+    assert.ok(stop, "a running night must be stoppable from the phone");
+
+    // Stopping is cheap and reversible, so it needs no second press.
+    stop.click();
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].kind, "overnight.stop");
+    assert.deepEqual(sent[0].args, {});
+    // It must not claim to kill work already started.
+    assert.match(view.textContent, /lets the objective in flight finish/);
+  } finally { restore(); }
+});
+
+test("a queued item can be removed, and a running one cannot", async () => {
+  const restore = installDom();
+  try {
+    const sent = [];
+    const { view } = await mountLaunch(night([queuedItem("night-a", "Removable")]), sent);
+    const remove = buttonSaying(view, "Remove");
+    assert.ok(remove, "a queued item must be removable");
+    remove.click();
+    assert.equal(sent[0].kind, "overnight.remove");
+    assert.deepEqual(sent[0].args, { itemId: "night-a" });
+  } finally { restore(); }
+});
+
+test("nothing is removable while the night is running — the machine would refuse", async () => {
+  const restore = installDom();
+  try {
+    const { view } = await mountLaunch(
+      night([queuedItem("night-b", "Waiting"), { id: "night-a", objective: "In flight", projectId: "p", status: "running" }], "running"), []);
+    assert.equal(buttonSaying(view, "Remove"), undefined);
+  } finally { restore(); }
+});
+
+test("the factory is labelled the way the tunnel labels it, and is never the default", async () => {
+  const restore = installDom();
+  try {
+    const snap = snapshot({ projects: [
+      { key: "lifemaxing", name: "LifeMax", launchable: true, blockedReason: null, isHeadquarters: false },
+      { key: "openclaw-factory", name: "OpenClaw Agents Headquarter", launchable: true, blockedReason: null, isHeadquarters: true },
+    ] });
+    const { view, mod } = await mountLaunch(snap, []);
+    assert.match(view.textContent, /OpenClaw Agents Headquarter \(factory\)/);
+    const selected = view.byClass("is-selected")[0];
+    assert.match(selected.textContent, /LifeMax/, "the factory must never be the default selection");
+    assert.ok(!/factory/.test(selected.textContent));
+    mod.resetLaunchDraft();
+  } finally { restore(); }
+});
+
+test("the factory is not the default even when it is the only launchable target", async () => {
+  const restore = installDom();
+  try {
+    const snap = snapshot({ projects: [
+      { key: "ghost", name: "Ghost", launchable: false, blockedReason: "paused", isHeadquarters: false },
+      { key: "openclaw-factory", name: "HQ", launchable: true, blockedReason: null, isHeadquarters: true },
+    ] });
+    const { view } = await mountLaunch(snap, []);
+    assert.match(view.byClass("is-selected")[0].textContent, /Ghost/);
+    // And with nothing selectable, no spend button is drawn at all.
+    assert.equal(buttonSaying(view, "Start it now"), undefined);
+  } finally { restore(); }
+});
+
+test("the read-back says plainly when the target is the machine itself", async () => {
+  const restore = installDom();
+  try {
+    const snap = snapshot({ projects: [{ key: "openclaw-factory", name: "HQ", launchable: true, blockedReason: null, isHeadquarters: true }] });
+    const { view } = await mountLaunch(snap, []);
+    const field = view.all((n) => n.tagName === "TEXTAREA")[0];
+    field.value = "Make the console load in under a second";
+    field.input();
+    buttonSaying(view, "Start it now").click();
+    assert.match(view.byClass("launch-confirm")[0].textContent, /the machine this console runs on/);
+  } finally { restore(); }
+});
+
+test("all three overnight kinds are handled on the machine", async () => {
+  const source = await import("node:fs").then((fs) =>
+    fs.readFileSync(new URL("../../scripts/hq-intents.mjs", import.meta.url), "utf8"));
+  for (const kind of ["overnight.start", "overnight.stop", "overnight.remove"]) {
+    assert.ok(source.includes(`"${kind}": async`), `${kind} is allowlisted but unhandled`);
+  }
+  // Declared args and nothing else — start and stop take none.
+  assert.deepEqual(INTENT_KINDS["overnight.start"].args, []);
+  assert.deepEqual(INTENT_KINDS["overnight.stop"].args, []);
+  assert.deepEqual(INTENT_KINDS["overnight.remove"].args, ["itemId"]);
 });
