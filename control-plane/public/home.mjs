@@ -572,7 +572,7 @@ function agoLabel(at) {
  * founder picks an option; it is the caller's job to queue the intent and to be
  * honest that queueing is not the same as done.
  */
-export function renderHome(root, snapshot, { onAnswer = () => {}, intentStateFor = () => null, now = Date.now() } = {}) {
+export function renderHome(root, snapshot, { onAnswer = () => {}, intentStateFor = () => null, commandCenter = null, now = Date.now() } = {}) {
   const model = homeModel(snapshot, now);
   root.replaceChildren();
 
@@ -595,6 +595,17 @@ export function renderHome(root, snapshot, { onAnswer = () => {}, intentStateFor
   }
 
   root.append(healthBlock(model.health));
+
+  // Starting work is the first thing the founder does here, so it sits above
+  // every read-only section below. It stays UNDER the freshness and health
+  // rail, which is the one thing that must never move off the top: acting on a
+  // stale page is the failure this page was rebuilt to prevent.
+  //
+  // Injected rather than imported. command-center.mjs imports `intentStatus`
+  // from this module, and importing it back would make the two circular.
+  if (commandCenter) {
+    try { commandCenter(root, model); } catch { /* the launcher must never take Home down */ }
+  }
 
   if (model.calm) {
     root.append(el("p", "home-calm", "Nothing needs you right now."));

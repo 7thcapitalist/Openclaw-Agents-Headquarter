@@ -169,3 +169,53 @@ test("the preview server binds loopback only", () => {
   assert.match(source, /listen\(port,\s*"127\.0\.0\.1"/);
   assert.doesNotMatch(source, /"0\.0\.0\.0"/);
 });
+
+
+// Every module the page imports must be one the build protects.
+//
+// `money.mjs` shipped imported by app.js and absent from build.mjs's REQUIRED
+// list, so deleting it would have produced a build that passed and a page that
+// threw on its first import — the precise failure that file exists to prevent.
+// Keeping the list correct by hand is what failed; this derives it instead.
+test("build.mjs protects every module the console actually imports", () => {
+  const publicDir = join(controlPlane, "public");
+  const build = readFileSync(join(controlPlane, "build.mjs"), "utf8");
+
+  const required = new Set(
+    // The REQUIRED array, read as source rather than imported: build.mjs exits
+    // the process on failure and must not be run inside the test runner.
+    [...build.matchAll(/"([\w.-]+\.(?:mjs|js|css|html))"/g)].map((m) => m[1]),
+  );
+
+  // Walk the import graph from the entry point, so a module imported by a
+  // module is covered too.
+  const seen = new Set();
+  const queue = ["app.js"];
+  while (queue.length) {
+    const name = queue.shift();
+    if (seen.has(name)) continue;
+    seen.add(name);
+
+    let source;
+    try { source = readFileSync(join(publicDir, name), "utf8"); } catch { continue; }
+    // app.js imports absolutely ("/render.mjs") because the browser loads it as
+    // the entry point; every other module imports relatively ("./render.mjs").
+    // Both forms name a file in this directory, so both are followed.
+    for (const match of source.matchAll(/from\s+"\.?\/([\w.-]+\.mjs)"/g)) {
+      queue.push(match[1]);
+    }
+  }
+
+  for (const name of seen) {
+    assert.ok(
+      required.has(name),
+      `public/${name} is imported by the console but missing from REQUIRED in control-plane/build.mjs — `
+      + "deleting it would pass the build and break the page",
+    );
+  }
+
+  // And the reverse: a listed asset that no longer exists would fail the build
+  // for the right reason, but a listed asset nothing imports is dead weight.
+  assert.ok(seen.has("app.js"));
+  assert.ok(seen.size >= 6, `expected the console's module graph, found ${seen.size}`);
+});
