@@ -7,7 +7,7 @@ import { basename, dirname, join } from "path";
 import { PROTOCOL_VERSION, blockDispatch, computeDispatchPaths, failDispatch, ingestResult, markDispatchRunning, prepareDispatch, readResultFile, recordDispatchAgentId } from "./openclaw-protocol.mjs";
 import { describeAgentCompletion, parseAgentMeta } from "./hq/agent-meta.mjs";
 import { DEFAULT_MAX_INFRA_ATTEMPTS, STAGES, readState } from "./task-workflow.mjs";
-import { mutateTransactionalState } from "./store/transactional-json.mjs";
+import { mutateTransactionalState, peekRevision } from "./store/transactional-json.mjs";
 import { writeHandoff } from "./handoff.mjs";
 import { publishMergeReadyTask } from "./hq/github-publish.mjs";
 import { buildCompletionReport } from "./hq/completion-report.mjs";
@@ -295,11 +295,90 @@ export function publishAndRecord({ hqRoot, statePath, publish = publishMergeRead
   return result;
 }
 
+// How many consecutive iterations may commit nothing before the loop is
+// declared stuck. Three, not one, purely to absorb a caller that has genuinely
+// arranged for external state to change between passes; at spin speed three
+// iterations cost about thirty milliseconds, so the slack is free.
+export const DEFAULT_MAX_STALLED_ITERATIONS = 3;
+
+function storeRevision(statePath) {
+  try { return peekRevision(statePath); } catch { return null; }
+}
+
+// Why the loop is judged on committed revisions rather than on a write RATE.
+//
+// A rate is a threshold that has to be tuned against a path that is
+// legitimately fast — the hermetic smoke sustains 180 writes/s honestly — so it
+// is always either too loose to catch a real spin or tight enough to fail real
+// work. "This iteration committed no revision" needs no threshold, because it
+// is true by construction: the iteration read the same inputs it read last
+// time and will read them again next time. Nothing it can do differs.
+//
+// The message has to name the loop, because the whole point of halting here
+// rather than at the store's size ceiling (#224) is that the ceiling says "this
+// file got too big" — true, and useless to whoever has to fix it.
+function stalledLoopError(statePath, revision, iterations) {
+  let stage = null;
+  let dispatch = null;
+  try {
+    const state = readState(statePath);
+    stage = state.currentStage || null;
+    dispatch = state.currentDispatch || null;
+  } catch { /* the message degrades, the halt does not */ }
+  const where = dispatch
+    ? `dispatch "${dispatch.id}" stayed "${dispatch.status}"`
+    : "no dispatch was ever created";
+  const error = new Error(
+    `runToTerminal is not making progress and has been stopped after ${iterations} consecutive `
+    + `iterations that committed nothing: task state stayed at revision ${revision}, stage `
+    + `"${stage}", and ${where}. An iteration that commits no revision reads the same inputs on `
+    + "the next pass, so this loop cannot terminate on its own. The usual cause is an "
+    + "idempotency-ledger replay: a dispatch id that an earlier dispatch already spent makes "
+    + "markDispatchRunning and ingestResult return their previously committed responses instead "
+    + "of applying the mutation, which pins the dispatch and discards the agent's result. "
+    + "Check the `commands` table for `running:<dispatchId>` and `ingest:<dispatchId>`.",
+  );
+  error.stalledLoop = true;
+  error.revision = revision;
+  error.iterations = iterations;
+  error.stage = stage;
+  error.dispatchId = dispatch?.id || null;
+  return error;
+}
+
 export async function runToTerminal(options) {
   const groups = options.concurrentGroups || DEFAULT_CONCURRENT_GROUPS;
+  // 0 disables the guard, for a caller that genuinely wants the old behaviour.
+  const maxStalledIterations = options.maxStalledIterations ?? DEFAULT_MAX_STALLED_ITERATIONS;
   let response;
+  let stalled = 0;
   do {
+    // Read from the SQLite authority, not from `state.json`: the JSON file is
+    // an export, and a no-op mutation rewrites it byte-identically. Only the
+    // revision distinguishes "nothing happened" from "nothing changed".
+    const before = storeRevision(options.statePath);
     response = (await runConcurrentGroupIfReady({ ...options, groups })) || (await runOneStage(options));
+    const after = storeRevision(options.statePath);
+    // Only an iteration the loop is going to REPEAT can be a stall. An
+    // iteration that commits nothing and then ends the loop is the normal way
+    // an outstanding yielded dispatch reports itself: `runOneStage` returns
+    // `waiting` with status "dispatch", having committed nothing because
+    // `prepareDispatch` early-returns on a dispatch that is already running.
+    // Judging that as a stall halts a task whose delegated worker is simply
+    // still working — which is exactly the false positive this guard must not
+    // have.
+    //
+    // The other half of the yielded path, the in-iteration wait itself, is
+    // safe for a separate reason: waitForYieldedResult heartbeats through
+    // touchState, which commits a revision per poll.
+    if (response.status === "active" && before !== null && after === before) {
+      stalled += 1;
+      if (maxStalledIterations > 0 && stalled >= maxStalledIterations) {
+        throw stalledLoopError(options.statePath, after, stalled);
+      }
+    } else {
+      stalled = 0;
+    }
   } while (response.status === "active");
   return response;
 }
