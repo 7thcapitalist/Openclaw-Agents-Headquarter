@@ -131,6 +131,9 @@ export function founderHeadline({ outcomeClass, whatFailed, resumeAfter = null }
 // ── the contract ─────────────────────────────────────────────────────────────
 
 function classFromBlocker(blocker, detail) {
+  // Parked by the runner on an exhausted seat (seat-exhaustion.mjs) — already
+  // known, with its own reset time, so no prose match is needed.
+  if (blocker?.outcome === "paused-credits") return "paused-credits";
   switch (classifyBlocker(blocker)) {
     case "decision": return "needs-founder-decision";
     case "infra": return isCreditExhaustion(detail) ? "paused-credits" : "infra-retrying";
@@ -185,7 +188,7 @@ export function buildOutcome({
 
   return {
     outcomeClass: resolvedClass,
-    headline: founderHeadline({ outcomeClass: resolvedClass, whatFailed, resumeAfter }),
+    headline: founderHeadline({ outcomeClass: resolvedClass, whatFailed, resumeAfter: resumeAfter || blocker?.resumeAfter || null }),
     detail,
     whatFailed: String(whatFailed || "This work"),
     whatTheFactoryTried: whatTheFactoryTried || null,
@@ -193,7 +196,7 @@ export function buildOutcome({
     whatFounderMustDecide: resolvedClass === "needs-founder-decision"
       ? (whatFounderMustDecide || detail || "Review the blocker and give direction.")
       : null,
-    resumeAfter: resolvedClass === "paused-credits" ? (resumeAfter || null) : null,
+    resumeAfter: resolvedClass === "paused-credits" ? (resumeAfter || blocker?.resumeAfter || null) : null,
     evidencePaths: Array.isArray(evidencePaths) ? evidencePaths.filter(Boolean) : [],
     classification,
     needsFounder: needsFounder(resolvedClass),

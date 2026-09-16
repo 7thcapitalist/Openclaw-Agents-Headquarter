@@ -63,7 +63,11 @@ const asInfraBlocker = (blocker) => ({
   ...blocker,
   outcome: "decision-required",
   infra: true, // machine-readable; recovery classifies without prose matching
-  summary: `The ${blocker.stage || "agent"} for this task could not run (${firstLine(blocker.why || blocker.summary)}). Retry the objective later, or adjust model routing for that role.`,
+  // A seat pause already says what happened, that nothing was charged, and
+  // when it can resume; the generic "could not run" sentence would lose that.
+  summary: blocker.outcome === "paused-credits"
+    ? blocker.summary
+    : `The ${blocker.stage || "agent"} for this task could not run (${firstLine(blocker.why || blocker.summary)}). Retry the objective later, or adjust model routing for that role.`,
 });
 const firstLine = (text) => String(text || "").split("\n").map((s) => s.trim()).filter(Boolean)[0] || "no detail";
 
