@@ -14,6 +14,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 
 import { CAPABILITIES, authorize, readPermissionRegistry } from "../lib/hq/permissions.mjs";
+import { defaultAssignments } from "../lib/task-workflow.mjs";
 
 const HQ_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const registry = () => readPermissionRegistry(HQ_ROOT);
@@ -92,4 +93,34 @@ test("every agent in factory.config.json can be attributed by the registry", () 
   const granted = new Set(registry().grants.map((grant) => grant.actorId));
   const missing = [...configured].filter((agent) => !granted.has(agent));
   assert.deepEqual(missing, [], `agents in factory.config.json with no grant at all: ${missing.join(", ")}`);
+});
+
+test("every actor the factory sends is granted what it asks for, so report mode measures policy", () => {
+  // On 2026-09-14 the table granted stage names (reviewer, backend-builder)
+  // while the factory sent agent ids (claude, codex) — 604 of 658 audited
+  // checks read "would deny", which measured the naming mismatch, not policy.
+  // Derive the actors from the code that picks them, so the next change to
+  // defaultAssignments fails here instead of in the audit log.
+  const probe = (actorId, capability) => authorize({
+    registry: registry(),
+    actorType: "agent",
+    actorId,
+    capability,
+    scope: { type: "task", id: "task-probe", projectId: "lifemaxing" },
+  });
+  const dispatchers = new Set(["recovery"]);
+  const releasers = new Set();
+  for (const preferredBuilder of ["auto", "codex", "claude", "frontend"]) {
+    for (const workType of ["ui", "backend"]) {
+      const assignments = defaultAssignments({ preferredBuilder, workType });
+      for (const actor of Object.values(assignments)) dispatchers.add(actor);
+      releasers.add(assignments.release);
+    }
+  }
+  const ungranted = [
+    ...[...dispatchers].filter((actor) => probe(actor, "task.dispatch").wouldDeny).map((actor) => `${actor}:task.dispatch`),
+    ...[...releasers].filter((actor) => probe(actor, "github.open-pr").wouldDeny).map((actor) => `${actor}:github.open-pr`),
+    ...["objective.run", "objective.recover"].filter((cap) => probe("openclaw-factory", cap).wouldDeny).map((cap) => `openclaw-factory:${cap}`),
+  ];
+  assert.deepEqual(ungranted, []);
 });
