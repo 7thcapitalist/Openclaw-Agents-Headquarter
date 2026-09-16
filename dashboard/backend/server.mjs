@@ -98,6 +98,8 @@ import {
   listThreads,
   postFounderTurn,
   runThreadTurn,
+  FOUNDER_THREAD_TIMEOUT_MS,
+  failStrandedThreads,
   settleProposal,
   postTaskComment,
   resolveFounderDecision,
@@ -867,7 +869,7 @@ app.post("/api/founder/threads/:id/turns", (req, res) => {
   if (!threadIdOr400(req, res)) return;
   try {
     const thread = postFounderTurn(ROOT, req.params.id, req.body?.message);
-    void runThreadTurn(ROOT, req.params.id, { timeoutMs: FOUNDER_QUESTION_TIMEOUT_MS });
+    void runThreadTurn(ROOT, req.params.id, { timeoutMs: FOUNDER_THREAD_TIMEOUT_MS });
     res.status(202).json({ thread });
   } catch (e) {
     res.status(e?.statusCode || 500).json({ error: String(e.message || e) });
@@ -1889,6 +1891,8 @@ checkBootConfig();
 app.listen(PORT, HOST, () => {
   console.log(`[agent-lab] dashboard http://${HOST}:${PORT} (root=${ROOT})`);
   resumePendingFounderQuestions();
+  const strandedThreads = failStrandedThreads(ROOT);
+  if (strandedThreads) console.log(`[chat] ${strandedThreads} conversation(s) were mid-answer at restart; marked failed`);
   resumeStrandedObjectivesOnBoot();
 });
 
