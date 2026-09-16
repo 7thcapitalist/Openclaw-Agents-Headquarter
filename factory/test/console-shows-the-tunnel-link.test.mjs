@@ -19,15 +19,18 @@ import { panelsFor, readinessPanel } from "../../control-plane/public/render.mjs
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
+// The PUBLISHED shape — `{status, detail}` — which is what this page receives.
+// The first version of this feature was written against the dashboard route's
+// `{ok, error}` shape and rendered "No direct link" against real data.
 const snapshot = (tunnel, rest = {}) => ({
   panels: {
-    readiness: { checks: { db: { ok: true }, pm2: { ok: true }, tunnel, ...rest } },
+    readiness: { checks: { disk: { status: "ok" }, services: { status: "ok" }, tunnel, ...rest } },
   },
 });
 
 test("a reachable tunnel is shown as a link", () => {
   const panel = readinessPanel(snapshot({
-    ok: true, url: "https://increasing-yrs-praise-mailing.trycloudflare.com", connections: 1, quick: true,
+    status: "ok", url: "https://increasing-yrs-praise-mailing.trycloudflare.com", connections: 1, quick: true,
   }).panels);
 
   const link = panel.rows.find((r) => r.link);
@@ -40,7 +43,8 @@ test("a reachable tunnel is shown as a link", () => {
 
 test("an address with no live connection is shown, and marked as not answering", () => {
   const panel = readinessPanel(snapshot({
-    ok: false, url: "https://example.trycloudflare.com", connections: 0, quick: true,
+    status: "warn", detail: "the address has no live connection — it will not answer yet",
+    url: "https://example.trycloudflare.com", connections: 0, quick: true,
   }).panels);
 
   const link = panel.rows.find((r) => r.link);
@@ -50,7 +54,7 @@ test("an address with no live connection is shown, and marked as not answering",
 });
 
 test("no tunnel says so instead of showing nothing", () => {
-  const panel = readinessPanel(snapshot({ ok: false, url: null, error: "connect ECONNREFUSED" }).panels);
+  const panel = readinessPanel(snapshot({ status: "warn", url: null, detail: "no tunnel reachable: connect ECONNREFUSED" }).panels);
   assert.ok(!panel.rows.some((r) => r.link), "there is no link to offer");
   assert.match(panel.rows[0].primary, /No direct link/i);
   assert.equal(panel.rows[0].tone, "bad");
@@ -58,13 +62,13 @@ test("no tunnel says so instead of showing nothing", () => {
 
 test("the other readiness checks ride along, because a link to a dead box is no use", () => {
   const panel = readinessPanel(snapshot(
-    { ok: true, url: "https://x.trycloudflare.com", connections: 1 },
-    { openclaw: { ok: false, error: "not on PATH" } },
+    { status: "ok", url: "https://x.trycloudflare.com", connections: 1 },
+    { gateway: { status: "fail", detail: "not on PATH" } },
   ).panels);
 
-  const openclaw = panel.rows.find((r) => r.primary === "openclaw");
-  assert.equal(openclaw.tone, "bad");
-  assert.match(openclaw.secondary, /not on PATH/);
+  const gateway = panel.rows.find((r) => r.primary === "gateway");
+  assert.equal(gateway.tone, "bad");
+  assert.match(gateway.secondary, /not on PATH/);
   assert.match(panel.note, /need attention/);
 });
 
@@ -75,7 +79,7 @@ test("an unavailable readiness panel degrades, it does not throw", () => {
 });
 
 test("readiness is drawn first, and is no longer an unknown panel", () => {
-  const panels = panelsFor(snapshot({ ok: true, url: "https://x.trycloudflare.com", connections: 1 }));
+  const panels = panelsFor(snapshot({ status: "ok", url: "https://x.trycloudflare.com", connections: 1 }));
   assert.equal(panels[0].title, "Reach Headquarters",
     "'how do I get in' is the question you have when you cannot get in");
   assert.ok(!panels.some((p) => p.unknown && p.title === "readiness"),

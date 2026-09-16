@@ -354,17 +354,20 @@ export function readinessPanel(panels) {
 
   const checks = readiness.checks || {};
   const tunnel = checks.tunnel || {};
+  // The published snapshot speaks `{status, detail}`; the dashboard's own route
+  // speaks `{ok, error}`. This page only ever sees the former, but accepting
+  // both costs one clause and means a shape change cannot blank the panel.
+  const tunnelOk = tunnel.status === "ok" || tunnel.ok === true;
   const rows = [];
 
   if (tunnel.url) {
     rows.push({
       primary: "Direct link",
-      // `link` is rendered as an anchor; see the scheme guard in app.js. A
-      // reachable tunnel is the good case and should look like one.
+      // `link` is rendered as an anchor; see the scheme guard in app.js.
       link: tunnel.url,
-      secondary: tunnel.ok ? null : "no live connection — this link will not answer yet",
-      meta: tunnel.ok ? `${compact(tunnel.connections)} connection(s)` : "not reachable",
-      tone: tunnel.ok ? "good" : "bad",
+      secondary: tunnelOk ? null : text(tunnel.detail || tunnel.error, "this link will not answer yet"),
+      meta: tunnelOk ? `${compact(tunnel.connections)} connection(s)` : "not reachable",
+      tone: tunnelOk ? "good" : "bad",
     });
     if (tunnel.quick) {
       rows.push({
@@ -377,7 +380,7 @@ export function readinessPanel(panels) {
   } else {
     rows.push({
       primary: "No direct link",
-      secondary: text(tunnel.error, "the tunnel is not running — Headquarters is local-only"),
+      secondary: text(tunnel.detail || tunnel.error, "the tunnel is not running — Headquarters is local-only"),
       meta: "unreachable",
       tone: "bad",
     });
@@ -387,18 +390,19 @@ export function readinessPanel(panels) {
   // is down, and this is the panel where that pairing belongs.
   for (const [name, check] of Object.entries(checks)) {
     if (name === "tunnel" || !check || typeof check !== "object") continue;
+    const ok = check.status === "ok" || check.ok === true;
     rows.push({
       primary: name,
-      secondary: check.ok ? null : text(check.error, "not ok"),
-      meta: check.ok ? "ok" : "down",
-      tone: check.ok ? "good" : "bad",
+      secondary: ok ? null : text(check.detail || check.error, "not ok"),
+      meta: ok ? "ok" : String(check.status || "down"),
+      tone: ok ? "good" : check.status === "warn" ? "muted" : "bad",
     });
   }
 
-  const down = rows.filter((r) => r.tone === "bad").length;
+  const bad = rows.filter((r) => r.tone === "bad").length;
   return {
     title: "Reach Headquarters",
-    note: down ? `${compact(down)} thing(s) need attention` : null,
+    note: bad ? `${compact(bad)} thing(s) need attention` : null,
     rows,
   };
 }
