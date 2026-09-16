@@ -14,6 +14,7 @@ import { join } from "path";
 import { readState, writeState, resumeState } from "../task-workflow.mjs";
 import { runToTerminal, executeOpenClaw, recordRunnerCrash } from "../openclaw-runner.mjs";
 import { classifyBlocker } from "./blocker-class.mjs";
+import { cancelledObjectiveTaskIds } from "../objective/cancelled.mjs";
 
 function walkStateFiles(dir, out = []) {
   let entries = [];
@@ -100,6 +101,7 @@ export async function retryStuckTasks({
   };
 
   const files = existsSync(stateRoot) ? walkStateFiles(stateRoot) : [];
+  const cancelled = cancelledObjectiveTaskIds(stateRoot);
   const retried = [];
   const skipped = [];
 
@@ -108,6 +110,14 @@ export async function retryStuckTasks({
   for (const statePath of files) {
     let state;
     try { state = readState(statePath); } catch { continue; }
+
+    // The founder ended this work. Its task state still reads whatever it
+    // stopped at — `active`, or blocked on infra — and reviving it would run
+    // agents for an objective nobody wants. Checked before anything else.
+    if (cancelled.has(state.task?.id)) {
+      skipped.push({ taskId: state.task?.id, statePath, reason: "objective was cancelled" });
+      continue;
+    }
 
     // A delegated worker may still be writing. Age is not proof of termination.
     if (state.currentDispatch?.yieldedAt || state.yieldedGroup) {

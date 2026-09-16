@@ -237,3 +237,38 @@ test("a revived task that then makes progress can be revived again", async () =>
   assert.equal(after.retried.length, 1);
   assert.equal(after.retried[0].taskId, "task-spent");
 });
+
+// Cancelling an objective leaves its tasks' states where they stopped. The
+// sweep reads task states alone, so without asking the objective it revived
+// work the founder ended: lifemaxing obj-d4e18cad-integration sat `active` and
+// stale under a cancelled objective on 2026-09-16, one sweep from re-running
+// its review.
+test("tasks of a cancelled objective are never revived, orphaned or infra-blocked", async () => {
+  const root = hqRoot();
+  const stateRoot = join(root, "state");
+  const stale = new Date(Date.now() - 120 * 60 * 1000).toISOString();
+  const orphan = writeTask(stateRoot, "obj-gone-integration", { status: "active", currentStage: "reviewer", updatedAt: stale });
+  const infra = writeTask(stateRoot, "obj-gone-build", { status: "blocked", blocker: { outcome: "fail", stage: "builder", summary: "agent did not write its result file" } });
+  const live = writeTask(stateRoot, "obj-live-build", { status: "blocked", blocker: { outcome: "fail", stage: "builder", summary: "agent did not write its result file" } });
+  const objective = (id, status, nodeIds) => {
+    const dir = join(stateRoot, "proj", "objectives", id);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "objective-state.json"), JSON.stringify({
+      objectiveId: id, status, events: [],
+      nodes: Object.fromEntries(nodeIds.filter((n) => !n.endsWith("integration")).map((n) => [n, { id: n, status: "running" }])),
+      integration: nodeIds.find((n) => n.endsWith("integration")) ? { id: nodeIds.find((n) => n.endsWith("integration")), status: "running" } : null,
+    }));
+  };
+  objective("obj-gone", "cancelled", ["obj-gone-build", "obj-gone-integration"]);
+  objective("obj-live", "active", ["obj-live-build"]);
+
+  const driven = [];
+  const out = await retryStuckTasks({ hqRoot: root, stateRoot, runTask: async ({ statePath }) => { driven.push(statePath); return { status: "active" }; }, execute: async () => {} });
+
+  assert.deepEqual(driven, [live], "only the live objective's task is revived");
+  for (const path of [orphan, infra]) {
+    const state = JSON.parse(readFileSync(path, "utf8"));
+    assert.equal(state.autoRetries, undefined, "a cancelled objective's task is not touched");
+    assert.ok(out.skipped.some((s) => s.taskId === state.task.id && s.reason === "objective was cancelled"));
+  }
+});
