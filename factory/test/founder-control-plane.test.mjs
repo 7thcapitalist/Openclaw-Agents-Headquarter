@@ -750,3 +750,53 @@ test("an answered post-task decision leaves the inbox and cannot be answered twi
   assert.equal(unchanged.deferredDecisions[0].founderResponse, "A. Aggregates only");
   assert.equal(unchanged.events.filter((e) => e.type === "deferred-decision-recorded").length, 1);
 });
+
+// Cancelling an objective writes the objective only; its nodes' task states keep
+// the blockers they stopped on. On 2026-09-16 six cancelled duplicates kept
+// asking for decisions on the dashboard and the console until dismissed by hand.
+test("a task whose objective was cancelled asks for nothing, on either surface", async () => {
+  const { buildCompanyState } = await import("../lib/hq/company-state.mjs");
+  const cases = {};
+  for (const objectiveStatus of ["blocked", "cancelled"]) {
+    const { root, statePath } = fixture();
+    const state = JSON.parse(readFileSync(statePath, "utf8"));
+    state.status = "blocked";
+    state.blocker = { stage: "product", outcome: "decision-required", summary: "Recovery could not continue.", at: "2026-09-16T02:32:00.000Z" };
+    writeState(statePath, state);
+    const objectiveDir = join(root, "dashboard/backend/data/factory/repo/objectives/obj-dup00001");
+    mkdirSync(objectiveDir, { recursive: true });
+    writeFileSync(join(objectiveDir, "objective-state.json"), JSON.stringify({
+      objectiveId: "obj-dup00001", status: objectiveStatus, events: [],
+      nodes: { "task-demo": { id: "task-demo", status: "blocked", statePath } },
+    }));
+    saveFounderJob(root, {
+      id: "founder-dup1", kind: "objective", objectiveId: "obj-dup00001", projectId: "startup-ops", status: "error",
+      outcome: { needsFounder: true, outcomeClass: "hard-failed", headline: "Your objective stopped", at: "2026-09-16T02:32:00.000Z" },
+      createdAt: "2026-09-16T02:04:00.000Z",
+    });
+    const tasks = discoverFactoryTasks(root);
+    const overview = buildFounderOverview(root, [{ id: "startup-ops", name: "Startup Ops" }]);
+    const company = await buildCompanyState({ hqRoot: root, tasks });
+    cases[objectiveStatus] = {
+      inbox: overview.inbox.map((i) => i.id),
+      decisions: overview.decisions.length,
+      hosted: company.decisions.length,
+    };
+  }
+
+  assert.ok(cases.blocked.inbox.includes("task-demo:product"), "a live objective's decision reaches the inbox");
+  assert.equal(cases.blocked.decisions, 1);
+  assert.equal(cases.blocked.hosted, 1, "and the console");
+  assert.deepEqual(cases.cancelled.inbox, [], "neither the task decision nor the failed job is owed an answer");
+  assert.equal(cases.cancelled.decisions, 0);
+  assert.equal(cases.cancelled.hosted, 0);
+});
+
+test("a task the founder already closed is not an open decision", () => {
+  const { root, statePath } = fixture();
+  const state = JSON.parse(readFileSync(statePath, "utf8"));
+  state.status = "failed";
+  state.blocker = { stage: "reviewer", outcome: "decision-required", summary: "How should the team verify the remaining risk?", at: "2026-09-09T01:59:00.000Z" };
+  writeState(statePath, state);
+  assert.equal(buildFounderOverview(root, [{ id: "startup-ops", name: "Startup Ops" }]).decisions.length, 0);
+});
