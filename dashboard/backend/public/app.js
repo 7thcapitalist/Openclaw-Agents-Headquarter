@@ -20,7 +20,7 @@ import { threadListPanel, transcriptPanel } from "/lib/chatView.mjs";
 import { scorecardsPanel } from "/lib/scorecardsView.mjs";
 import { budgetPanel } from "/lib/budgetView.mjs";
 import { permissionsPanel } from "/lib/permissionsView.mjs";
-import { buildLiveFloorRows, buildRunningNow, objectiveActivityLabel } from "/lib/runningNow.mjs";
+import { buildLiveFloorRows, buildRunningNow } from "/lib/runningNow.mjs";
 
 (function () {
   const app = document.getElementById("app");
@@ -216,6 +216,7 @@ import { buildLiveFloorRows, buildRunningNow, objectiveActivityLabel } from "/li
     const raw = (location.hash || "#/today").replace(/^#\/?/, "");
     const segs = raw.split("/").filter(Boolean);
     if (!segs.length || segs[0] === "today" || segs[0] === "home") return { name: "today" };
+    if (segs[0] === "machine") return { name: "machine" };
     if (["agents", "projects", "tasks"].includes(segs[0])) return { name: segs[0] };
     if (segs[0] === "chat") return { name: "chat", id: segs[1] || null };
     // SOPs, Logs, Reports and Runs were retired. A bookmark to one of them
@@ -236,7 +237,8 @@ import { buildLiveFloorRows, buildRunningNow, objectiveActivityLabel } from "/li
       ["#/tasks", "tasks", "Board"],
       ["#/chat", "chat", "Chat"],
     ];
-    nav.innerHTML = items.map(([href, id, label]) => `<a href="${href}" data-nav="${id}">${esc(label)}</a>`).join("");
+    nav.innerHTML = items.map(([href, id, label]) => `<a href="${href}" data-nav="${id}">${esc(label)}</a>`).join("")
+      + `<a href="#/machine" data-nav="machine">Machine<span id="nav-machine-chip" class="nav-chip nav-chip-unknown" aria-label="Machine status"></span></a>`;
     nav.querySelectorAll("a").forEach((a) => {
       a.addEventListener("click", (e) => {
         e.preventDefault();
@@ -270,7 +272,7 @@ import { buildLiveFloorRows, buildRunningNow, objectiveActivityLabel } from "/li
   // ── Today: the founder observability surface ───────────────────
 
   async function renderToday() {
-    const [state, fc, learning, objectivesResp, autonomy, costs, planLimits, overnight, operations, goals, proposals, decisions, scorecards, budgets, permissions, blastRadius, deployments, retention, readiness] = await Promise.all([
+    const [state, fc, learning, objectivesResp, autonomy, costs, planLimits, overnight, goals, proposals, decisions, scorecards, budgets, permissions, blastRadius, deployments, readiness] = await Promise.all([
       loadCompany(),
       apiJson("/api/founder/overview").catch(() => ({ jobs: [] })),
       loadLearning().catch(() => null),
@@ -279,7 +281,6 @@ import { buildLiveFloorRows, buildRunningNow, objectiveActivityLabel } from "/li
       apiJson("/api/hq/costs").catch(() => null),
       apiJson("/api/hq/plan-limits").catch(() => null),
       apiJson("/api/founder/overnight").catch(() => ({ status: "unavailable", items: [] })),
-      apiJson("/api/hq/operations").catch(() => null),
       apiJson("/api/hq/goals").catch(() => null),
       apiJson("/api/hq/proposals").catch(() => null),
       apiJson("/api/hq/decisions").catch(() => null),
@@ -288,7 +289,6 @@ import { buildLiveFloorRows, buildRunningNow, objectiveActivityLabel } from "/li
       apiJson("/api/hq/permissions").catch(() => null),
       apiJson("/api/hq/blast-radius").catch(() => null),
       apiJson("/api/hq/deployments").catch(() => null),
-      apiJson("/api/hq/retention").catch(() => null),
       apiJson("/api/hq/readiness").catch(() => null),
     ]);
     const objectives = objectivesResp.objectives || [];
@@ -309,7 +309,9 @@ import { buildLiveFloorRows, buildRunningNow, objectiveActivityLabel } from "/li
     // "your request was received, agents are on it" confirmation.
     const liveJobs = jobs.filter((j) => j.status === "starting" || j.status === "running" || j.status === "decomposing");
 
-    app.innerHTML = renderFounderHome({ state, projects, agents, inbox, dismissedInbox, objectives, allTasks, runningRows, liveJobs, autoRecovering, finishedTasks, inboxActionable, overnight, operations, goals, proposals, decisions, scorecards, budgets, permissions, blastRadius, deployments, retention, readiness });
+    const asOf = new Date().toISOString();
+    app.innerHTML = renderFounderHome({ state, projects, agents, inbox, dismissedInbox, objectives, allTasks, runningRows, liveJobs, autoRecovering, finishedTasks, inboxActionable, overnight, goals, proposals, decisions, scorecards, budgets, permissions, blastRadius, deployments, readiness, asOf });
+    renderMachineChip(readiness);
     bindFounderControls();
     return;
 
@@ -442,7 +444,7 @@ import { buildLiveFloorRows, buildRunningNow, objectiveActivityLabel } from "/li
     </section>`;
   }
 
-  function renderFounderHome({ state, projects, agents, inbox, dismissedInbox, objectives, allTasks, runningRows, liveJobs, autoRecovering, finishedTasks, inboxActionable, overnight, operations, goals, proposals, decisions, scorecards, budgets, permissions, blastRadius, deployments, retention, readiness }) {
+  function renderFounderHome({ state, projects, agents, inbox, dismissedInbox, objectives, allTasks, runningRows, liveJobs, autoRecovering, finishedTasks, inboxActionable, overnight, goals, proposals, decisions, scorecards, budgets, permissions, blastRadius, deployments, readiness, asOf }) {
     const groups = objectiveView.groupObjectives(objectives);
     const active = [...groups.running, ...groups.waiting, ...groups.blocked];
     const workingAgents = runningRows.filter((row) => row.working);
@@ -450,28 +452,28 @@ import { buildLiveFloorRows, buildRunningNow, objectiveActivityLabel } from "/li
     const targets = workTargets(state, projects);
     return `<div class="founder-home">
       <header class="founder-topline"><div><span class="eyebrow">Founder command center</span><h1>What is the factory doing?</h1><p>${esc(nowLine)} Here is the work that matters.</p></div><button class="btn secondary" id="ask-agent">Ask the factory</button></header>
-      <form id="founder-command" class="founder-launcher"><textarea id="founder-objective" rows="1" placeholder="Start a new outcome…" required></textarea><select id="founder-project" required><option value="">Choose project</option>${targets.map((p) => `<option value="${esc(p.key)}" data-repo="${esc(p.repo || "")}">${esc(p.name)}${p.isHeadquarters ? " (factory)" : ""}</option>`).join("")}</select><input id="founder-repo" type="hidden"/><input id="founder-decompose" type="checkbox" checked hidden/><button class="btn founder-launch" type="submit">Start an outcome</button></form>
-      ${renderOvernightPlan(overnight, targets)}
-      <div class="founder-pulse"><div><span class="eyebrow">Factory pulse</span><strong>${objectiveActivityLabel(groups)}</strong></div><div><span>Working</span><b>${workingAgents.length}</b></div><div><span>Waiting for you</span><b class="${inboxActionable ? "pulse-attention" : ""}">${inboxActionable}</b></div><div><span>Recently complete</span><b>${groups.recentlyCompleted.length}</b></div></div>
-      ${renderNeedsYou(inbox, dismissedInbox, inboxActionable)}
-      <div class="founder-columns"><main>
+      <section class="founder-as-of" data-section="as-of" aria-label="As of">As of ${esc(fmtTime(asOf))}</section>
+      <div data-section="needs-you">${renderNeedsYou(inbox, dismissedInbox, inboxActionable)}</div>
+      <section class="founder-section-group" data-section="in-motion"><div class="section-heading"><div><span class="eyebrow">In motion</span><h2>In Motion</h2></div><span class="section-count">${workingAgents.length} working</span></div><main>
         <section class="founder-section"><div class="section-heading"><div><span class="eyebrow">In motion</span><h2>Active objectives</h2></div><span class="section-count">${active.length}</span></div>${active.map((o) => founderObjectiveCard(o)).join("") || `<div class="quiet-state">Nothing is running. Start an outcome above.</div>`}</section>
         <section class="founder-section"><div class="section-heading"><div><span class="eyebrow">Live floor</span><h2>Agents at work</h2></div></div>${buildLiveFloorRows(liveJobs, autoRecovering, runningRows).map((r) => `<div class="agent-work-row"><span class="status-dot ${r.working ? "is-working" : "is-waiting"}"></span><div><strong>${esc(r.title)}</strong><span>${esc(r.sub || `${r.agent || "Agent"} · ${r.stage || "next stage"}`)}</span></div><em>${esc(r.status || "waiting")}</em></div>`).join("") || `<div class="quiet-state">The floor is quiet.</div>`}</section>
-      </main><aside>
-        <section class="founder-section"><div class="section-heading"><div><span class="eyebrow">Recently</span><h2>Completed</h2></div></div>${groups.recentlyCompleted.slice(0, 3).map((o) => founderObjectiveCard(o, true)).join("") || `<div class="quiet-state">No recent completions.</div>`}</section>
+      </main></section>
+      <section class="founder-section-group start-something" data-section="start-something"><div class="section-heading"><div><span class="eyebrow">Start something</span><h2>Start Something</h2></div></div><form id="founder-command" class="founder-launcher"><textarea id="founder-objective" rows="1" placeholder="Start a new outcome…" required></textarea><select id="founder-project" required><option value="">Choose project</option>${targets.map((p) => `<option value="${esc(p.key)}" data-repo="${esc(p.repo || "")}">${esc(p.name)}${p.isHeadquarters ? " (factory)" : ""}</option>`).join("")}</select><input id="founder-repo" type="hidden"/><input id="founder-decompose" type="checkbox" checked hidden/><button class="btn founder-launch" type="submit">Start an outcome</button></form>${renderOvernightPlan(overnight, targets)}</section>
+      <section class="founder-section-group what-next" data-section="what-next"><div class="section-heading"><div><span class="eyebrow">What next</span><h2>What Next</h2></div></div><aside>
         ${renderSearchBox()}
         ${proposerPanel(proposals, { esc })}
         ${goalsPanel(goals, { esc })}
-        ${retentionPanel(retention, { esc, fmtTime })}
-        ${readinessPanel(readiness, { esc })}
         ${decisionsPanel(decisions, { esc, fmtTime })}
-        ${operationsPanel(operations, { esc, fmtTime })}
         ${budgetPanel(budgets, { esc })}
         ${permissionsPanel(permissions, { esc, fmtTime })}
         ${blastRadiusPanel(blastRadius, { esc })}
         ${deploymentsPanel(deployments, { esc, fmtTime })}
         ${scorecardsPanel(scorecards, { esc })}
-      </aside></div>
+      </aside></section>
+      <details class="inbox-fold founder-detail-fold"><summary>More from the factory <span class="muted small">${groups.recentlyCompleted.length} finished recently</span></summary>
+        <section class="founder-section"><div class="section-heading"><div><span class="eyebrow">Finished recently</span><h2>Finished recently</h2></div></div>${groups.recentlyCompleted.slice(0, 3).map((o) => founderObjectiveCard(o, true)).join("") || `<div class="quiet-state">No recent completions.</div>`}</section>
+        <section class="activity-panel"><div class="panel-heading"><div><span class="eyebrow">Activity</span><h2>What the factory has done</h2></div><span class="muted small">most recent ${(state.activityFeed || []).length}, newest first</span></div><div class="company-feed">${(state.activityFeed || []).map((e) => `<div class="company-event"><span>${esc(String(e.type || "event").replaceAll("-", " "))}</span><strong>${esc(e.taskId)}</strong>${e.actor ? ` <span class="company-actor">${esc(e.actor)}</span>` : ""}${e.stage ? ` <span class="muted small">${esc(STAGE_LABEL[e.stage] || e.stage)}</span>` : ""}<time>${esc(fmtTime(e.at))}</time></div>`).join("") || `<div class="empty-state">No factory task has run in this environment yet.</div>`}</div></section>
+      </details>
     </div>`;
   }
 
@@ -499,6 +501,41 @@ import { buildLiveFloorRows, buildRunningNow, objectiveActivityLabel } from "/li
         <div class="inbox-fold-list">${dismissedInbox.map((x) => dismissedInboxRow(x)).join("")}</div>
       </details>` : ""}
     </section>`;
+  }
+
+  function readinessChipState(readiness) {
+    if (!readiness || readiness.available === false) return { tone: "unknown", count: 0 };
+    const checks = Object.values(readiness.checks || {});
+    const bad = checks.filter((c) => c?.status === "fail" || c?.status === "warn").length;
+    return bad ? { tone: "amber", count: bad } : { tone: "green", count: 0 };
+  }
+
+  function renderMachineChip(readiness) {
+    const el = document.getElementById("nav-machine-chip");
+    if (!el) return;
+    const { tone, count } = readinessChipState(readiness);
+    el.textContent = count ? String(count) : "";
+    el.className = `nav-chip nav-chip-${tone}`;
+    el.setAttribute("aria-label", count ? `Machine status: ${count} warning${count === 1 ? "" : "s"}` : `Machine status: ${tone}`);
+  }
+
+  async function renderMachine() {
+    const [retention, readiness, operations] = await Promise.all([
+      apiJson("/api/hq/retention").catch(() => null),
+      apiJson("/api/hq/readiness").catch(() => null),
+      apiJson("/api/hq/operations").catch(() => null),
+    ]);
+    app.innerHTML = renderMachinePage({ retention, readiness, operations });
+    renderMachineChip(readiness);
+  }
+
+  function renderMachinePage({ retention, readiness, operations }) {
+    return `<div class="founder-home machine-home">
+      <header class="founder-topline"><div><span class="eyebrow">Machine</span><h1>Machine health and telemetry</h1><p>Read-only infrastructure details for the factory.</p></div></header>
+      ${retentionPanel(retention, { esc, fmtTime })}
+      ${readinessPanel(readiness, { esc })}
+      ${operationsPanel(operations, { esc, fmtTime })}
+    </div>`;
   }
 
   function founderObjectiveCard(o, compact = false) {
@@ -1736,6 +1773,7 @@ import { buildLiveFloorRows, buildRunningNow, objectiveActivityLabel } from "/li
     setNavActive(r);
     try {
       if (r.name === "today") await renderToday();
+      else if (r.name === "machine") await renderMachine();
       else if (r.name === "agents") await renderAgents();
       else if (r.name === "projects") await renderProjects();
       else if (r.name === "project") await renderProject(r);
