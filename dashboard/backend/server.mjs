@@ -83,6 +83,8 @@ import {
   handleObjectiveRetry,
   isProjectPaused,
   listFounderJobs,
+  findInFlightDuplicateJob,
+  duplicateJobError,
   readObjectiveReport,
   readTaskCompletionReport,
   readTaskEvidence,
@@ -522,6 +524,11 @@ app.post("/api/founder/tasks", (req, res) => {
     if (!objective || !repo || !projectId) return res.status(400).json({ error: "objective and projectId are required (repo is auto-resolved for registered projects)." });
     if (isProjectPaused(ROOT, projectId)) return res.status(409).json({ error: "Resume this project before starting a task." });
     if (!existsSync(join(repo, ".git"))) return res.status(400).json({ error: `Not a git working tree: ${repo}` });
+    const duplicate = req.body?.allowDuplicate ? null : findInFlightDuplicateJob(ROOT, { projectId, objective });
+    if (duplicate) {
+      const err = duplicateJobError(duplicate);
+      return res.status(409).json({ error: err.message, duplicateOf: err.duplicateOf });
+    }
     const jobId = `founder-${Date.now().toString(36)}`;
     job = { id: jobId, kind: "task", projectId, objective, repo, status: "starting", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
     saveFounderJob(ROOT, job);
@@ -604,6 +611,11 @@ app.post("/api/founder/objectives", async (req, res) => {
     if (!objective || !projectId || !repo) return res.status(400).json({ error: "objective and projectId are required (repo is auto-resolved for registered projects)." });
     if (isProjectPaused(ROOT, projectId)) return res.status(409).json({ error: "Resume this project before starting an objective." });
     if (!existsSync(join(repo, ".git"))) return res.status(400).json({ error: `Not a git working tree: ${repo}` });
+    const duplicate = req.body?.allowDuplicate ? null : findInFlightDuplicateJob(ROOT, { projectId, objective });
+    if (duplicate) {
+      const err = duplicateJobError(duplicate);
+      return res.status(409).json({ error: err.message, duplicateOf: err.duplicateOf });
+    }
 
     const jobId = `founder-${Date.now().toString(36)}`;
     job = { id: jobId, kind: "objective", projectId, objective, repo, status: "decomposing", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };

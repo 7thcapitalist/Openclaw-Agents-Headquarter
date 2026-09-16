@@ -986,15 +986,30 @@ import { buildLiveFloorRows, buildRunningNow, objectiveActivityLabel } from "/li
       const objective = document.getElementById("founder-objective").value.trim();
       if (!objective) { showToast("Describe the outcome you want first.", true); return; }
       if (!project.value) { showToast("Pick a project.", true); return; }
+      // Intake takes 30-40s. Without a visible in-flight state, repeated clicks
+      // each started their own copy of the objective (six on 2026-09-15).
+      const submit = e.currentTarget.querySelector("button[type=submit]");
+      if (submit?.disabled) return;
+      const idleLabel = submit?.textContent;
+      const setBusy = (busy) => {
+        if (!submit) return;
+        submit.disabled = busy;
+        submit.textContent = busy ? "Checking with your Chief of Staff…" : idleLabel;
+      };
       const body = (answers = []) => JSON.stringify({ objective, projectId: project.value, ...(repo ? { repo } : {}), ...(answers.length ? { answers } : {}) });
       const launch = async (answers = []) => {
-        await apiJson(endpoint, { method: "POST", body: body(answers) });
-        showToast("Created. Your team is on it — follow it in “Running now” below.");
-        document.getElementById("founder-objective").value = "";
-        setTimeout(route, 800);
+        setBusy(true);
+        try {
+          await apiJson(endpoint, { method: "POST", body: body(answers) });
+          showToast("Created. Your team is on it — follow it in “Running now” below.");
+          document.getElementById("founder-objective").value = "";
+          setTimeout(route, 800);
+        } catch (err) { showToast(err.message, true); } finally { setBusy(false); }
       };
+      setBusy(true);
       try {
         const intake = await apiJson("/api/founder/intake", { method: "POST", body: body() });
+        setBusy(false);
         if (!intake.questions?.length) return launch();
         const q = intake.questions[0];
         openModal("One quick question", `<p>${esc(q.question)}</p>${q.why ? `<p class="muted small">${esc(q.why)}</p>` : ""}<div class="decision-choices">${q.options.map((option) => `<button class="btn" data-intake-answer="${esc(option)}">${esc(option)}</button>`).join("")}<button class="btn secondary" data-intake-other>Other…</button></div>`);
@@ -1004,7 +1019,7 @@ import { buildLiveFloorRows, buildRunningNow, objectiveActivityLabel } from "/li
           openModal("Answer the question", `<textarea class="editor" id="intake-other" placeholder="Your answer…"></textarea><button class="btn" id="intake-submit">Continue</button>`);
           document.getElementById("intake-submit").onclick = () => { const value = document.getElementById("intake-other").value.trim(); if (!value) return showToast("Write a short answer first.", true); answer(value); };
         };
-      } catch (err) { showToast(err.message, true); }
+      } catch (err) { setBusy(false); showToast(err.message, true); }
     };
     app.querySelectorAll("[data-retry-task]").forEach((btn) => btn.onclick = async () => {
       btn.disabled = true; btn.textContent = "Retrying…";
