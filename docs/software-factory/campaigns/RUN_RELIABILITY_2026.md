@@ -154,6 +154,55 @@ running — that question was asked twice tonight.
 
 **Status:** not started.
 
+### 5b. A verdict can outlive the only process that would read it
+
+Sharper than finding 5, and observed directly after it was written.
+
+`runToTerminal` returns as soon as a dispatch is `running`: it commits nothing
+and exits, because from its point of view a delegated worker owns the turn. That
+is correct for the yielded path. But `openclaw agent` talks to the **gateway**,
+which hosts the session — so the agent keeps working after its caller exits, the
+turn completes, and the verdict is written to disk **with no reader**.
+
+`obj-d4e18cad`'s node 2 sat exactly there for 25 minutes on 2026-09-16. Its
+reviewer had finished and written a real result — `outcome: fail`, with a
+blocking dark-mode contrast regression — while the task state still read
+`reviewer: pending`, the dispatch was unrecorded, and the orchestrator that
+would have ingested it idled on ~0 CPU. Feeding it back took 20ms and cost
+nothing: `runOneStage` recomputed the same dispatch id, found the result already
+on disk, ingested it, and routed the failure to the builder exactly as it would
+have an hour earlier.
+
+Nothing was lost, but nothing was gained either: the review had been paid for and
+the founder was told nothing.
+
+**Fix:** a dispatch needs an owner with a heartbeat, and a sweep that ingests a
+result whose dispatch has no live owner. The result file is already the durable
+record — what is missing is anyone obliged to read it. Until then a driver must
+keep asking rather than calling `runToTerminal` once.
+
+**Status:** worked around by hand (a supervisor loop re-driving every 30s). Not
+fixed.
+
+### 5c. Two agents share one worktree
+
+The reviewer of node 2 recorded, in its own method notes, that it could not trust
+the working tree:
+
+> the working tree was being concurrently mutated by an unrelated agent session
+> sharing this worktree
+
+It pulled the committed screenshots out of git blobs instead, and said so — good
+practice by the reviewer, and an indictment of the isolation. A review that
+cannot trust what it is reading is not an independent review, and a builder
+writing into a tree another agent is editing can lose work outright.
+
+**Fix:** one worktree per dispatch, or a lease that refuses a second session in a
+tree that already has one. The worktree-per-node invariant exists; nothing
+enforces one session per worktree.
+
+**Status:** not started.
+
 ### 6. A cancelled objective's tasks still page the founder
 
 Cancelling `obj-264e7ecf` left two decision items in the Founder Inbox, because
