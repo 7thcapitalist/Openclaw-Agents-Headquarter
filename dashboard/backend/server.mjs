@@ -3,6 +3,7 @@ import dotenv from "dotenv";
 import express from "express";
 import session from "express-session";
 import { renderUntrustedMarkdown } from "./lib/safeMarkdown.mjs";
+import { withRenderedReplies } from "./lib/threadMarkdown.mjs";
 import {
   LoginThrottle,
   clientKey,
@@ -854,7 +855,7 @@ app.get("/api/founder/threads/:id", (req, res) => {
   if (!threadIdOr400(req, res)) return;
   const thread = findThread(ROOT, req.params.id);
   if (!thread) return res.status(404).json({ error: "Conversation not found." });
-  res.json(buildThreadsPanel(listThreads(ROOT), { detailId: req.params.id }));
+  res.json(withRenderedReplies(buildThreadsPanel(listThreads(ROOT), { detailId: req.params.id })));
 });
 
 app.delete("/api/founder/threads/:id", (req, res) => {

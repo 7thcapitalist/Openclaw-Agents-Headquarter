@@ -77,10 +77,23 @@ function renderTurn(turn, esc) {
     return `<div class="chat-turn chat-agent"><div class="chat-bubble chat-error">${esc(turn.error)}</div></div>`;
   }
   const proposals = (turn.proposals || []).map((p) => renderProposal(p, turn.id, esc)).join("");
+  const body = replyBody(turn, esc);
   return `<div class="chat-turn chat-${turn.role === "agent" ? "agent" : "founder"}">
-    <div class="chat-bubble">${paragraphs(turn.text, esc)}${turn.truncated ? `<p class="muted small">(truncated)</p>` : ""}</div>
+    <div class="chat-bubble${body.rendered ? " chat-markdown" : ""}">${body.html}${turn.truncated ? `<p class="muted small">(truncated)</p>` : ""}</div>
     ${proposals}
   </div>`;
+}
+
+// An agent reply arrives with `html` already produced by the server's
+// untrusted-Markdown renderer (dashboard/backend/lib/threadMarkdown.mjs), which
+// has passed its generation and sanitization layers. That is the only HTML this
+// view inserts unescaped. A founder turn never carries `html`, and anything
+// without it is escaped here as before.
+function replyBody(turn, esc) {
+  if (turn.role === "agent" && typeof turn.html === "string" && turn.html) {
+    return { html: turn.html, rendered: true };
+  }
+  return { html: paragraphs(turn.text, esc), rendered: false };
 }
 
 // A proposal, shown as the exact thing that will run.
