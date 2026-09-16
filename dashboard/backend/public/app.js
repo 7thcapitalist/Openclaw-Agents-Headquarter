@@ -455,7 +455,7 @@ import { buildLiveFloorRows, buildRunningNow } from "/lib/runningNow.mjs";
       <section class="founder-as-of" data-section="as-of" aria-label="As of">As of ${esc(fmtTime(asOf))}</section>
       <div data-section="needs-you">${renderNeedsYou(inbox, dismissedInbox, inboxActionable)}</div>
       <section class="founder-section-group" data-section="in-motion"><div class="section-heading"><div><span class="eyebrow">In motion</span><h2>In Motion</h2></div><span class="section-count">${workingAgents.length} working</span></div><main>
-        <section class="founder-section"><div class="section-heading"><div><span class="eyebrow">In motion</span><h2>Active objectives</h2></div><span class="section-count">${active.length}</span></div>${active.map((o) => founderObjectiveCard(o)).join("") || `<div class="quiet-state">Nothing is running. Start an outcome above.</div>`}</section>
+        <section class="founder-section"><div class="section-heading"><div><span class="eyebrow">In motion</span><h2>Active objectives</h2></div><span class="section-count">${active.length}</span></div>${active.map((o) => founderObjectiveCard(o, false, inbox)).join("") || `<div class="quiet-state">Nothing is running. Start an outcome above.</div>`}</section>
         <section class="founder-section"><div class="section-heading"><div><span class="eyebrow">Live floor</span><h2>Agents at work</h2></div></div>${buildLiveFloorRows(liveJobs, autoRecovering, runningRows).map((r) => `<div class="agent-work-row"><span class="status-dot ${r.working ? "is-working" : "is-waiting"}"></span><div><strong>${esc(r.title)}</strong><span>${esc(r.sub || `${r.agent || "Agent"} · ${r.stage || "next stage"}`)}</span></div><em>${esc(r.status || "waiting")}</em></div>`).join("") || `<div class="quiet-state">The floor is quiet.</div>`}</section>
       </main></section>
       <section class="founder-section-group start-something" data-section="start-something"><div class="section-heading"><div><span class="eyebrow">Start something</span><h2>Start Something</h2></div></div><form id="founder-command" class="founder-launcher"><textarea id="founder-objective" rows="1" placeholder="Start a new outcome…" required></textarea><select id="founder-project" required><option value="">Choose project</option>${targets.map((p) => `<option value="${esc(p.key)}" data-repo="${esc(p.repo || "")}">${esc(p.name)}${p.isHeadquarters ? " (factory)" : ""}</option>`).join("")}</select><input id="founder-repo" type="hidden"/><input id="founder-decompose" type="checkbox" checked hidden/><button class="btn founder-launch" type="submit">Start an outcome</button></form>${renderOvernightPlan(overnight, targets)}</section>
@@ -471,7 +471,7 @@ import { buildLiveFloorRows, buildRunningNow } from "/lib/runningNow.mjs";
         ${scorecardsPanel(scorecards, { esc })}
       </aside></section>
       <details class="inbox-fold founder-detail-fold"><summary>More from the factory <span class="muted small">${groups.recentlyCompleted.length} finished recently</span></summary>
-        <section class="founder-section"><div class="section-heading"><div><span class="eyebrow">Finished recently</span><h2>Finished recently</h2></div></div>${groups.recentlyCompleted.slice(0, 3).map((o) => founderObjectiveCard(o, true)).join("") || `<div class="quiet-state">No recent completions.</div>`}</section>
+        <section class="founder-section"><div class="section-heading"><div><span class="eyebrow">Finished recently</span><h2>Finished recently</h2></div></div>${groups.recentlyCompleted.slice(0, 3).map((o) => founderObjectiveCard(o, true, inbox)).join("") || `<div class="quiet-state">No recent completions.</div>`}</section>
         <section class="activity-panel"><div class="panel-heading"><div><span class="eyebrow">Activity</span><h2>What the factory has done</h2></div><span class="muted small">most recent ${(state.activityFeed || []).length}, newest first</span></div><div class="company-feed">${(state.activityFeed || []).map((e) => `<div class="company-event"><span>${esc(String(e.type || "event").replaceAll("-", " "))}</span><strong>${esc(e.taskId)}</strong>${e.actor ? ` <span class="company-actor">${esc(e.actor)}</span>` : ""}${e.stage ? ` <span class="muted small">${esc(STAGE_LABEL[e.stage] || e.stage)}</span>` : ""}<time>${esc(fmtTime(e.at))}</time></div>`).join("") || `<div class="empty-state">No factory task has run in this environment yet.</div>`}</div></section>
       </details>
     </div>`;
@@ -493,14 +493,40 @@ import { buildLiveFloorRows, buildRunningNow } from "/lib/runningNow.mjs";
   // Sorted and worded by the backend translation (factory/lib/hq/founder-inbox.mjs);
   // this only decides where it lives on the page.
   function renderNeedsYou(inbox, dismissedInbox = [], inboxActionable = 0) {
+    const diagnostics = Array.isArray(arguments[3]) ? arguments[3] : [];
+    const diagnosticCards = diagnostics.map((finding) => diagnosticInboxCard(finding)).join("");
+    const attentionCards = `${inbox.map((x) => inboxItem(x)).join("")}${diagnosticCards}`;
+    const actionable = Number(inboxActionable || 0) + diagnostics.length;
     return `<section class="founder-section attention-section needs-you">
-      <div class="section-heading"><div><span class="eyebrow">Your turn</span><h2>Needs you</h2></div>${inboxActionable ? `<span class="section-count">${inboxActionable}</span>` : ""}</div>
-      ${inbox.map((x) => inboxItem(x)).join("") || renderFounderInboxEmpty()}
+      <div class="section-heading"><div><span class="eyebrow">Your turn</span><h2>Needs you</h2></div>${actionable ? `<span class="section-count">${actionable}</span>` : ""}</div>
+      ${attentionCards || renderFounderInboxEmpty()}
       ${dismissedInbox.length ? `<details class="inbox-fold">
         <summary>Dismissed by you <span class="muted small">${dismissedInbox.length}</span></summary>
         <div class="inbox-fold-list">${dismissedInbox.map((x) => dismissedInboxRow(x)).join("")}</div>
       </details>` : ""}
     </section>`;
+  }
+
+  function runCountWord(count) {
+    const words = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve"];
+    const value = Number(count);
+    return Number.isInteger(value) && value >= 1 && value <= 12 ? words[value] : String(value);
+  }
+
+  function diagnosticInboxCard(finding) {
+    const divergence = finding.kind === "divergence";
+    const copy = divergence
+      ? "This objective says it is running. Nothing is actually running."
+      : `${runCountWord(finding.streak).replace(/^./, (letter) => letter.toUpperCase())} runs in a row changed nothing.`;
+    const source = divergence ? "obj-c58897c0" : "obj-c7b263bb";
+    const type = divergence ? "Objective mismatch" : "Stalled loop";
+    const tone = divergence ? "bad" : "warn";
+    return `<div class="inbox-entry diagnostic-entry" data-diagnostic-source="${source}"><article class="fi-card fi-tone-${tone}">
+      <div class="fi-type">${type}</div>
+      <h3 class="fi-title">${esc(copy)}</h3>
+      <p class="fi-subject">Task <code>${esc(finding.taskId)}</code>${finding.project ? ` · ${esc(finding.project)}` : ""}</p>
+      <div class="fi-actions"><button class="btn" data-retry-task="${esc(finding.taskId)}">Retry</button><button class="btn secondary" data-task-execution="${esc(finding.taskId)}">Open</button></div>
+    </article></div>`;
   }
 
   function readinessChipState(readiness) {
@@ -538,11 +564,78 @@ import { buildLiveFloorRows, buildRunningNow } from "/lib/runningNow.mjs";
     </div>`;
   }
 
-  function founderObjectiveCard(o, compact = false) {
+  function cardActionState(item, now = Date.now()) {
+    const movedAt = Date.parse(item.updatedAt || "");
+    const age = Number.isFinite(movedAt) ? Math.max(0, now - movedAt) : null;
+    const moved = age == null ? "moved — time unknown" : age < 1000 ? "moved just now" : `moved ${fmtDuration(age)} ago`;
+    const status = String(item.status6 || item.status || "").toUpperCase();
+    if (item.inboxKind === "approval" && item.taskId && item.statePath) return { moved, pattern: "approve-reject" };
+    if (["decision", "post-task-decision", "question"].includes(item.inboxKind)) return { moved, pattern: "follow-open" };
+    if (["COMPLETE", "COMPLETED", "MERGE-READY", "MERGED"].includes(status)) return { moved, pattern: "reason", reason: "Done — no action needed." };
+    if (status === "CANCELLED" || status === "CANCELED") return { moved, pattern: "reason", reason: "Cancelled by you — no action needed." };
+    if (["BLOCKED", "FAILED", "RECOVERING"].includes(status)) return { moved, pattern: "retry-open" };
+    return { moved, pattern: "follow-open" };
+  }
+
+  function taskCardInput(task) {
+    const blockerKind = task.blocker?.outcome === "decision-required" ? "decision" : task.blocker ? "blocked" : null;
+    return {
+      itemKind: "task",
+      taskId: task.id || task.taskId,
+      updatedAt: task.updatedAt,
+      status: task.status,
+      status6: task.status6,
+      statePath: task.statePath,
+      inboxKind: task.awaitingFounderApproval ? "approval" : blockerKind,
+    };
+  }
+
+  function objectiveCardInput(objective, inbox = []) {
+    const related = inbox.find((item) => item.objectiveId === objective.objectiveId);
+    const blockedOn = Array.isArray(objective.blockedOn) ? objective.blockedOn[0] : objective.blockedOn;
+    const rawNodes = objective.nodes || objective.nodeBriefs || [];
+    const nodes = Array.isArray(rawNodes) ? rawNodes : Object.values(rawNodes);
+    const nextNode = nodes.find((node) => !["complete", "completed", "cancelled", "canceled"].includes(String(node.status || "").toLowerCase()));
+    return {
+      itemKind: "objective",
+      objectiveId: objective.objectiveId,
+      taskId: related?.taskId || (typeof blockedOn === "string" ? blockedOn : blockedOn?.id) || nextNode?.id,
+      updatedAt: objective.updatedAt,
+      status6: objective.status6,
+      status: objective.status,
+      statePath: related?.statePath,
+      inboxKind: related?.kind || null,
+    };
+  }
+
+  function cardActions(action, item) {
+    const open = item.itemKind === "objective"
+      ? `data-objective-details="${esc(item.objectiveId)}"`
+      : `data-report-task="${esc(item.taskId)}"`;
+    const follow = item.itemKind === "objective"
+      ? `data-objective-execution="${esc(item.objectiveId)}"`
+      : `data-task-execution="${esc(item.taskId)}"`;
+    if (action.pattern === "reason") return `<span class="card-action-reason" data-action-reason>${esc(action.reason)}</span>`;
+    if (action.pattern === "approve-reject") return `<button class="btn tiny" data-approve="${esc(item.taskId)}">Approve</button><button class="btn secondary tiny" data-reject="${esc(item.taskId)}">Reject</button>`;
+    if (action.pattern === "retry-open") return `<button class="btn tiny" data-retry-task="${esc(item.taskId)}">Retry</button><button class="btn secondary tiny" ${open}>Open</button>`;
+    return `<button class="btn secondary tiny" ${follow}>Follow</button><button class="btn secondary tiny" ${open}>Open</button>`;
+  }
+
+  function founderTaskCard(task, now = Date.now()) {
+    const item = taskCardInput(task);
+    const action = cardActionState(item, now);
+    const approval = action.pattern === "approve-reject" ? ` data-approval-task="${esc(item.taskId)}" data-approval-statepath="${esc(item.statePath)}"` : "";
+    return `<article class="founder-task"${approval}><strong>${esc(task.objective || task.title || item.taskId)}</strong><span class="card-moved">${esc(action.moved)}</span><div class="card-actions">${cardActions(action, item)}</div></article>`;
+  }
+
+  function founderObjectiveCard(o, compact = false, inbox = []) {
     const running = (o.nodeBriefs || []).find((n) => n.status === "RUNNING");
     const current = running ? `${running.role || "Agent"} · ${running.stage || "working"}` : (o.nextAction?.label || "Waiting for the next safe step");
     const title = objectiveView.shortObjectiveTitle(o.title || o.objective || o.objectiveId);
-    return `<article class="founder-objective ${compact ? "is-compact" : ""}" data-objective-details="${esc(o.objectiveId)}"><div class="objective-head"><div><span class="eyebrow">${esc(o.project || "Factory")}</span><h3>${esc(title)}</h3></div><span class="objective-status status-${esc(String(o.statusTone || "info"))}">${esc(o.statusLabel || o.status6 || "In progress")}</span></div><p class="objective-headline">${esc(o.headline || "The team is moving this outcome forward.")}</p><div class="objective-progress"><span style="width:${Math.max(0, Math.min(100, Number(o.progress?.percent) || 0))}%"></span></div><div class="objective-now"><span>NOW</span><strong>${esc(current)}</strong></div><div class="objective-foot"><span>${esc(o.progress?.label || "Progress updating")}</span><button class="btn secondary tiny" data-objective-details="${esc(o.objectiveId)}">Watch factory ↗</button></div></article>`;
+    const item = objectiveCardInput(o, inbox);
+    const action = cardActionState(item);
+    const approval = action.pattern === "approve-reject" ? ` data-approval-task="${esc(item.taskId)}" data-approval-statepath="${esc(item.statePath)}"` : "";
+    return `<article class="founder-objective ${compact ? "is-compact" : ""}" data-objective-details="${esc(o.objectiveId)}"${approval}><div class="objective-head"><div><span class="eyebrow">${esc(o.project || "Factory")}</span><h3>${esc(title)}</h3></div><span class="objective-status status-${esc(String(o.statusTone || "info"))}">${esc(o.statusLabel || o.status6 || "In progress")}</span></div><p class="objective-headline">${esc(o.headline || "The team is moving this outcome forward.")}</p><div class="objective-progress"><span style="width:${Math.max(0, Math.min(100, Number(o.progress?.percent) || 0))}%"></span></div><div class="objective-now"><span>NOW</span><strong>${esc(current)}</strong></div><div class="objective-foot"><div><span>${esc(o.progress?.label || "Progress updating")}</span><span class="card-moved">${esc(action.moved)}</span></div><div class="card-actions">${cardActions(action, item)}</div></div></article>`;
   }
 
   function runtimeBanner(runtime) {
