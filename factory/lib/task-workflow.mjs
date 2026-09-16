@@ -4,7 +4,7 @@ import { join, resolve } from "path";
 import { createHash, randomUUID, sign as signPayload, verify as verifySignature } from "crypto";
 import { classifyBlocker } from "./hq/blocker-class.mjs";
 import { escalationVerdict } from "./hq/escalation-gate.mjs";
-import { classifyFailure, isRecoverableFailure, recoveryStrategy, repairTargetFor } from "./failure-classification.mjs";
+import { classifyFailure, isInfrastructureFailure, isRecoverableFailure, recoveryStrategy, repairTargetFor } from "./failure-classification.mjs";
 import { mutateTransactionalState, readTransactionalState } from "./store/transactional-json.mjs";
 import { authorityForVerification } from "./founder-authority.mjs";
 import { buildManifest, summarizeManifest, verifyManifest } from "./evidence-manifest.mjs";
@@ -510,14 +510,50 @@ export function normalizeRecovery(recovery = {}) {
   return {
     ...recovery,
     maxAttempts,
+    // Infrastructure gets its own, larger allowance, mirroring the split the
+    // STAGE budget already makes (DEFAULT_MAX_INFRA_ATTEMPTS against
+    // maxAttemptsPerStage). A dead gateway is not a verdict on the branch, and
+    // on 2026-09-15 two objectives spent eleven attempts between them proving
+    // that a socket was still closed.
+    maxInfraAttempts: Number(recovery.maxInfraAttempts) || DEFAULT_MAX_INFRA_ATTEMPTS,
     // A ceiling on automated recovery for the whole task, whatever the shape of
     // the incidents. Three full incidents by default.
     maxTotalAttempts: Number(recovery.maxTotalAttempts) || maxAttempts * 3,
+    // Transport gets its own task-wide ceiling too. Counting it against
+    // maxTotalAttempts is what left obj-d4e18cad at 8 of 9 lifetime attempts
+    // after a gateway crash — one more environment failure, on any stage, and a
+    // task whose work was never at fault would have been unrecoverable.
+    maxTotalInfraAttempts: Number(recovery.maxTotalInfraAttempts)
+      || (Number(recovery.maxInfraAttempts) || DEFAULT_MAX_INFRA_ATTEMPTS) * 3,
     // Legacy state has attempts but no incident tag. They predate the split and
     // belong to whatever was open when they were written: incident 1.
     incident: Number(recovery.incident) || 1,
     attempts: Array.isArray(recovery.attempts) ? recovery.attempts : [],
     active: recovery.active ?? null,
+  };
+}
+
+// Whether another automated attempt is available for a failure of this KIND.
+//
+// Transport and verdict are counted separately, per incident and for the life of
+// the task. They answer different questions — "has the agent had enough chances
+// to fix this?" versus "is the environment still broken?" — and a shared counter
+// makes the first unanswerable whenever the second is happening. On 2026-09-15
+// two objectives spent eleven attempts between them on an OOM-killed gateway,
+// running diagnosis and independent review against a closed socket.
+export function recoveryBudgetFor(recovery = {}, kind) {
+  const r = normalizeRecovery(recovery);
+  const infra = isInfrastructureFailure(kind);
+  const mine = (list) => list.filter((a) => isInfrastructureFailure(a.classification) === infra).length;
+  const spent = mine(openIncidentAttempts(r));
+  const limit = infra ? r.maxInfraAttempts : r.maxAttempts;
+  const lifetimeSpent = mine(r.attempts || []);
+  const lifetimeLimit = infra ? r.maxTotalInfraAttempts : r.maxTotalAttempts;
+  return {
+    infra, spent, limit, lifetimeSpent, lifetimeLimit,
+    incidentExhausted: spent >= limit,
+    lifetimeExhausted: lifetimeSpent >= lifetimeLimit,
+    available: spent < limit && lifetimeSpent < lifetimeLimit,
   };
 }
 
@@ -553,17 +589,17 @@ export function startRecovery(state, { failedStage, actor, error, evidence = [],
   }];
   next.recovery = normalizeRecovery({ ...(next.recovery || {}), maxAttempts: Number(maxRecoveryAttempts) || Number(next.recovery?.maxAttempts) || 3, active: null });
   if (!isRecoverableFailure(kind)) return next;
-  const used = openIncidentAttempts(next.recovery).length;
-  if (used >= next.recovery.maxAttempts) return escalateRecovery(next, { failedStage, kind, error, now });
+  const budget = recoveryBudgetFor(next.recovery, kind);
+  if (budget.incidentExhausted) return escalateRecovery(next, { failedStage, kind, error, now });
   // The task-wide ceiling. Reaching it is its own kind of founder decision: the
   // open incident is still in budget, but this task has consumed more automated
   // repair than any task should, so say that rather than reporting it as one
   // more exhausted incident.
-  if (next.recovery.attempts.length >= next.recovery.maxTotalAttempts) {
+  if (budget.lifetimeExhausted) {
     return escalateRecovery(next, {
       failedStage,
       kind: "FOUNDER_DECISION_REQUIRED",
-      error: `This task has spent ${next.recovery.attempts.length} recovery attempt(s) across ${next.recovery.incident} incident(s), reaching its task-wide ceiling of ${next.recovery.maxTotalAttempts}. The latest failure was: ${String(error || "unknown failure")}`,
+      error: `This task has spent ${budget.lifetimeSpent} ${budget.infra ? "environment" : "recovery"} attempt(s) across ${next.recovery.incident} incident(s), reaching its task-wide ceiling of ${budget.lifetimeLimit}. The latest failure was: ${String(error || "unknown failure")}`,
       now,
     });
   }
@@ -578,7 +614,12 @@ export function startRecovery(state, { failedStage, actor, error, evidence = [],
     // markDispatchRunning's `running:<id>` idempotency key replayed the old
     // commit instead of marking the dispatch running. See the note there.
     ordinal: next.recovery.attempts.length + 1,
-    number: used + 1, strategy: recoveryStrategy(used + 1), originalObjective: next.task.outcome,
+    number: budget.spent + 1,
+    // Transport stays on a plain retry: every rung above it — look harder,
+    // review independently — is a reading of the WORK, and none of them can
+    // tell a closed socket anything.
+    strategy: budget.infra ? "retry-recover" : recoveryStrategy(budget.spent + 1),
+    originalObjective: next.task.outcome,
     failedStage, agent: actor, error: String(error || "unknown failure"), classification: kind,
     repairTarget: repairTargetFor(kind), relevantEvidence: structuredClone(evidence),
     attemptedActions: [], currentState: next.status, diagnosis: null, repair: null, verification: null,
@@ -671,12 +712,26 @@ function finishRecoveryFailure(state, { summary, actor, outcome, decision = null
   if (outcome === "decision-required") {
     return escalateRecovery(next, { failedStage: active.failedStage, kind: "FOUNDER_DECISION_REQUIRED", error, decision, now });
   }
-  const openCount = openIncidentAttempts(next.recovery).length;
-  if (openCount < next.recovery.maxAttempts && next.recovery.attempts.length < next.recovery.maxTotalAttempts && isRecoverableFailure(kind)) {
+  // Infrastructure and verdict failures are counted separately within the
+  // incident. Mixing them is how a gateway that died mid-dispatch consumed the
+  // budget meant for "the agent looked at this and could not fix it", and then
+  // escalated to the founder as though the branch were at fault.
+  const open = openIncidentAttempts(next.recovery);
+  const infra = isInfrastructureFailure(kind);
+  const infraCount = open.filter((a) => isInfrastructureFailure(a.classification)).length;
+  const verdictCount = open.length - infraCount;
+  const budget = recoveryBudgetFor(next.recovery, kind);
+  const spent = infra ? infraCount : verdictCount;
+  if (budget.available && isRecoverableFailure(kind)) {
     const ordinal = next.recovery.attempts.length + 1;
-    next.recovery.active = { phase: "diagnose", failedStage: active.failedStage, attempt: openCount + 1, ordinal };
-    next.recovery.attempts.push({ incident: next.recovery.incident, ordinal, number: openCount + 1, strategy: recoveryStrategy(openCount + 1), originalObjective: next.task.outcome, failedStage: active.failedStage, agent: "recovery", error, classification: kind, repairTarget: repairTargetFor(kind), relevantEvidence: [], attemptedActions: [], currentState: next.status, diagnosis: null, repair: null, verification: null, status: "diagnosing", startedAt: now });
-    next.events.push({ at: now, type: "recovery-diagnosing", stage: active.failedStage, actor: "recovery", attempt: openCount + 1, classification: kind });
+    // The ladder — diagnose, then look harder, then review independently — is a
+    // series of readings of the WORK. None of them can tell a closed socket
+    // anything, so transport failures stay on a plain retry however many times
+    // they recur.
+    const strategy = infra ? "retry-recover" : recoveryStrategy(verdictCount + 1);
+    next.recovery.active = { phase: "diagnose", failedStage: active.failedStage, attempt: spent + 1, ordinal };
+    next.recovery.attempts.push({ incident: next.recovery.incident, ordinal, number: spent + 1, strategy, originalObjective: next.task.outcome, failedStage: active.failedStage, agent: "recovery", error, classification: kind, repairTarget: repairTargetFor(kind), relevantEvidence: [], attemptedActions: [], currentState: next.status, diagnosis: null, repair: null, verification: null, status: "diagnosing", startedAt: now });
+    next.events.push({ at: now, type: "recovery-diagnosing", stage: active.failedStage, actor: "recovery", attempt: spent + 1, classification: kind });
     return next;
   }
   return escalateRecovery(next, { failedStage: active.failedStage, kind, error, now });

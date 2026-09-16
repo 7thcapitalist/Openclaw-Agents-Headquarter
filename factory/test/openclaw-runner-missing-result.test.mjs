@@ -90,8 +90,14 @@ test("missing-result failures stay bounded and machine-recoverable", async () =>
   const stageAttempts = state.dispatches.filter((d) => !String(d.kind || "").startsWith("recovery-"));
   const recoveryAttempts = state.dispatches.filter((d) => String(d.kind || "").startsWith("recovery-"));
   assert.equal(stageAttempts.length, 1);
-  assert.equal(recoveryAttempts.length, state.recovery.maxAttempts);
-  assert.ok(state.dispatches.length <= 1 + state.recovery.maxAttempts,
+  // Bounded by the TRANSPORT allowance, not the verdict one. "wrote no result
+  // file" classifies INFRASTRUCTURE_ERROR — the assertion below on
+  // isRetriableInfraBlocker says so — and since the transport budget split it
+  // gets maxInfraAttempts rather than spending the budget that exists for an
+  // agent which looked at the work and could not fix it. The property this
+  // test protects is unchanged: bounded effort, never an unbounded loop.
+  assert.equal(recoveryAttempts.length, state.recovery.maxInfraAttempts);
+  assert.ok(state.dispatches.length <= 1 + state.recovery.maxInfraAttempts,
     "a missing result must never dispatch unboundedly");
   assert.equal(state.currentStage, "product");
   // The founder is told once recovery is exhausted, but an agent that never

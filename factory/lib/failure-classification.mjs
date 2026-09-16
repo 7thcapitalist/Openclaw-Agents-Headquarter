@@ -135,6 +135,13 @@ export function isRecoverableFailure(kind) {
   return ["AGENT_ERROR", "FACTORY_ERROR", "PROJECT_ERROR", "INFRASTRUCTURE_ERROR", "UNKNOWN"].includes(kind);
 }
 
+// Transport, not verdict. A dead gateway or an exhausted seat says nothing about
+// the branch, so recovery must neither spend the verdict budget on it nor climb
+// the review ladder against it — see `finishRecoveryFailure`.
+export function isInfrastructureFailure(kind) {
+  return kind === "INFRASTRUCTURE_ERROR";
+}
+
 export function recoveryStrategy(attempt) {
   return ["retry-recover", "deeper-diagnosis", "independent-review"][Math.max(0, Number(attempt || 1) - 1)] || "founder-escalation";
 }

@@ -13,9 +13,9 @@ const fresh = () => createState({ task, repo: "/tmp/repo", branch: "factory/obj-
 // gone, ending in an escalation to the founder. The escalating call is the one
 // AFTER the last attempt — startRecovery escalates when the budget is already
 // spent, not when it spends the last one.
-function exhaust(state, { stage = "builder", error = "merge conflict integrating factory/obj-x-game-backend" } = {}) {
+function exhaust(state, { stage = "builder", error = "merge conflict integrating factory/obj-x-game-backend", tries = 5 } = {}) {
   let s = state;
-  for (let i = 0; i < 5 && s.status !== "blocked"; i += 1) {
+  for (let i = 0; i < tries && s.status !== "blocked"; i += 1) {
     s = startRecovery(s, { failedStage: stage, actor: "codex", error, maxRecoveryAttempts: 3 });
   }
   return s;
@@ -59,22 +59,28 @@ test("a founder resume returns the budget to the next failure", () => {
 
 test("nothing is deleted: the full attempt record survives every incident", () => {
   const resumed = resumeState(exhaust(fresh()));
-  const after = exhaust(resumed, { stage: "reviewer", error: "Gateway agent call connection closed" });
-  assert.equal(after.recovery.attempts.length, 6, "three from each incident, all still on the record");
+  // A dropped gateway call is INFRASTRUCTURE_ERROR, which since the transport
+  // budget split gets its own larger allowance (6) — a closed socket is not a
+  // verdict on the branch. The point of this test is unchanged: every attempt
+  // from every incident stays on the record.
+  const after = exhaust(resumed, { stage: "reviewer", error: "Gateway agent call connection closed", tries: 9 });
+  assert.equal(after.recovery.attempts.length, 9, "three from the first incident, six from the second");
   assert.equal(after.recovery.attempts.filter((a) => a.incident === 1).length, 3);
-  assert.equal(after.recovery.attempts.filter((a) => a.incident === 2).length, 3);
+  assert.equal(after.recovery.attempts.filter((a) => a.incident === 2).length, 6);
   assert.match(after.recovery.attempts[0].error, /merge conflict/);
   assert.ok(after.events.some((e) => e.type === "recovery-incident-closed" && e.attempts === 3));
 });
 
 test("the escalation describes only the incident it is about", () => {
   const resumed = resumeState(exhaust(fresh()));
-  const gateway = exhaust(resumed, { stage: "reviewer", error: "Gateway agent call connection closed" });
+  const gateway = exhaust(resumed, { stage: "reviewer", error: "Gateway agent call connection closed", tries: 9 });
   assert.equal(gateway.status, "blocked");
-  // Before the fix this rendered all six attempts, telling the founder the
-  // factory had tried six strategies -- three of them on the merge conflict.
-  assert.equal(gateway.blocker.whatFactoryTried.split(";").length, 3);
-  assert.match(gateway.blocker.summary, /after 3 bounded attempt\(s\)/);
+  // Before the fix this rendered every attempt, telling the founder the factory
+  // had tried strategies that belonged to the merge conflict. The count is six
+  // rather than three because transport now has its own allowance; what this
+  // guards is that NONE of the first incident's attempts appear here.
+  assert.equal(gateway.blocker.whatFactoryTried.split(";").length, 6);
+  assert.match(gateway.blocker.summary, /after 6 bounded attempt\(s\)/);
   assert.match(gateway.blocker.why, /Gateway agent call connection closed/);
   assert.doesNotMatch(gateway.blocker.why, /merge conflict/);
 });
