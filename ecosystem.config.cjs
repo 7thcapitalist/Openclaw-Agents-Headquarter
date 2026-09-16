@@ -17,6 +17,25 @@
 //
 // Deploy is: git pull in THIS checkout, then `pm2 reload ecosystem.config.cjs`.
 // Nothing else may point pm2 at a different directory — see DEPLOY.md.
+//
+// MEMORY CEILINGS, AND WHAT THEY DO NOT COVER
+//
+// Every app carries a `max_memory_restart`. On 2026-09-15 the machine died of
+// global OOM: the kernel killed `PM2 v7.0.4: God` at 4.5 GB, taking all four
+// services with it, and the box had TWO God daemons running at once — 8.4 GB of
+// a 14 GB machine spent on process management. Before that the dashboard had
+// been starved for minutes, serving requests in 6-8 minutes until clients gave
+// up. Nothing had a ceiling, so nothing was restarted before everything died.
+//
+// The ceilings below are sized where "something is wrong", not where "this is
+// busy" — steady state is dashboard ~120 MB, publisher ~125 MB, intents ~90 MB,
+// tunnel ~38 MB.
+//
+// BUT: pm2 does not apply `max_memory_restart` to its own daemon, and God is
+// what actually died. A ceiling here would not have prevented that incident.
+// The only guard that reaches God is a cgroup limit on the systemd unit that
+// starts it (`pm2-hq.service`, a systemd --user unit). That lives on the
+// machine, not in this repo — DEPLOY.md records it.
 
 const { readFileSync } = require("node:fs");
 const { join } = require("node:path");
@@ -69,6 +88,11 @@ module.exports = {
       interpreter: "node",
       exec_mode: "fork",
       autorestart: true,
+      // Deliberately generous. Restarting this process abandons any objective
+      // mid-flight, so the ceiling is set where "something is wrong" rather
+      // than where "this is busy" — steady state is ~120 MB. It exists for the
+      // pathological case only; the boot reconciler picks the work back up.
+      max_memory_restart: "2G",
       env: {
         ...common,
         // Not in .env, not in the repo, and load-bearing: with auto-retry on,
@@ -111,6 +135,9 @@ module.exports = {
       exec_mode: "fork",
       instances: 1,
       autorestart: true,
+      // Builds a snapshot every 30s and sends it. Steady state ~125 MB; a
+      // publisher past 768 MB is leaking, not working.
+      max_memory_restart: "768M",
       // hq-publish.mjs reads process.env directly and never loads .env itself,
       // which is exactly why these must be passed in rather than assumed.
       env: { ...common, ...pick("HQ_CONTROL_PLANE_URL", "HQ_WRITE_TOKEN", "HQ_PUBLISH_INTERVAL_MS") },
@@ -134,6 +161,10 @@ module.exports = {
       exec_mode: "fork",
       instances: 1,
       autorestart: true,
+      // A poll loop. Steady state ~90 MB. It can detach an objective run, so
+      // this is looser than a pure poller would need, but far below the
+      // dashboard's.
+      max_memory_restart: "1G",
       env: {
         ...common,
         ...pick("HQ_CONTROL_PLANE_URL", "HQ_WRITE_TOKEN"),
@@ -154,6 +185,9 @@ module.exports = {
       interpreter: "none",
       exec_mode: "fork",
       autorestart: true,
+      // Steady state ~38 MB. Restarting the tunnel is cheap in itself but
+      // issues a NEW quick-tunnel URL — see the header note.
+      max_memory_restart: "512M",
       env: {},
     },
   ],

@@ -335,7 +335,77 @@ export function goalsPanel(panels) {
   return { title: "Goals", note: rows.length ? null : "no goals configured", rows };
 }
 
+/**
+ * How to reach Headquarters directly, and whether the services are up.
+ *
+ * The address is the point. The tunnel runs as a quick tunnel, so it is issued
+ * a NEW random *.trycloudflare.com hostname every time it restarts — four have
+ * been handed out on this machine, and after a reboot the only record of the
+ * live one was a banner inside a 70 MB log file. This page is reachable from
+ * anywhere, which makes it the right place to keep the current address.
+ *
+ * It is drawn FIRST, before everything else, because "how do I get in" is the
+ * question you have when you cannot get in.
+ */
+export function readinessPanel(panels) {
+  const readiness = panels?.readiness;
+  const reason = unavailable(readiness);
+  if (reason) return { title: "Reach Headquarters", note: reason, rows: [] };
+
+  const checks = readiness.checks || {};
+  const tunnel = checks.tunnel || {};
+  const rows = [];
+
+  if (tunnel.url) {
+    rows.push({
+      primary: "Direct link",
+      // `link` is rendered as an anchor; see the scheme guard in app.js. A
+      // reachable tunnel is the good case and should look like one.
+      link: tunnel.url,
+      secondary: tunnel.ok ? null : "no live connection — this link will not answer yet",
+      meta: tunnel.ok ? `${compact(tunnel.connections)} connection(s)` : "not reachable",
+      tone: tunnel.ok ? "good" : "bad",
+    });
+    if (tunnel.quick) {
+      rows.push({
+        primary: "This address changes",
+        secondary: "a quick tunnel is issued a new hostname every restart — always take it from here",
+        meta: "quick tunnel",
+        tone: "muted",
+      });
+    }
+  } else {
+    rows.push({
+      primary: "No direct link",
+      secondary: text(tunnel.error, "the tunnel is not running — Headquarters is local-only"),
+      meta: "unreachable",
+      tone: "bad",
+    });
+  }
+
+  // The rest of readiness, compactly: a link is no use if the thing behind it
+  // is down, and this is the panel where that pairing belongs.
+  for (const [name, check] of Object.entries(checks)) {
+    if (name === "tunnel" || !check || typeof check !== "object") continue;
+    rows.push({
+      primary: name,
+      secondary: check.ok ? null : text(check.error, "not ok"),
+      meta: check.ok ? "ok" : "down",
+      tone: check.ok ? "good" : "bad",
+    });
+  }
+
+  const down = rows.filter((r) => r.tone === "bad").length;
+  return {
+    title: "Reach Headquarters",
+    note: down ? `${compact(down)} thing(s) need attention` : null,
+    rows,
+  };
+}
+
 const RENDERERS = {
+  // First: the address you need when you cannot get in.
+  readiness: [readinessPanel],
   company: [activityPanel, projectsPanel, attentionPanel, agentsPanel],
   operations: [tasksPanel, operationsPanel],
   deployments: [deploymentsPanel],
