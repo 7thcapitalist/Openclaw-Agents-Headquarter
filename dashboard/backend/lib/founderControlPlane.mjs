@@ -685,6 +685,7 @@ export async function handleObjectiveStart({
   objective,
   projectId,
   repo: repoInput = null,
+  allowDuplicate = false,
   decompose,
   runObjective,
   now = () => new Date().toISOString(),
@@ -717,6 +718,11 @@ export async function handleObjectiveStart({
   if (!existsSync(join(repo, ".git"))) {
     const err = new Error("That project's repository is not a git working tree.");
     err.statusCode = 400; throw err;
+  }
+
+  if (!allowDuplicate) {
+    const duplicate = findInFlightDuplicateJob(root, { projectId: project, objective: text, now: Date.parse(now()) || Date.now() });
+    if (duplicate) throw duplicateJobError(duplicate);
   }
 
   const startedAt = now();
@@ -1607,6 +1613,38 @@ export function listPendingQuestions(root) {
 
 export function listFounderJobs(root) {
   return readControl(root).jobs.slice().sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+}
+
+// Work already being planned or run for the same request on the same project.
+// Intake takes 30-40s with nothing visibly happening, and on 2026-09-15 six
+// submissions of one objective started six copies in parallel; together they
+// exhausted every provider seat and all six blocked without a commit. Stale
+// records (a dashboard restart leaves a job at "running") age out of the window.
+const IN_FLIGHT_JOB_STATUSES = new Set(["starting", "decomposing", "running", "recovering"]);
+export const DUPLICATE_JOB_WINDOW_MS = 6 * 60 * 60 * 1000;
+
+function normalizeRequestText(text) {
+  return String(text || "").trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+export function findInFlightDuplicateJob(root, { projectId, objective, now = Date.now(), windowMs = DUPLICATE_JOB_WINDOW_MS }) {
+  const text = normalizeRequestText(objective);
+  if (!text) return null;
+  return listFounderJobs(root).find((job) => (
+    job.kind !== "objective-recovery"
+    && job.projectId === projectId
+    && IN_FLIGHT_JOB_STATUSES.has(job.status)
+    && now - (Date.parse(job.createdAt) || 0) < windowMs
+    && normalizeRequestText(job.objective) === text
+  )) || null;
+}
+
+export function duplicateJobError(job) {
+  const where = job.objectiveId ? ` (${job.objectiveId})` : "";
+  const err = new Error(`This request is already ${job.status}${where}. Follow it in “Running now” instead of starting another copy.`);
+  err.statusCode = 409;
+  err.duplicateOf = { id: job.id, objectiveId: job.objectiveId || null, status: job.status };
+  return err;
 }
 
 export function saveFounderJob(root, job) {

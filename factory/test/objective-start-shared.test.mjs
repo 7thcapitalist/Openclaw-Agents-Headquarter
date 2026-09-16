@@ -14,7 +14,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { handleObjectiveStart, listFounderJobs } from "../../dashboard/backend/lib/founderControlPlane.mjs";
+import { handleObjectiveStart, listFounderJobs, saveFounderJob, findInFlightDuplicateJob, DUPLICATE_JOB_WINDOW_MS } from "../../dashboard/backend/lib/founderControlPlane.mjs";
 
 function hq({ paused = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), "hq-objective-start-"));
@@ -145,4 +145,51 @@ test("a paused project, an unknown project, and an empty objective are refused b
   );
 
   assert.equal(planned, false, "a refused start must not reach the planner");
+});
+
+// On 2026-09-15 one objective was submitted six times while intake was still
+// thinking. Six copies ran in parallel, exhausted every provider seat, and all
+// blocked. A second start of work that is still in flight must be refused.
+test("a second start of the same in-flight request is refused, and nothing is planned", async () => {
+  const { root } = hq();
+  let planned = 0;
+  const start = (objective) => handleObjectiveStart({
+    root, hqRoot: root, objective, projectId: "lifemaxing",
+    decompose: async () => { planned += 1; return graphWith({ n1: node() }); },
+    runObjective: () => new Promise(() => {}), // still running
+  });
+
+  await start("Ship the thing");
+  await assert.rejects(start("  ship   the THING "), (err) => {
+    assert.equal(err.statusCode, 409);
+    assert.equal(err.duplicateOf.objectiveId, "obj-test01");
+    return true;
+  });
+  assert.equal(planned, 1, "the duplicate must not reach the planner");
+  assert.equal(listFounderJobs(root).length, 1, "and must not leave a job record behind");
+
+  // A different request, or an explicit override, still starts.
+  await start("Ship another thing");
+  await handleObjectiveStart({
+    root, hqRoot: root, objective: "Ship the thing", projectId: "lifemaxing", allowDuplicate: true,
+    decompose: async () => graphWith({ n1: node() }), runObjective: () => new Promise(() => {}),
+  });
+  assert.equal(planned, 2);
+});
+
+test("finished, blocked, and stale jobs do not count as duplicates", () => {
+  const { root } = hq();
+  const now = Date.now();
+  const job = (id, status, ageMs) => saveFounderJob(root, {
+    id, kind: "objective", projectId: "lifemaxing", objective: "Ship the thing", status,
+    createdAt: new Date(now - ageMs).toISOString(),
+  });
+  job("done", "complete", 1000);
+  job("blocked", "blocked", 1000);
+  job("stale", "running", DUPLICATE_JOB_WINDOW_MS + 1000); // a restart left it at running
+  assert.equal(findInFlightDuplicateJob(root, { projectId: "lifemaxing", objective: "Ship the thing", now }), null);
+
+  job("live", "decomposing", 1000);
+  assert.equal(findInFlightDuplicateJob(root, { projectId: "lifemaxing", objective: "Ship the thing", now })?.id, "live");
+  assert.equal(findInFlightDuplicateJob(root, { projectId: "other", objective: "Ship the thing", now }), null);
 });
