@@ -14,13 +14,13 @@
 //   4. A FAILURE IS RECORDED, NOT LOST.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
-  acceptProposal, createThread, deleteThread, findThread, listThreads,
-  postFounderTurn, runThreadTurn, settleProposal,
+  acceptProposal, createThread, deleteThread, failStrandedThreads, findThread, listThreads,
+  FOUNDER_QUESTION_TIMEOUT_MS, FOUNDER_THREAD_TIMEOUT_MS, postFounderTurn, runThreadTurn, settleProposal,
 } from "../../dashboard/backend/lib/founderControlPlane.mjs";
 import {
   LIMITS, THREADS_CONTRACT, buildThreadsPanel, countToday,
@@ -186,6 +186,53 @@ test("the protocol briefing is generated from the allowlist, so it cannot drift"
 
 // ── 4. failures, budgets and bounds are recorded ─────────────────────────────
 
+// ── 5. he is allowed to think ────────────────────────────────────────────────
+//
+// The first real message sent to this panel ran eight rounds of tool use and
+// was killed at 90s — the question lane's limit — while writing its answer.
+// Killing the CLI aborts the gateway run, so the limit is how long he may
+// think, not how long the page waits.
+
+test("a turn gets an agent's time budget, not a lookup's", async () => {
+  assert.ok(FOUNDER_THREAD_TIMEOUT_MS >= 10 * 60_000, "an investigating agent needs minutes");
+  assert.ok(FOUNDER_THREAD_TIMEOUT_MS > FOUNDER_QUESTION_TIMEOUT_MS, "a thread must not inherit the question limit");
+
+  const root = hq();
+  const thread = createThread(root, { agentId: "main" });
+  postFounderTurn(root, thread.id, "what are the problems with the factory nowadays?");
+  let seen = null;
+  await runThreadTurn(root, thread.id, {
+    execFile: async (_f, args, options) => { seen = { args, options }; return { stdout: envelope("ok") }; },
+  });
+  // Both the process kill and OpenClaw's own limit follow the thread budget.
+  assert.equal(seen.options.timeout, FOUNDER_THREAD_TIMEOUT_MS);
+  assert.equal(seen.args[seen.args.indexOf("--timeout") + 1], String(Math.floor(FOUNDER_THREAD_TIMEOUT_MS / 1000)));
+});
+
+test("the dashboard route runs turns on the thread budget", () => {
+  const server = readFileSync(new URL("../../dashboard/backend/server.mjs", import.meta.url), "utf8");
+  const call = /void runThreadTurn\(ROOT,[^)]*\{ timeoutMs: (\w+) \}\)/.exec(server);
+  assert.ok(call, "the turns route must run the turn");
+  assert.equal(call[1], "FOUNDER_THREAD_TIMEOUT_MS",
+    "the route passed the 90s question limit once, and it killed the first real conversation");
+});
+
+test("a restart mid-answer fails the thread instead of locking it forever", () => {
+  const root = hq();
+  const thread = createThread(root, { agentId: "main" });
+  postFounderTurn(root, thread.id, "go");
+  assert.equal(findThread(root, thread.id).status, "running");
+
+  assert.equal(failStrandedThreads(root), 1);
+  const after = findThread(root, thread.id);
+  assert.equal(after.status, "failed");
+  assert.match(after.turns.at(-1).error, /restarted/);
+  // Still usable: the founder can send the message again.
+  postFounderTurn(root, thread.id, "go again");
+  assert.equal(failStrandedThreads(root), 1);
+  assert.equal(failStrandedThreads(root), 0, "idempotent once nothing is running");
+});
+
 test("a failed turn is recorded on the thread rather than lost", async () => {
   const root = hq();
   const thread = createThread(root, { agentId: "main" });
@@ -194,7 +241,7 @@ test("a failed turn is recorded on the thread rather than lost", async () => {
     execFile: async () => { const e = new Error("boom"); e.killed = true; throw e; },
   });
   assert.equal(after.status, "failed");
-  assert.match(after.turns.at(-1).error, /did not answer within/);
+  assert.match(after.turns.at(-1).error, /still working after \d+ minutes/);
 });
 
 test("a thread's daily turn budget is enforced and reported", () => {
