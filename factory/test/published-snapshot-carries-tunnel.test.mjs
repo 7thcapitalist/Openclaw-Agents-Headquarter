@@ -45,9 +45,14 @@ test("an address with no live connection is a warning, not a pass", async () => 
   assert.match(t.detail, /will not answer/i);
 });
 
-test("no cloudflared at all is a warning that names itself, never a throw", async () => {
+test("no cloudflared at all is UNKNOWN, not a warning", async () => {
+  // This report draws a line: `warn` means something was observed to be wrong,
+  // `unknown` means it could not be observed — the same category as pm2 being
+  // absent. A machine with no tunnel is not a broken Headquarters, and calling
+  // it warn would make every tunnel-less deployment report a problem it does
+  // not have. Getting this backwards broke `readiness-snapshot.test.mjs`.
   const t = await checkTunnel({ fetchImpl: async () => { throw new Error("connect ECONNREFUSED"); } });
-  assert.equal(t.status, "warn");
+  assert.equal(t.status, "unknown");
   assert.equal(t.url, null);
   assert.match(t.detail, /no tunnel reachable/);
 });
@@ -60,7 +65,7 @@ test("a hanging metrics server cannot hold the publisher open", async () => {
     }),
     timeoutMs: 200,
   });
-  assert.equal(t.status, "warn");
+  assert.equal(t.status, "unknown");
   assert.ok(Date.now() - started < 5000, "the probe is bounded");
 });
 

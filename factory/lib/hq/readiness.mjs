@@ -167,10 +167,14 @@ export async function checkTunnel({
     }
     return { status: "ok", detail: `reachable at ${url}`, url, connections, quick: true };
   } catch (error) {
-    // Not a failure of Headquarters. No tunnel means local-only, which is a
-    // fact to report, not an error to throw.
+    // `unknown`, not `warn`, and the distinction is this report's contract:
+    // warn means something was OBSERVED to be wrong, unknown means it could not
+    // be observed at all — the same category as pm2 missing. A machine with no
+    // cloudflared is not a broken Headquarters, it is one this check cannot see
+    // from here, and calling that a warning would make every deployment without
+    // a tunnel report a problem it does not have.
     return {
-      status: "warn",
+      status: "unknown",
       detail: `no tunnel reachable: ${String(error?.message || error).slice(0, 120)}`,
       url: null,
       connections: 0,
