@@ -1541,21 +1541,38 @@ import { buildLiveFloorRows, buildRunningNow, objectiveActivityLabel } from "/li
   // would throw away a half-typed message.
 
   let chatTimer = null;
+  // The composer's contents survive a repaint. Without this, any re-render
+  // between keystroke and click takes the message with it — which is exactly
+  // what shipped: the poller repainted every 3s, the textarea emptied under
+  // the founder's hands, and Send saw a blank box and returned. 389 GETs, one
+  // POST, and that POST was the thread being created.
+  let chatDraft = "";
+
+  function stopChatPoll() {
+    if (chatTimer) { clearInterval(chatTimer); chatTimer = null; }
+  }
+
+  // Poll ONLY while a reply is outstanding, and stop the moment it lands.
+  // A conversation nobody is waiting on must cost nothing and — more
+  // importantly — must not redraw the page while somebody is typing into it.
+  function startChatPoll(threadId) {
+    stopChatPoll();
+    chatTimer = setInterval(async () => {
+      if (parseRoute().name !== "chat") return stopChatPoll();
+      const data = await apiJson(`/api/founder/threads/${encodeURIComponent(threadId)}`).catch(() => null);
+      const thread = data?.threads?.find((t) => t.id === threadId);
+      if (!thread) return stopChatPoll();
+      if (thread.status === "running") return;
+      // The reply landed. One repaint, then silence.
+      stopChatPoll();
+      await paintChat(threadId);
+    }, 3000);
+  }
 
   async function renderChat(route) {
-    if (chatTimer) { clearInterval(chatTimer); chatTimer = null; }
+    stopChatPoll();
+    chatDraft = "";
     await paintChat(route.id);
-    // Poll only while a reply is outstanding. A conversation nobody is waiting
-    // on costs nothing, and a 3s poll against a live model call is the
-    // difference between "chat" and "check back later".
-    chatTimer = setInterval(async () => {
-      if (parseRoute().name !== "chat") { clearInterval(chatTimer); chatTimer = null; return; }
-      const active = document.querySelector("[data-chat-send]")?.dataset.chatSend;
-      if (!active) return;
-      const data = await apiJson(`/api/founder/threads/${encodeURIComponent(active)}`).catch(() => null);
-      const thread = data?.threads?.find((t) => t.id === active);
-      if (thread && thread.status !== "running") await paintChat(active);
-    }, 3000);
   }
 
   async function paintChat(threadId) {
@@ -1571,8 +1588,18 @@ import { buildLiveFloorRows, buildRunningNow, objectiveActivityLabel } from "/li
       ${transcriptPanel(detail)}
     </div>`;
     bindChat(active);
+
+    const input = document.getElementById("chat-input");
+    if (input) {
+      input.value = chatDraft;
+      input.addEventListener("input", () => { chatDraft = input.value; });
+    }
     const log = document.getElementById("chat-log");
     if (log) log.scrollTop = log.scrollHeight;
+
+    // A turn already in flight — from this tab or another — is the only thing
+    // that starts the clock.
+    if (detail?.status === "running") startChatPoll(active);
   }
 
   function bindChat(activeId) {
@@ -1584,7 +1611,11 @@ import { buildLiveFloorRows, buildRunningNow, objectiveActivityLabel } from "/li
     });
 
     app.querySelectorAll("[data-thread]").forEach((el) => {
-      el.addEventListener("click", () => { location.hash = `#/chat/${el.dataset.thread}`; });
+      el.addEventListener("click", () => {
+        stopChatPoll();
+        chatDraft = "";
+        location.hash = `#/chat/${el.dataset.thread}`;
+      });
     });
 
     app.querySelector("[data-chat-delete]")?.addEventListener("click", async (e) => {
@@ -1604,11 +1635,14 @@ import { buildLiveFloorRows, buildRunningNow, objectiveActivityLabel } from "/li
       const message = input?.value.trim();
       if (!message) return;
       input.value = "";
+      chatDraft = "";
       try {
         await apiJson(`/api/founder/threads/${encodeURIComponent(form.dataset.chatSend)}/turns`,
           { method: "POST", body: JSON.stringify({ message }) });
         await paintChat(form.dataset.chatSend);
       } catch (err) {
+        // Give the founder his words back rather than making him retype them.
+        chatDraft = message;
         if (input) input.value = message;
         showToast(String(err.message || err), true);
       }
