@@ -1120,12 +1120,39 @@ function shapeObjective(root, obj, dir) {
   };
 }
 
+// Ids of every task that is a node of an objective the founder cancelled.
+// Cancelling writes the objective only; its nodes keep the blockers they
+// stopped on. On 2026-09-16 six cancelled duplicates went on asking for
+// decisions from both the dashboard and the console until dismissed by hand.
+function cancelledObjectiveTaskIds(factoryDir) {
+  const ids = new Set();
+  if (!existsSync(factoryDir)) return ids;
+  for (const project of readdirSync(factoryDir, { withFileTypes: true })) {
+    if (!project.isDirectory()) continue;
+    const objDir = join(factoryDir, project.name, "objectives");
+    if (!existsSync(objDir)) continue;
+    for (const entry of readdirSync(objDir, { withFileTypes: true })) {
+      const path = join(objDir, entry.name, "objective-state.json");
+      if (!existsSync(path)) continue;
+      let obj;
+      try { obj = JSON.parse(readFileSync(path, "utf8")); } catch { continue; }
+      if (obj.status !== "cancelled") continue;
+      for (const node of [...Object.values(obj.nodes || {}), obj.integration]) {
+        if (node?.id) ids.add(node.id);
+      }
+    }
+  }
+  return ids;
+}
+
 export function discoverFactoryTasks(root) {
+  const cancelled = cancelledObjectiveTaskIds(factoryRoot(root));
   return walkStateFiles(factoryRoot(root))
     .map((path) => {
       try { return taskView(path); }
       catch (error) { return { id: basename(dirname(path)), statePath: path, status: "invalid", error: error.message }; }
     })
+    .map((task) => (cancelled.has(task.id) ? { ...task, objectiveCancelled: true } : task))
     .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
 }
 
@@ -1157,7 +1184,11 @@ export function buildFounderOverview(root, hqProjects = []) {
       taskCount: project.tasks.length,
     };
   });
-  const blockedDecisions = tasks.filter((task) => task.blocker?.outcome === "decision-required").map((task) => ({
+  // Nobody owes an answer to work whose objective the founder cancelled.
+  const answerable = tasks.filter((task) => !task.objectiveCancelled);
+  // A closed task keeps its blocker as a record, not a question (see
+  // deriveTaskDecisions in factory/lib/hq/company-state.mjs).
+  const blockedDecisions = answerable.filter((task) => !["failed", "merged", "complete", "completed"].includes(task.status) && task.blocker?.outcome === "decision-required").map((task) => ({
     id: `${task.id}:${task.blocker.stage}`,
     taskId: task.id,
     project: task.project,
@@ -1175,7 +1206,7 @@ export function buildFounderOverview(root, hqProjects = []) {
     // Only decisions the founder has NOT answered yet. `founderResponse` is the
     // record that the question was settled; without this filter an answered
     // card is rebuilt on the next poll and the founder answers it forever.
-    ...tasks
+    ...answerable
       .filter((task) => ["merge-ready", "merged"].includes(task.status) && Array.isArray(task.deferredDecisions))
       .flatMap((task) => task.deferredDecisions.filter(isFounderDeferredDecision).map((decision) => ({
         id: `${task.id}:${decision.id}`,
@@ -1219,6 +1250,7 @@ export function buildFounderOverview(root, hqProjects = []) {
   const covered = {
     taskIds: new Set(baseInboxItems.map((item) => item.taskId).filter(Boolean)),
     objectiveIds: new Set(baseInboxItems.map((item) => item.objectiveId).filter(Boolean)),
+    cancelledObjectiveIds: new Set(objectivesForInbox.filter((o) => o.status === "cancelled").map((o) => o.objectiveId)),
   };
   // Founder translation: every item keeps its raw fields and gains `founder`
   // (the chief-of-staff card) plus `technical` (the operator detail), ordered by
@@ -1237,6 +1269,7 @@ export function buildFounderOverview(root, hqProjects = []) {
   const STALE_ACTIVE_MS = 90 * 60 * 1000;
   const autoRecovering = tasks
     .filter((task) => {
+      if (task.objectiveCancelled) return false;
       if (task.status === "blocked") {
         return (task.blockerClass || classifyBlocker(task.blocker)) === "infra"
           && (task.autoRetries || 0) < maxAutoRetries;
@@ -1313,6 +1346,7 @@ function buildJobInbox(jobs, covered = { taskIds: new Set(), objectiveIds: new S
     if (!outcome?.needsFounder) continue;
     if (job.taskId && covered.taskIds.has(job.taskId)) continue;
     if (job.objectiveId && covered.objectiveIds.has(job.objectiveId)) continue;
+    if (job.objectiveId && covered.cancelledObjectiveIds?.has(job.objectiveId)) continue;
     items.push({
       kind: outcome.outcomeClass === "needs-founder-decision" ? "decision" : "blocked",
       id: `job:${job.id}`,
@@ -1402,6 +1436,7 @@ function buildFounderInbox({ tasks, decisions, questions, objectives = [], maxAu
   // budget is exhausted, the infrastructure failure becomes an actionable
   // Founder Inbox item so it cannot disappear silently.
   for (const task of tasks) {
+    if (task.objectiveCancelled) continue;
     if (task.status !== "blocked" || task.blocker?.outcome !== "fail") continue;
     const isInfra = (task.blockerClass || classifyBlocker(task.blocker)) === "infra";
     if (isInfra && (task.autoRetries || 0) < maxAutoRetries) continue;
