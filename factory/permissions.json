@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "_comment": "ACTIVE scoped-permission registry. Mode 'report' computes and audits every decision exactly as 'enforce' would, then allows the work anyway \u2014 the audit log at .openclaw-factory/telemetry/permissions.ndjson answers 'what would enforcement have stopped' without stopping anything. Switch to 'enforce' only after that log is quiet. Deleting this file returns the factory to unenforced. This system can only DENY: it never grants merge, deployment, deletion, secret, billing or publishing authority, and a grant naming one of those is rejected outright. See docs/software-factory/PAPERCLIP_SCOPED_PERMISSIONS.md.",
+  "_comment": "ACTIVE scoped-permission registry. Mode 'report' computes and audits every decision exactly as 'enforce' would, then allows the work anyway — the audit log at .openclaw-factory/telemetry/permissions.ndjson answers 'what would enforcement have stopped' without stopping anything. Switch to 'enforce' only after that log is quiet. Deleting this file returns the factory to unenforced. This system can only DENY: it never grants merge, deployment, deletion, secret, billing or publishing authority, and a grant naming one of those is rejected outright. See docs/software-factory/PAPERCLIP_SCOPED_PERMISSIONS.md.",
   "mode": "report",
   "grants": [
     {
@@ -120,6 +120,54 @@
     {
       "actorId": "release",
       "capability": "github.open-pr",
+      "scopeType": "company",
+      "scopeId": "*"
+    },
+    {
+      "actorId": "claude",
+      "capability": "task.dispatch",
+      "scopeType": "company",
+      "scopeId": "*"
+    },
+    {
+      "actorId": "codex",
+      "capability": "task.dispatch",
+      "scopeType": "company",
+      "scopeId": "*"
+    },
+    {
+      "actorId": "openclaw",
+      "capability": "task.dispatch",
+      "scopeType": "company",
+      "scopeId": "*"
+    },
+    {
+      "actorId": "frontend",
+      "capability": "task.dispatch",
+      "scopeType": "company",
+      "scopeId": "*"
+    },
+    {
+      "actorId": "recovery",
+      "capability": "task.dispatch",
+      "scopeType": "company",
+      "scopeId": "*"
+    },
+    {
+      "actorId": "openclaw",
+      "capability": "github.open-pr",
+      "scopeType": "company",
+      "scopeId": "*"
+    },
+    {
+      "actorId": "openclaw-factory",
+      "capability": "objective.run",
+      "scopeType": "company",
+      "scopeId": "*"
+    },
+    {
+      "actorId": "openclaw-factory",
+      "capability": "objective.recover",
       "scopeType": "company",
       "scopeId": "*"
     }
