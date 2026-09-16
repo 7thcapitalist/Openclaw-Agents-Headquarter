@@ -5,6 +5,7 @@ import { createHash, randomUUID, sign as signPayload, verify as verifySignature 
 import { classifyBlocker } from "./hq/blocker-class.mjs";
 import { escalationVerdict } from "./hq/escalation-gate.mjs";
 import { classifyFailure, isRecoverableFailure, recoveryStrategy, repairTargetFor } from "./failure-classification.mjs";
+import { DEFAULT_MAX_CONSECUTIVE_SEAT_PAUSES, consecutiveSeatPauses } from "./seat-exhaustion.mjs";
 import { mutateTransactionalState, readTransactionalState } from "./store/transactional-json.mjs";
 import { authorityForVerification } from "./founder-authority.mjs";
 import { buildManifest, summarizeManifest, verifyManifest } from "./evidence-manifest.mjs";
@@ -369,7 +370,12 @@ export function resumeState(state, now = new Date().toISOString(), options = {})
   // Resuming means the blocker that spent the budget has been dealt with.
   // Carrying its attempts forward is what made a crashed gateway escalate on
   // its first occurrence, reported as three strategies that never ran.
-  const next = closeRecoveryIncident(state, { reason: "founder-resumed", now });
+  //
+  // A seat pause spent nothing and interrupted whatever was running, possibly a
+  // recovery attempt mid-diagnosis. Closing that incident would throw the
+  // attempt away; resume it where it stopped instead.
+  const paused = state.blocker?.outcome === "paused-credits";
+  const next = paused ? structuredClone(state) : closeRecoveryIncident(state, { reason: "founder-resumed", now });
   next.status = "active";
   next.stages[next.currentStage] = { status: "pending" };
   delete next.blocker;
@@ -423,6 +429,10 @@ export function countStageAttempts(state, stage) {
   let infra = 0;
   let passes = 0;
   for (const item of dispatches) {
+    // A dispatch parked on an exhausted seat never reached a model. It is
+    // neither a verdict nor a lost run, and the seat's reset is what clears it,
+    // not another attempt — see seat-exhaustion.mjs.
+    if (item.seatExhausted) continue;
     // `infraFailure` is set by the concurrent review fan-out, which has to
     // write a real `fail` result for a member whose agent could not start so
     // the engine routes it. That outcome is a routing artifact, not a verdict —
@@ -469,6 +479,46 @@ export function routeStageFailure(state, { failedStage, targetStage, maxAttempts
   delete next.blocker;
   next.updatedAt = now;
   next.events.push({ at: now, type: "failure-routed", fromStage: failedStage, stage: target, actor: next.assignments[target], attempt: attempts + 1, ...(infra ? { infra: true } : {}) });
+  return next;
+}
+
+// Park a task whose dispatch could not start because every seat for it is out
+// of credit or throttled (seat-exhaustion.mjs).
+//
+// Nothing is charged: the dispatch is recorded with `seatExhausted`, which the
+// stage budget skips, and neither routeStageFailure nor recovery is entered. An
+// open recovery attempt stays exactly where it was, so resuming continues the
+// same diagnose/verify instead of recording it as a failed repair. The blocker
+// carries `resumeAfter` so a sweep knows when to try again, and the founder is
+// never paged for it — until the seats have stayed unavailable for
+// `maxConsecutivePauses` windows in a row, which no amount of waiting fixes.
+export function recordSeatPause(state, { dispatch, error, exhaustion, maxConsecutivePauses = DEFAULT_MAX_CONSECUTIVE_SEAT_PAUSES, now = new Date().toISOString() }) {
+  const next = structuredClone(state);
+  next.dispatches = [...(state.dispatches || []), {
+    ...dispatch, status: "failed", error: String(error), completedAt: now, seatExhausted: true, resumeAfter: exhaustion.resumeAfter,
+  }];
+  delete next.currentDispatch;
+  next.status = "blocked";
+  next.updatedAt = now;
+  const pauses = consecutiveSeatPauses(next.dispatches);
+  const reason = String(error).split("\n").map((line) => line.trim()).find((line) => /limit|credit|quota|unavailable|429|too many/i.test(line))
+    || String(error).split("\n")[0];
+  if (pauses >= maxConsecutivePauses) {
+    next.blocker = {
+      stage: dispatch.stage, outcome: "decision-required", founderAction: true, classification: "INFRASTRUCTURE_ERROR",
+      seatExhausted: true, actor: dispatch.actor, at: now,
+      summary: `No model seat could run ${dispatch.stage} across ${pauses} consecutive waits for a reset. The seats are not coming back on their own — check the plans, credits and auth profiles for this role, or change its routing. Latest: ${reason.slice(0, 300)}`,
+      whatItNeedsFromFounder: "Restore a seat for this role (top up credits, re-authenticate, or route the role to another provider), then retry the objective.",
+    };
+    next.events.push({ at: now, type: "seat-pause-escalated", stage: dispatch.stage, actor: "system", dispatchId: dispatch.id, pauses });
+    return next;
+  }
+  next.blocker = {
+    stage: dispatch.stage, outcome: "paused-credits", classification: "INFRASTRUCTURE_ERROR",
+    seatExhausted: true, resumeAfter: exhaustion.resumeAfter, actor: dispatch.actor, at: now,
+    summary: `Paused: no model seat could run ${dispatch.stage} (${reason.slice(0, 300)}). Nothing was charged to the retry or recovery budget. It can resume after ${exhaustion.resumeAfter}.`,
+  };
+  next.events.push({ at: now, type: "dispatch-paused-seats", stage: dispatch.stage, actor: "system", dispatchId: dispatch.id, resumeAfter: exhaustion.resumeAfter, kind: exhaustion.kind, pauses });
   return next;
 }
 

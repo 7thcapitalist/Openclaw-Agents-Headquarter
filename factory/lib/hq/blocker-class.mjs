@@ -90,6 +90,9 @@ export function classifyBlocker(blocker) {
   // A blocker explicitly tagged as needing the founder is a decision even if a
   // generic catch-all never set `outcome`.
   if (blocker.founderAction === true) return "decision";
+  // Parked on an exhausted seat (seat-exhaustion.mjs): the system's to resume
+  // once the seat resets, never the founder's.
+  if (blocker.outcome === "paused-credits") return "infra";
   if (blocker.outcome === "fail") {
     const text = String(blocker.summary || blocker.detail || blocker.reason || "");
     // Checked first: INFRA_FAIL_RE matches the bare phrase "result file", so an

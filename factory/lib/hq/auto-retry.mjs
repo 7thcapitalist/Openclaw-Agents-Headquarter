@@ -120,7 +120,19 @@ export async function retryStuckTasks({
     //   2. active but untouched for > staleActiveMs — its in-process runner
     //      died with a host/dashboard restart, leaving a stuck dispatch.
     let reason;
-    if (state.status === "blocked" && classifyBlocker(state.blocker) === "infra") {
+    const seatPause = state.status === "blocked" && state.blocker?.outcome === "paused-credits";
+    if (seatPause) {
+      // Parked on an exhausted seat. Waking it before the provider's reset only
+      // parks it again, so wait for the window; and resuming it is not a retry
+      // of anything that failed, so it does not spend the auto-retry budget —
+      // recordSeatPause bounds consecutive pauses itself.
+      const resumeAt = Date.parse(state.blocker.resumeAfter || "");
+      if (Number.isFinite(resumeAt) && nowMs() < resumeAt) {
+        skipped.push({ taskId: state.task?.id, statePath, reason: `seats paused until ${state.blocker.resumeAfter}` });
+        continue;
+      }
+      reason = `seat reset reached for ${state.blocker?.stage}`;
+    } else if (state.status === "blocked" && classifyBlocker(state.blocker) === "infra") {
       reason = `infra failure at ${state.blocker?.stage}`;
     } else if (state.status === "active") {
       const updMs = Date.parse(state.updatedAt);
@@ -133,7 +145,7 @@ export async function retryStuckTasks({
     }
 
     const attempts = state.autoRetries || 0;
-    if (attempts >= max) { skipped.push({ taskId: state.task?.id, statePath, reason: "auto-retry budget exhausted", attempts }); continue; }
+    if (!seatPause && attempts >= max) { skipped.push({ taskId: state.task?.id, statePath, reason: "auto-retry budget exhausted", attempts }); continue; }
 
     const at = now();
     let revived;
@@ -144,6 +156,12 @@ export async function retryStuckTasks({
         // Orphaned active task: drop the stuck dispatch and re-arm the current
         // stage so the runner issues a fresh one.
         revived = structuredClone(state);
+        // Keep the dropped dispatch on the record. Its id is spent — the store
+        // keyed `running:<id>` off it — and computeDispatchPaths can only give
+        // the re-dispatch a fresh id if it can see that.
+        if (revived.currentDispatch) revived.dispatches = [...(revived.dispatches || []), {
+          ...revived.currentDispatch, status: "failed", error: "orphaned after runner restart", completedAt: at,
+        }];
         delete revived.currentDispatch;
         if (revived.currentStage) revived.stages[revived.currentStage] = { status: "pending" };
         revived.updatedAt = at;
@@ -153,10 +171,14 @@ export async function retryStuckTasks({
       skipped.push({ taskId: state.task?.id, statePath, reason: `cannot resume: ${error.message || error}` });
       continue;
     }
-    revived.autoRetries = attempts + 1;
-    revived.events.push({ at, type: "auto-retry", stage: revived.currentStage, actor: "system", attempt: revived.autoRetries, of: max, reason });
+    if (seatPause) {
+      revived.events.push({ at, type: "seat-pause-resumed", stage: revived.currentStage, actor: "system", reason });
+    } else {
+      revived.autoRetries = attempts + 1;
+      revived.events.push({ at, type: "auto-retry", stage: revived.currentStage, actor: "system", attempt: revived.autoRetries, of: max, reason });
+    }
     writeState(statePath, revived);
-    log(`[auto-retry] ${state.task?.id}: ${reason}, attempt ${revived.autoRetries}/${max}`);
+    log(`[auto-retry] ${state.task?.id}: ${reason}${seatPause ? "" : `, attempt ${revived.autoRetries}/${max}`}`);
 
     try {
       const res = await runTask({ hqRoot, statePath, execute, ...runnerOpts });

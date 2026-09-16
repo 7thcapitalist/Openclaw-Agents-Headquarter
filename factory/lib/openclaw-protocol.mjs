@@ -1,7 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync } from "fs";
 import { basename, dirname, join } from "path";
 import { randomUUID } from "crypto";
-import { DEFAULT_MAX_INFRA_ATTEMPTS, completeStage, recordRecoveryResult, recordVerifiedCommit, routeStageFailure, startRecovery, verifyEvidence } from "./task-workflow.mjs";
+import { DEFAULT_MAX_INFRA_ATTEMPTS, completeStage, recordRecoveryResult, recordSeatPause, recordVerifiedCommit, routeStageFailure, startRecovery, verifyEvidence } from "./task-workflow.mjs";
+import { detectSeatExhaustion } from "./seat-exhaustion.mjs";
 import { execFileSync } from "node:child_process";
 import { mutateTransactionalState, readTransactionalState } from "./store/transactional-json.mjs";
 import { writeHandoff } from "./handoff.mjs";
@@ -53,7 +54,30 @@ export function computeDispatchPaths({ state, stage, statePath }) {
   // written before it existed falls back to `attempt`, which is what those
   // tasks already used.
   const ordinal = recovery ? (recovery.ordinal ?? recovery.attempt) : attempt;
-  const dispatchId = recovery ? `${state.task.id}-recovery-${ordinal}-${recovery.phase}` : `${state.task.id}-${stage}-${attempt}`;
+  let dispatchId = recovery ? `${state.task.id}-recovery-${ordinal}-${recovery.phase}` : `${state.task.id}-${stage}-${attempt}`;
+  // The same recovery phase can legitimately be dispatched more than once: its
+  // first dispatch was orphaned by a restart, or parked on an exhausted seat,
+  // and the phase was re-armed without an outcome. The ordinal does not move in
+  // either case, so the base id is already spent — and prepareDispatch refuses
+  // a spent id, correctly. On lifemaxing obj-d4e18cad that refusal was the
+  // entire result of a founder retry: the retry job errored, the task stayed
+  // `active` with no dispatch, and the objective read "running" with nothing
+  // running. Re-dispatches get their own suffix instead.
+  //
+  // Only when every earlier use of the id ended WITHOUT an outcome. A spent id
+  // whose dispatch did return a result is the derivation bug #226 guards
+  // against (a restarted counter recomputing an answered id), and that must
+  // still be refused loudly rather than papered over with a suffix.
+  if (recovery) {
+    const byId = new Map();
+    for (const d of state.dispatches || []) {
+      const id = d.id || d.dispatchId;
+      byId.set(id, [...(byId.get(id) || []), d]);
+    }
+    const interrupted = (id) => (byId.get(id) || []).every((d) => !d.outcome);
+    const base = dispatchId;
+    for (let n = 2; byId.has(dispatchId) && interrupted(dispatchId); n += 1) dispatchId = `${base}-r${n}`;
+  }
   const resultPath = join(dirname(statePath), "results", `${dispatchId}.json`);
   return { dispatchId, resultPath, attempt };
 }
@@ -378,6 +402,13 @@ export function ingestResult({ statePath, result, agentMeta = null, maxAttemptsP
       // self-report never leaks into state and trips those comparisons
       // downstream.
       const actor = dispatch.actor;
+      // The review fan-out writes a `fail` result for a member whose agent
+      // could not start. When that was an exhausted seat, nothing judged the
+      // work and nothing should be charged: pause, exactly as failDispatch does.
+      if (result.infraFailure === true && result.outcome === "fail") {
+        const exhaustion = detectSeatExhaustion(result.summary, { now });
+        if (exhaustion) return recordSeatPause(state, { dispatch, error: result.summary, exhaustion, now });
+      }
       if (dispatch.kind?.startsWith("recovery-")) {
         const evidence = verifyEvidence(evidencePathsOf(result.evidence), state.worktree);
         const recovered = recordRecoveryResult(state, {
@@ -467,6 +498,11 @@ export function failDispatch({ statePath, dispatchId, error, maxAttemptsPerStage
     mutate: (state) => {
       assertCurrentDispatch(state, dispatchId);
       const dispatch = state.currentDispatch;
+      // Checked before both the stage budget and recovery: an exhausted seat is
+      // cleared by its reset, never by another attempt, and charging it is how
+      // six objectives escalated in an hour on 2026-09-15.
+      const exhaustion = detectSeatExhaustion(error, { now });
+      if (exhaustion) return recordSeatPause(state, { dispatch, error: String(error), exhaustion, now });
       if (dispatch.kind?.startsWith("recovery-")) {
         const recovered = recordRecoveryResult(state, { outcome: "fail", actor: dispatch.actor, summary: String(error), evidence: [], maxAttemptsPerStage, maxInfraAttemptsPerStage, now });
         recovered.dispatches = [...(state.dispatches || []), { ...dispatch, status: "failed", error: String(error), completedAt: now }];
