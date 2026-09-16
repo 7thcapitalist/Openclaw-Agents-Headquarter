@@ -11,6 +11,7 @@ import { toTaskRecord } from "../../../factory/lib/learning/evidence.mjs";
 import { classifyBlocker, classifyObjectiveNodeBlocker, founderApprovalSetupBlocker } from "../../../factory/lib/hq/blocker-class.mjs";
 import { buildOutcome } from "../../../factory/lib/failure-outcome.mjs";
 import { resumeObjectiveNodes, setObjectiveRecoveryInFlight, readObjState } from "../../../factory/lib/objective/orchestrator.mjs";
+import { cancelledObjectiveTaskIds } from "../../../factory/lib/objective/cancelled.mjs";
 import { defaultStateRoot } from "../../../factory/lib/natural-language-intake.mjs";
 import { briefBlocker, presentObjective, isSeedProject } from "../../../factory/lib/hq/presenter.mjs";
 import { presentFounderInbox } from "../../../factory/lib/hq/founder-inbox.mjs";
@@ -1118,31 +1119,6 @@ function shapeObjective(root, obj, dir) {
     metrics,
     recoveryAttempts: obj.recovery?.attempts || 0,
   };
-}
-
-// Ids of every task that is a node of an objective the founder cancelled.
-// Cancelling writes the objective only; its nodes keep the blockers they
-// stopped on. On 2026-09-16 six cancelled duplicates went on asking for
-// decisions from both the dashboard and the console until dismissed by hand.
-function cancelledObjectiveTaskIds(factoryDir) {
-  const ids = new Set();
-  if (!existsSync(factoryDir)) return ids;
-  for (const project of readdirSync(factoryDir, { withFileTypes: true })) {
-    if (!project.isDirectory()) continue;
-    const objDir = join(factoryDir, project.name, "objectives");
-    if (!existsSync(objDir)) continue;
-    for (const entry of readdirSync(objDir, { withFileTypes: true })) {
-      const path = join(objDir, entry.name, "objective-state.json");
-      if (!existsSync(path)) continue;
-      let obj;
-      try { obj = JSON.parse(readFileSync(path, "utf8")); } catch { continue; }
-      if (obj.status !== "cancelled") continue;
-      for (const node of [...Object.values(obj.nodes || {}), obj.integration]) {
-        if (node?.id) ids.add(node.id);
-      }
-    }
-  }
-  return ids;
 }
 
 export function discoverFactoryTasks(root) {
