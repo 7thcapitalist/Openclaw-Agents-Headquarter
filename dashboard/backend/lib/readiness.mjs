@@ -3,6 +3,7 @@ import { promisify } from "util";
 import { readHqState } from "./hqStore.mjs";
 import { buildEnrichedAgents } from "./commandCenter.mjs";
 import { countConceptualAgents, enrichHqAgentsWithLifecycle } from "./agentLifecycle.mjs";
+import { checkTunnel } from "../../../factory/lib/hq/readiness.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -48,39 +49,22 @@ export async function buildReadinessReport(db, root) {
     warnings.push("PM2 is not available to the dashboard process.");
   }
 
-  // The tunnel's address, read from cloudflared itself.
-  //
-  // The tunnel runs as a QUICK tunnel — `cloudflared tunnel --url`, with no
-  // Cloudflare account — so it is issued a NEW random *.trycloudflare.com
-  // hostname every single time it starts. Four different addresses have been
-  // handed out on this machine already. After the reboot on 2026-09-15 the
-  // only record of the live one was a banner buried in a 70 MB log file.
-  //
-  // cloudflared publishes it on its own metrics server, so this asks the
-  // process rather than parsing its output. Two localhost calls, ~10ms, and
-  // the founder's console can show a link that is actually current.
-  //
-  // This does not make the address STABLE — only discoverable. A stable
-  // hostname needs a named tunnel, which needs a Cloudflare account and a
-  // domain. See DEPLOY.md.
-  const tunnelMetrics = process.env.HQ_TUNNEL_METRICS || "127.0.0.1:20241";
+  // The tunnel's address. The probe lives in factory/lib/hq/readiness.mjs
+  // because the PUBLISHED snapshot needs it too — the first version of this
+  // shipped into this file only, so the hosted console, which is the page an
+  // address actually matters on, went on reporting "No direct link". One probe
+  // imported by both builders is the only arrangement where that cannot recur.
   try {
-    const [quick, ready] = await Promise.all([
-      fetchTunnelJson(`http://${tunnelMetrics}/quicktunnel`),
-      fetchTunnelJson(`http://${tunnelMetrics}/ready`),
-    ]);
-    if (quick?.hostname) checks.tunnel.url = `https://${quick.hostname}`;
-    checks.tunnel.connections = Number(ready?.readyConnections) || 0;
-    // Up means reachable from outside: an address AND a live connection. A
-    // cloudflared that is running but has zero connections is not serving.
-    checks.tunnel.ok = Boolean(checks.tunnel.url) && checks.tunnel.connections > 0;
-    if (checks.tunnel.url && !checks.tunnel.connections) {
-      warnings.push("The tunnel has an address but no live connection — it is not reachable from outside yet.");
+    const t = await checkTunnel();
+    checks.tunnel.url = t.url;
+    checks.tunnel.connections = t.connections;
+    checks.tunnel.ok = t.status === "ok";
+    if (t.quick) checks.tunnel.quick = true;
+    if (t.status !== "ok") {
+      checks.tunnel.error = t.detail;
+      warnings.push(t.detail);
     }
-    checks.tunnel.quick = true;
   } catch (e) {
-    // Never fatal. A missing tunnel does not make Headquarters unhealthy; it
-    // makes it local-only, which is a fact to report, not an error to throw.
     checks.tunnel.error = String(e?.message || e).slice(0, 200);
   }
 
@@ -132,20 +116,6 @@ export async function buildReadinessReport(db, root) {
     },
     warnings,
   };
-}
-
-// Deliberately tiny: a localhost metrics endpoint that is either there or not.
-// A short timeout because this sits on the Today tab's critical path.
-async function fetchTunnelJson(url, { timeoutMs = 1500 } = {}) {
-  const abort = new AbortController();
-  const timer = setTimeout(() => abort.abort(), timeoutMs);
-  try {
-    const response = await fetch(url, { signal: abort.signal });
-    if (!response.ok) throw new Error(`${url} -> ${response.status}`);
-    return await response.json();
-  } finally {
-    clearTimeout(timer);
-  }
 }
 
 function summarizeExecError(error) {

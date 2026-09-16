@@ -120,6 +120,64 @@ export function checkStateStores({ hqRoot, stateRoot = null, limit = 5 }) {
   };
 }
 
+// The tunnel's address, asked of cloudflared rather than parsed out of its log.
+//
+// The tunnel runs as a QUICK tunnel — `cloudflared tunnel --url`, no Cloudflare
+// account — so it is issued a new random *.trycloudflare.com hostname on every
+// restart. Four have been handed out on this machine, and after the reboot on
+// 2026-09-15 the only record of the live one was a banner inside a 70 MB log
+// file, which meant no direct route into Headquarters at all.
+//
+// This lives here, in factory/, because BOTH readiness builders need it: the
+// dashboard's own route and the snapshot published to the hosted console. The
+// first version of this shipped into the dashboard module only, so the console
+// — the page you open from a phone, the one place the address actually matters
+// — went on reporting "No direct link". One probe, imported by both, is the
+// only arrangement where that cannot happen again.
+//
+// `ok` requires an address AND a live connection: a cloudflared that is running
+// with zero connections is not serving, and offering a link that fails without
+// saying so is worse than offering none.
+export async function checkTunnel({
+  metricsAddr = process.env.HQ_TUNNEL_METRICS || "127.0.0.1:20241",
+  fetchImpl = fetch,
+  timeoutMs = 1500,
+} = {}) {
+  const read = async (path) => {
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), timeoutMs);
+    try {
+      const response = await fetchImpl(`http://${metricsAddr}${path}`, { signal: abort.signal });
+      if (!response.ok) throw new Error(`${path} -> ${response.status}`);
+      return await response.json();
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  try {
+    const [quick, ready] = await Promise.all([read("/quicktunnel"), read("/ready")]);
+    const url = quick?.hostname ? `https://${quick.hostname}` : null;
+    const connections = Number(ready?.readyConnections) || 0;
+    if (!url) {
+      return { status: "warn", detail: "cloudflared is running but has not been given an address", url: null, connections, quick: true };
+    }
+    if (!connections) {
+      return { status: "warn", detail: "the address has no live connection — it will not answer yet", url, connections, quick: true };
+    }
+    return { status: "ok", detail: `reachable at ${url}`, url, connections, quick: true };
+  } catch (error) {
+    // Not a failure of Headquarters. No tunnel means local-only, which is a
+    // fact to report, not an error to throw.
+    return {
+      status: "warn",
+      detail: `no tunnel reachable: ${String(error?.message || error).slice(0, 120)}`,
+      url: null,
+      connections: 0,
+    };
+  }
+}
+
 export async function checkServices({ exec = execFileAsync, expected = EXPECTED_SERVICES } = {}) {
   let list;
   try {
@@ -224,6 +282,7 @@ export async function buildReadinessSnapshot({
   // 0 disables caching, for a test or a caller that wants a fresh look.
   ttlMs = EXEC_CACHE_MS,
   nowMs = Date.now(),
+  fetchImpl = fetch,
 } = {}) {
   const warnings = [];
   const root = resolve(stateRoot || defaultStateRoot(hqRoot));
@@ -243,6 +302,9 @@ export async function buildReadinessSnapshot({
     stateStores: await settle("state store", () => checkStateStores({ hqRoot, stateRoot })),
     services: fromExec.services || { status: "unknown", detail: "services could not be checked" },
     gateway: fromExec.gateway || { status: "unknown", detail: "gateway could not be checked" },
+    // How to reach this machine at all. Published, so the hosted console can
+    // show an address that is actually current.
+    tunnel: await settle("tunnel", () => checkTunnel({ fetchImpl })),
   };
 
   for (const [name, check] of Object.entries(checks)) {
