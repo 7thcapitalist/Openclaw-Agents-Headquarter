@@ -39,6 +39,7 @@
 import { existsSync, readdirSync, readFileSync } from "fs";
 import { join } from "path";
 import { readObjState, resumeObjectiveNodes, CANCELLED } from "../objective/orchestrator.mjs";
+import { readState } from "../task-workflow.mjs";
 import { readyNodes, GATE_SATISFIED } from "../objective/graph.mjs";
 
 // objectives live at <stateRoot>/<project>/objectives/<id>/objective-state.json
@@ -61,6 +62,14 @@ function findObjectiveStates(stateRoot, out = []) {
 
 const FINISHED_OBJECTIVE_STATES = new Set([CANCELLED, "complete", "completed", "superseded"]);
 
+// What the node's own task state says about itself, or null when it has none.
+// Injectable so strandedNodes stays testable without a filesystem.
+function taskStatusOnDisk(node) {
+  const path = node?.statePath;
+  if (!path || !existsSync(path)) return null;
+  try { return readState(path)?.status ?? null; } catch { return null; }
+}
+
 /**
  * Decide whether an objective has work that nobody is running.
  *
@@ -74,8 +83,8 @@ const FINISHED_OBJECTIVE_STATES = new Set([CANCELLED, "complete", "completed", "
  * @param {object} objective  parsed objective-state.json
  * @returns {{stranded:boolean, reason:string, nodeIds:string[], ready:string[], abandoned:string[]}}
  */
-export function strandedNodes(objective) {
-  const nothing = (reason) => ({ stranded: false, reason, nodeIds: [], ready: [], abandoned: [] });
+export function strandedNodes(objective, { taskStatusOf = taskStatusOnDisk } = {}) {
+  const nothing = (reason) => ({ stranded: false, reason, nodeIds: [], ready: [], abandoned: [], revivable: [] });
   if (!objective || typeof objective !== "object") return nothing("unreadable");
   if (FINISHED_OBJECTIVE_STATES.has(objective.status)) {
     return nothing(`objective is ${objective.status}`);
@@ -112,9 +121,29 @@ export function strandedNodes(objective) {
     .filter((node) => node?.status === "running")
     .map((node) => node.id);
 
-  const nodeIds = [...new Set([...ready, ...abandoned])];
+  // A node recorded `blocked` or `failed` whose TASK state is back to `active`
+  // is work the orchestrator would revive on sight — runObjective puts exactly
+  // that shape back to `pending`. The header above already leans on that, but
+  // the sweep never handed runObjective such an objective: readyNodes skips a
+  // blocked node and the abandoned filter matches only `running`, so the whole
+  // objective read as healthy and nothing ever called the healer.
+  //
+  // obj-47cf7355 sat in that gap on 2026-09-15. Its builder passed and handed
+  // off to the reviewer; the dashboard restarted; the task stayed `active` at
+  // the reviewer stage with no dispatch and no runner, while its node was still
+  // recorded `blocked` from an earlier recovery. The sweep called it healthy and
+  // walked past the one objective on the machine that was genuinely abandoned.
+  //
+  // These need no reviving of their own — runObjective repairs them — so they
+  // are reported separately from `abandoned`, which does.
+  const revivable = [...Object.values(nodes), ...(integration?.id ? [integration] : [])]
+    .filter((node) => (node?.status === "blocked" || node?.status === "failed")
+      && taskStatusOf(node) === "active")
+    .map((node) => node.id);
+
+  const nodeIds = [...new Set([...ready, ...abandoned, ...revivable])];
   if (!nodeIds.length) return nothing("no node is ready to run");
-  return { stranded: true, reason: `${nodeIds.length} node(s) ready with no runner`, nodeIds, ready, abandoned };
+  return { stranded: true, reason: `${nodeIds.length} node(s) ready with no runner`, nodeIds, ready, abandoned, revivable };
 }
 
 /**
@@ -200,7 +229,7 @@ export async function resumeStrandedObjectives({
     // Nothing to schedule: every ready node was imaginary and every abandoned
     // one belongs to somebody. Starting a run here is what wrote `incomplete`
     // over an objective that was merely interrupted.
-    if (!verdict.ready.length && !revived.length) {
+    if (!verdict.ready.length && !revived.length && !verdict.revivable.length) {
       skipped.push({
         objectivePath,
         objectiveId: objective.objectiveId,
