@@ -203,6 +203,45 @@ enforces one session per worktree.
 
 **Status:** not started.
 
+### 5d. An integration reviewer's FAIL routes to a builder that only re-merges
+
+The most wasteful loop found so far, because it can never terminate on success.
+
+An integration node's `builder` stage is not a builder. Its result reads
+`summary: merged 2 sub-task branch(es) into factory/integration-<id>`. So when
+the integration reviewer fails, `routeStageFailure` sends the failure to
+`builder` exactly as it would for an ordinary node — and that stage re-runs the
+merge, producing a byte-identical tree. The reviewer fails the same findings
+again, forever, until recovery budget runs out.
+
+`obj-d4e18cad` did three full rounds on 2026-09-16. Its third review said so:
+
+```
+commit c3776c1 — byte-identical to attempt 2, no builder fixes have landed since
+```
+
+The findings were real and are the kind only integration can see: `offerNextArc`
+had zero frontend consumers, and Momentum's "tap a day" link joined through a
+different table than Chronicle's date filter. Both sub-task branches had passed
+all seven gates independently. The seam was the problem — and nothing in the
+factory could act on it, because fixing a seam means changing the sub-task code,
+which the integration node cannot do.
+
+Left alone it would have escalated only after spending `deeper-diagnosis` and
+`independent-review` on a merge that cannot change, then handed the founder a
+blocker listing strategies that were never capable of working — the same lie
+finding 2 describes, arrived at by a different road.
+
+**Fix:** an integration reviewer's FAIL must not route to `builder`. It should
+either route back to the originating sub-task nodes, which can actually change
+the code, or escalate immediately as a founder decision — the combined tree needs
+work that no single node owns. A cheap interim guard: if a rework round produces
+a tree identical to the one just rejected, stop and escalate rather than
+re-reviewing it.
+
+**Status:** not started. Escalated for this instance as
+`decision-cards/DC-2026-007-integration-rework-loop.md`.
+
 ### 6. A cancelled objective's tasks still page the founder
 
 Cancelling `obj-264e7ecf` left two decision items in the Founder Inbox, because
