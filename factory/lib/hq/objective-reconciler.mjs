@@ -38,7 +38,8 @@
 
 import { existsSync, readdirSync, readFileSync } from "fs";
 import { join } from "path";
-import { readObjState, resumeObjectiveNodes, CANCELLED } from "../objective/orchestrator.mjs";
+import { readObjState, resumeObjectiveNodes, settleSupersededObjective, CANCELLED } from "../objective/orchestrator.mjs";
+import { runnerStatus } from "../objective/runner-lease.mjs";
 import { readState } from "../task-workflow.mjs";
 import { readyNodes, GATE_SATISFIED } from "../objective/graph.mjs";
 
@@ -164,6 +165,8 @@ export async function resumeStrandedObjectives({
   stateRoot,
   runObjective,
   resumeNodes = resumeObjectiveNodes,
+  settle = settleSupersededObjective,
+  ownerOf = runnerStatus,
   max = 10,
   readConfig = () => {
     try { return JSON.parse(readFileSync(join(hqRoot, "factory", "factory.config.json"), "utf8")); }
@@ -192,6 +195,29 @@ export async function resumeStrandedObjectives({
       continue;
     }
 
+    // Work that is done but that nothing will ever mark done. Settled before
+    // anything else, because an objective in this shape has no node to resume
+    // and would otherwise be skipped as "nothing ready" every sweep, forever.
+    try {
+      if (settle(objectivePath)) {
+        log(`[objective-reconcile] ${objective.objectiveId} is complete: every build node passed and its integration was superseded`);
+        skipped.push({ objectivePath, objectiveId: objective.objectiveId, reason: "settled as complete" });
+        continue;
+      }
+    } catch (error) {
+      log(`[objective-reconcile] ${objective.objectiveId} could not be settled: ${String(error?.message || error).slice(0, 160)}`);
+    }
+
+    // A process is driving this objective right now — this one, or a terminal.
+    // Leave it completely alone: resuming a ready node here would start a
+    // second scheduler on the same graph. This is what makes it safe to run the
+    // sweep on a timer and not only at boot.
+    const owner = ownerOf(objective.runner, objectivePath);
+    if (owner === "live") {
+      skipped.push({ objectivePath, objectiveId: objective.objectiveId, reason: `run in progress (pid ${objective.runner?.pid})` });
+      continue;
+    }
+
     const verdict = strandedNodes(objective);
     if (!verdict.stranded) {
       skipped.push({ objectivePath, objectiveId: objective.objectiveId, reason: verdict.reason });
@@ -213,7 +239,9 @@ export async function resumeStrandedObjectives({
     let live = [];
     if (verdict.abandoned.length) {
       try {
-        const outcome = resumeNodes({ hqRoot, objectivePath, nodeIds: verdict.abandoned, by: "system" });
+        // "gone" means the recorded runner is provably dead, so the 90-minute
+        // age guard — a stand-in for exactly that knowledge — is not needed.
+        const outcome = resumeNodes({ hqRoot, objectivePath, nodeIds: verdict.abandoned, by: "system", ownerGone: owner === "gone" });
         revived = (outcome?.resumed || []).map((entry) => entry.id);
         live = outcome?.skipped || [];
       } catch (error) {
