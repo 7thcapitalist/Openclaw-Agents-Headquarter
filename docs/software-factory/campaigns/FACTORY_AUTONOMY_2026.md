@@ -30,12 +30,19 @@ dispatches:
 
 | Measure | Today | Target |
 | --- | ---: | ---: |
-| Objectives reaching `complete` | 1 of 14 | ≥ 80% |
-| Dispatches per merged task | 11–22 | ≤ 9 |
-| Dispatches producing no verdict at all | 45 of 234 (19%) | < 2% |
-| Reviewer dispatches producing no verdict | 27 of 59 (46%) | < 2% |
+| Objectives reaching `complete` | 2 of 21 | ≥ 80% |
+| Dispatches per task (median / max) | 7 / 21 | ≤ 9 max |
+| Dispatches producing no verdict at all | 51 of 286 (18%) | < 2% |
+| Reviewer dispatches producing no verdict | 33 of 70 (47%) | < 2% |
 | Founder interruptions per merged task | ~3, mostly infrastructure | ≤ 1, product only |
 | PRs originating from a `factory/*` branch | 33 of 251 (13%) | — |
+
+Counted across **both** state roots. Factory state is keyed by repo basename, so
+work run from `~/hq-runtime` lands under `data/factory/hq-runtime/` and work run
+from the dev checkout lands under `data/factory/Openclaw-Agents-Headquarter/`.
+The first pass at these numbers missed the `hq-runtime` root entirely and
+undercounted by nine objectives. Any tool that reports on the factory must
+enumerate state roots rather than assume one.
 
 Two of those numbers are lies in the founder's favour and against the factory's:
 `obj-c7b263bb` records both nodes as `failed` while its PRs **#35 and #36 are
@@ -49,7 +56,10 @@ Nothing else in this campaign can be verified without this. Ship it first.
 
 1. `npm run factory:report` — computes, from canonical SQLite state only, every
    row in the table above plus cycle time per stage, and writes a dated JSON
-   snapshot under `dashboard/backend/data/factory/_metrics/`.
+   snapshot under `dashboard/backend/data/factory/_metrics/`. It **enumerates
+   every project directory under every known state root**, including
+   `hq-runtime`, and fails loudly on a root it cannot read rather than
+   silently reporting on a subset.
 2. The same numbers on the console, as a single "Is the factory getting better"
    panel. Trend over the last 14 days, not a point value.
 3. A regression guard: the report fails loudly if a metric it cannot compute is
@@ -129,9 +139,15 @@ by Wave 0's report.
 
 ## Wave 4 — The founder stops being the bus
 
-1. **Intake dedupe.** `obj-264e7ecf` and `obj-74ffa4cc` are the same objective
-   74 seconds apart; `obj-039f0f5a` and `obj-d9448721` are the same objective 70
-   minutes apart. Half the HQ objectives ever filed are duplicates.
+1. **Intake dedupe, and phantom objectives.** `obj-264e7ecf` and `obj-74ffa4cc`
+   are the same objective 74 seconds apart; `obj-039f0f5a` and `obj-d9448721`
+   are the same objective 70 minutes apart. Worse: of the nine objectives under
+   the `hq-runtime` root, seven are `cancelled` and **six carry the objective
+   text "Start an objective on the openclaw-factory project"** — the console's
+   placeholder string. Those are launches where intake ran and the founder's
+   actual text was never captured, the defect described in
+   `objective-console-launcher.md`. An objective whose text is the placeholder
+   must be refused at intake, not decomposed and then cancelled.
 2. **Calibrate the risk classifier.** Five of twenty blocks were
    `High-risk work requires founder approval before build` on work approved
    within minutes. A gate that always says yes is a tax, not a control.
