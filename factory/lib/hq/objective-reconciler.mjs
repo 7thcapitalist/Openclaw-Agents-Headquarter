@@ -38,7 +38,8 @@
 
 import { existsSync, readdirSync, readFileSync } from "fs";
 import { join } from "path";
-import { readObjState, resumeObjectiveNodes, CANCELLED } from "../objective/orchestrator.mjs";
+import { readObjState, resumeObjectiveNodes, settleSupersededObjective, CANCELLED } from "../objective/orchestrator.mjs";
+import { runnerStatus } from "../objective/runner-lease.mjs";
 import { readState } from "../task-workflow.mjs";
 import { readyNodes, GATE_SATISFIED } from "../objective/graph.mjs";
 
@@ -59,6 +60,10 @@ function findObjectiveStates(stateRoot, out = []) {
   }
   return out;
 }
+
+// How many times the periodic sweep has resumed each objective in this process.
+// In-memory by design: a restart is a fresh look, and boot has its own rules.
+const periodicResumes = new Map();
 
 const FINISHED_OBJECTIVE_STATES = new Set([CANCELLED, "complete", "completed", "superseded"]);
 
@@ -164,6 +169,11 @@ export async function resumeStrandedObjectives({
   stateRoot,
   runObjective,
   resumeNodes = resumeObjectiveNodes,
+  settle = settleSupersededObjective,
+  ownerOf = runnerStatus,
+  mode = "boot",
+  history = periodicResumes,
+  maxPeriodicResumes = 3,
   max = 10,
   readConfig = () => {
     try { return JSON.parse(readFileSync(join(hqRoot, "factory", "factory.config.json"), "utf8")); }
@@ -192,10 +202,53 @@ export async function resumeStrandedObjectives({
       continue;
     }
 
+    // Work that is done but that nothing will ever mark done. Settled before
+    // anything else, because an objective in this shape has no node to resume
+    // and would otherwise be skipped as "nothing ready" every sweep, forever.
+    try {
+      if (settle(objectivePath)) {
+        log(`[objective-reconcile] ${objective.objectiveId} is complete: every build node passed and its integration was superseded`);
+        skipped.push({ objectivePath, objectiveId: objective.objectiveId, reason: "settled as complete" });
+        continue;
+      }
+    } catch (error) {
+      log(`[objective-reconcile] ${objective.objectiveId} could not be settled: ${String(error?.message || error).slice(0, 160)}`);
+    }
+
+    // A process is driving this objective right now — this one, or a terminal.
+    // Leave it completely alone: resuming a ready node here would start a
+    // second scheduler on the same graph. This is what makes it safe to run the
+    // sweep on a timer and not only at boot.
+    const owner = ownerOf(objective.runner, objectivePath);
+    if (owner === "live") {
+      skipped.push({ objectivePath, objectiveId: objective.objectiveId, reason: `run in progress (pid ${objective.runner?.pid})` });
+      continue;
+    }
+
     const verdict = strandedNodes(objective);
     if (!verdict.stranded) {
       skipped.push({ objectivePath, objectiveId: objective.objectiveId, reason: verdict.reason });
       continue;
+    }
+
+    // The timer is narrower than boot, on purpose. Boot adopts anything ready
+    // with no runner, once. Repeating THAT every ten minutes would re-dispatch
+    // an objective that genuinely finished blocked, fail, and do it again —
+    // a paid agent run every ten minutes, indefinitely. So a periodic sweep
+    // only takes a run whose owner is proven dead, or a node left mid-run
+    // (still protected by the age guard when no owner was recorded), and it
+    // gives each objective a small budget per process lifetime.
+    if (mode === "periodic") {
+      const orphaned = owner === "gone" || verdict.abandoned.length > 0;
+      if (!orphaned) {
+        skipped.push({ objectivePath, objectiveId: objective.objectiveId, reason: "left for boot: ready work with no dead runner" });
+        continue;
+      }
+      const used = history.get(objectivePath) || 0;
+      if (used >= maxPeriodicResumes) {
+        skipped.push({ objectivePath, objectiveId: objective.objectiveId, reason: `periodic resume budget spent (${used}); needs a restart or the founder's Retry` });
+        continue;
+      }
     }
 
     // A node left `running` has to be revived before the scheduler can see it;
@@ -213,7 +266,9 @@ export async function resumeStrandedObjectives({
     let live = [];
     if (verdict.abandoned.length) {
       try {
-        const outcome = resumeNodes({ hqRoot, objectivePath, nodeIds: verdict.abandoned, by: "system" });
+        // "gone" means the recorded runner is provably dead, so the 90-minute
+        // age guard — a stand-in for exactly that knowledge — is not needed.
+        const outcome = resumeNodes({ hqRoot, objectivePath, nodeIds: verdict.abandoned, by: "system", ownerGone: owner === "gone" });
         revived = (outcome?.resumed || []).map((entry) => entry.id);
         live = outcome?.skipped || [];
       } catch (error) {
@@ -246,6 +301,7 @@ export async function resumeStrandedObjectives({
     // what `max` is meant to bound — an objective that could not be revived
     // must not spend a slot a startable one needs.
     resumed.push({ objectivePath, objectiveId: objective.objectiveId, nodeIds: verdict.nodeIds, revived });
+    if (mode === "periodic") history.set(objectivePath, (history.get(objectivePath) || 0) + 1);
 
     // Detached, exactly like every other runObjective caller: an objective runs
     // for tens of minutes and boot must not wait for it. A failure is logged

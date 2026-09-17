@@ -1904,30 +1904,59 @@ app.listen(PORT, HOST, () => {
 // sweep cannot see them: a node that was never dispatched has no state file,
 // and a node abandoned mid-run is not `blocked`.
 //
-// Boot is the one moment this is unambiguous. Nothing can be running in a
-// process that has just started, so a node found `pending` or `running` is
-// owned by nobody. Disable with HQ_RESUME_OBJECTIVES=0.
+// It used to run only at boot, on the theory that boot is the one moment
+// nothing can be running. That left two holes, and obj-154e9b39 fell into the
+// first on 2026-09-16: a stage written three minutes before a restart read as
+// "still live", and with no second look the objective sat "Running" for eleven
+// hours. Every run now records its owning process (objective/runner-lease.mjs),
+// so a dead owner is recognised at once and a live one is never adopted — which
+// is also what makes it safe to repeat the sweep on a timer.
+//
+// It also used to report only "none stranded", which hid exactly that case.
+// Every unfinished objective it leaves alone is now logged with the reason.
+//
+// Disable with HQ_RESUME_OBJECTIVES=0.
+const QUIET_SKIP = /^objective is (cancelled|complete|completed|superseded)$|^no node is ready to run$|^run in progress|^left for boot/;
+
+function resumeStrandedObjectivesSweep(when) {
+  const stateRoot = join(ROOT, "dashboard", "backend", "data", "factory");
+  return resumeStrandedObjectives({
+    hqRoot: ROOT,
+    stateRoot,
+    runObjective,
+    mode: when === "boot" ? "boot" : "periodic",
+    max: Math.max(1, Number(process.env.HQ_RESUME_OBJECTIVES_MAX) || 10),
+    log: (message) => console.log(message),
+  })
+    .then(({ scanned, resumed, skipped }) => {
+      for (const entry of skipped) {
+        if (!QUIET_SKIP.test(entry.reason || "")) {
+          console.log(`[objective-reconcile] left ${entry.objectiveId || entry.objectivePath} alone: ${entry.reason}`);
+        }
+      }
+      if (resumed.length) {
+        console.log(`[objective-reconcile] ${when}: resumed ${resumed.length} of ${scanned} objective(s); ${skipped.length} left alone`);
+      } else if (when === "boot") {
+        console.log(`[objective-reconcile] ${when}: ${scanned} objective(s) scanned, none to resume`);
+      }
+    })
+    .catch((error) => console.error(`[objective-reconcile] ${when} sweep failed:`, error?.message || error));
+}
+
 function resumeStrandedObjectivesOnBoot() {
   if (process.env.HQ_RESUME_OBJECTIVES === "0") {
     console.log("[objective-reconcile] disabled by HQ_RESUME_OBJECTIVES=0");
     return;
   }
-  const stateRoot = join(ROOT, "dashboard", "backend", "data", "factory");
-  resumeStrandedObjectives({
-    hqRoot: ROOT,
-    stateRoot,
-    runObjective,
-    max: Math.max(1, Number(process.env.HQ_RESUME_OBJECTIVES_MAX) || 10),
-    log: (message) => console.log(message),
-  })
-    .then(({ scanned, resumed, skipped }) => {
-      if (resumed.length) {
-        console.log(`[objective-reconcile] resumed ${resumed.length} of ${scanned} objective(s); ${skipped.length} left alone`);
-      } else {
-        console.log(`[objective-reconcile] ${scanned} objective(s) scanned, none stranded`);
-      }
-    })
-    .catch((error) => console.error("[objective-reconcile] sweep failed:", error?.message || error));
+  resumeStrandedObjectivesSweep("boot");
+  const intervalMs = Math.max(60_000, Number(process.env.HQ_RESUME_OBJECTIVES_INTERVAL_MS) || 10 * 60_000);
+  let sweeping = false;
+  setInterval(() => {
+    if (sweeping) return;
+    sweeping = true;
+    resumeStrandedObjectivesSweep("periodic").finally(() => { sweeping = false; });
+  }, intervalMs).unref();
+  console.log(`[objective-reconcile] re-checking every ${Math.round(intervalMs / 60_000)} min`);
 }
 
 // ── Auto-retry sweep ─────────────────────────────────────────────────────────

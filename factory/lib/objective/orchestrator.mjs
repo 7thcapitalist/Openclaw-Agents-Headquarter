@@ -22,6 +22,7 @@ import { observeObjectiveGraph } from "./graph-observer.mjs";
 import { classifyBlocker, classifyObjectiveNodeBlocker, founderApprovalSetupBlocker, isFounderApprovalSetupFailure, isRetriableInfraBlocker } from "../hq/blocker-class.mjs";
 import { classifyFailure, isDeterministicProjectFailure } from "../failure-classification.mjs";
 import { checkCapability } from "../hq/capability-check.mjs";
+import { beginRun, endRun, isOurs, runnerIdentity } from "./runner-lease.mjs";
 
 const INTEGRATION_SYNTHETIC_STAGES = new Set(["product", "architect", "builder"]);
 
@@ -80,6 +81,38 @@ const firstLine = (text) => String(text || "").split("\n").map((s) => s.trim()).
 // the always-current JSON export) so every existing caller is unaffected.
 
 export function readObjState(path) { return readTransactionalState(path, { format: "objective-state" }); }
+
+export const INTEGRATION_SKIPPED = "skipped";
+
+/**
+ * Finish an objective whose work is done but which nothing will ever finish.
+ *
+ * Every build node passed its gate and the integration was recorded `skipped`
+ * — superseded because its work landed another way. runObjective is the only
+ * thing that writes `complete`, and it only does so at the end of a run, so an
+ * objective reconciled by hand into this shape (obj-c58897c0, 2026-09-15) reads
+ * "active" forever. Returns true when it settled something.
+ */
+export function settleSupersededObjective(objectivePath, { now = () => new Date().toISOString() } = {}) {
+  // Read before writing. The reconciler calls this for every objective on
+  // every sweep, and a sweep now repeats every ten minutes; opening a write
+  // transaction each time to discover there is nothing to settle is exactly
+  // the idle write amplification the publisher was just cured of.
+  if (!isSupersededButActive(readObjState(objectivePath))) return false;
+  let settled = false;
+  mutate(objectivePath, (s) => {
+    if (!isSupersededButActive(s)) return;
+    const at = now();
+    s.status = "complete";
+    s.events.push({ at, type: "objective-finished", detail: "complete", reason: "all build nodes passed; integration superseded" });
+    settled = true;
+  });
+  return settled;
+}
+
+function isSupersededButActive(s) {
+  return s?.status === "active" && s.integration?.status === INTEGRATION_SKIPPED && buildNodesComplete(s);
+}
 
 // The one write primitive every node/integration step in this file uses,
 // converted here so every call site is concurrency-safe without changing any
@@ -523,7 +556,7 @@ function checkObjectiveCapability({ hqRoot, objectivePath, capability, action })
 // now was the founder pressing a button; the boot sweep passes "system", so a
 // recovery the machine performed on its own does not read, in the audit log the
 // founder scrolls through, as a decision the founder made.
-export function resumeObjectiveNodes({ hqRoot = null, objectivePath, nodeIds, by = "founder", now = () => new Date().toISOString(), staleActiveMs = 90 * 60 * 1000 }) {
+export function resumeObjectiveNodes({ hqRoot = null, objectivePath, nodeIds, by = "founder", now = () => new Date().toISOString(), staleActiveMs = 90 * 60 * 1000, ownerGone = false }) {
   const at = typeof now === "function" ? now() : now;
   // Resuming blocked nodes restarts real work, so it is checked once for the
   // whole call rather than per node: the founder asked to recover an objective,
@@ -557,7 +590,11 @@ export function resumeObjectiveNodes({ hqRoot = null, objectivePath, nodeIds, by
       if (state.status === "blocked" && !isRetriableInfraBlocker(state.blocker)) {
         skipped.push({ id: nodeId, reason: "task requires a decision or substantive repair" }); continue;
       }
-      if (state.status === "active") {
+      // The age guard is a proxy for "some process may still be writing this".
+      // When the objective's recorded runner is provably dead, the proxy is not
+      // needed — and waiting on it is what left obj-154e9b39 "Running" for
+      // eleven hours after a restart three minutes into a stage.
+      if (state.status === "active" && !ownerGone) {
         const age = Date.parse(at) - Date.parse(state.updatedAt);
         if (!Number.isFinite(age) || age <= staleActiveMs) {
           skipped.push({ id: nodeId, reason: "task is still live" }); continue;
@@ -681,7 +718,28 @@ export function cancelObjective(objectivePath, { reason = "", at = new Date().to
 
 // ── the loop ─────────────────────────────────────────────────────────────────
 
-export async function runObjective({ hqRoot, objectivePath, maxConcurrent = 3, execute = executeOpenClaw, agentIds = {}, maxAttemptsPerStage = 3, concurrentGroups, publish, stateRoot }) {
+// Every run records which process owns it, and clears the record when it ends.
+// See runner-lease.mjs: without this, a run killed by a restart is
+// indistinguishable from one another process is still driving.
+export async function runObjective(args) {
+  const { objectivePath } = args;
+  let current = null;
+  try { current = readObjState(objectivePath); } catch { /* driveObjective reports it */ }
+  if (!current || current.status === CANCELLED) return driveObjective(args);
+
+  const lease = runnerIdentity();
+  beginRun(objectivePath);
+  try { mutate(objectivePath, (s) => { s.runner = lease; }); } catch { /* ownership is advisory; never block the run on it */ }
+  try {
+    return await driveObjective(args);
+  } finally {
+    if (endRun(objectivePath)) {
+      try { mutate(objectivePath, (s) => { if (isOurs(s.runner)) delete s.runner; }); } catch { /* a stale record reads as "gone" to the reconciler anyway */ }
+    }
+  }
+}
+
+async function driveObjective({ hqRoot, objectivePath, maxConcurrent = 3, execute = executeOpenClaw, agentIds = {}, maxAttemptsPerStage = 3, concurrentGroups, publish, stateRoot }) {
   // Scheduling an objective's nodes is checked before anything is read or
   // written, because everything below it — publishing a stalled node, resuming
   // descendants, dispatching stages — follows from this one decision.
@@ -785,13 +843,18 @@ export async function runObjective({ hqRoot, objectivePath, maxConcurrent = 3, e
   obj = readObjState(objectivePath);
   const cancelled = obj.status === CANCELLED;
   let integrationResp = null;
-  if (!cancelled && buildNodesComplete(obj)) {
+  // `skipped` is a settled integration: the founder recorded that its work
+  // already landed another way. Running it again would redo the merge — and on
+  // obj-c58897c0 the integration being redone is the one whose task store grew
+  // to 403 GiB on 2026-09-14.
+  if (!cancelled && buildNodesComplete(obj) && obj.integration?.status !== INTEGRATION_SKIPPED) {
     integrationResp = await runIntegration({ hqRoot, objectivePath, execute, agentIds, maxAttemptsPerStage, concurrentGroups, publish, stateRoot: nodeStateRoot });
   }
 
   obj = readObjState(objectivePath);
   const finalStatus = cancelled ? CANCELLED
     : obj.integration.status === GATE_SATISFIED ? "complete"
+    : obj.integration.status === INTEGRATION_SKIPPED && buildNodesComplete(obj) ? "complete"
     : buildNodesComplete(obj) ? "integration-blocked"
     : isDeadlocked(obj) ? "blocked" : "incomplete";
   if (!cancelled) {
