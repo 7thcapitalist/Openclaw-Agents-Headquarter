@@ -1693,3 +1693,25 @@ ul.timeline time { color: var(--muted); margin-right: 6px; }
 .chat-composer { display: flex; gap: 10px; align-items: flex-end; padding: 12px 16px; border-top: 1px solid var(--border-soft); }
 .chat-composer textarea { flex: 1; resize: vertical; border: 1px solid var(--border); border-radius: 9px; background: #11151d; color: var(--text); padding: .6rem .7rem; font: inherit; }
 .chat-composer textarea:disabled { opacity: .55; }
+
+/* An agent reply rendered from Markdown. Sized for a chat bubble, not a page. */
+.chat-markdown { line-height: 1.5; overflow-wrap: anywhere; }
+.chat-markdown > :first-child { margin-top: 0; }
+.chat-markdown > :last-child { margin-bottom: 0; }
+.chat-markdown h1, .chat-markdown h2, .chat-markdown h3, .chat-markdown h4 { margin: .9rem 0 .35rem; line-height: 1.25; letter-spacing: -.01em; }
+.chat-markdown h1 { font-size: 1.12rem; }
+.chat-markdown h2 { font-size: 1.04rem; }
+.chat-markdown h3, .chat-markdown h4 { font-size: .96rem; }
+.chat-markdown p { margin: 0 0 .55rem; }
+.chat-markdown ul, .chat-markdown ol { margin: .2rem 0 .6rem; padding-left: 1.25rem; }
+.chat-markdown li { margin: .15rem 0; }
+.chat-markdown li > ul, .chat-markdown li > ol { margin: .15rem 0; }
+.chat-markdown code { font-size: .86em; padding: .08rem .3rem; border-radius: 5px; background: var(--elev); border: 1px solid var(--border-soft); }
+.chat-markdown pre { overflow-x: auto; padding: .6rem .75rem; border-radius: 8px; background: #0c0f15; border: 1px solid var(--border-soft); }
+.chat-markdown pre code { padding: 0; border: 0; background: transparent; }
+.chat-markdown blockquote { margin: .4rem 0; padding-left: .7rem; border-left: 3px solid var(--border); color: var(--muted); }
+.chat-markdown a { color: var(--accent); }
+.chat-markdown hr { border: 0; border-top: 1px solid var(--border-soft); margin: .8rem 0; }
+.chat-markdown table { border-collapse: collapse; margin: .4rem 0 .7rem; font-size: .88rem; display: block; overflow-x: auto; }
+.chat-markdown th, .chat-markdown td { border: 1px solid var(--border-soft); padding: .3rem .5rem; text-align: left; }
+.chat-markdown th { background: var(--surface-2); }

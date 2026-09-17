@@ -16,7 +16,7 @@ import { readinessPanel } from "/lib/readinessView.mjs";
 import { runTimelineSection } from "/lib/timelineView.mjs";
 import { decisionsPanel } from "/lib/decisionsView.mjs";
 import { searchPanel } from "/lib/searchView.mjs";
-import { threadListPanel, transcriptPanel } from "/lib/chatView.mjs";
+import { formatElapsed, threadListPanel, transcriptPanel } from "/lib/chatView.mjs";
 import { scorecardsPanel } from "/lib/scorecardsView.mjs";
 import { budgetPanel } from "/lib/budgetView.mjs";
 import { permissionsPanel } from "/lib/permissionsView.mjs";
@@ -1704,6 +1704,11 @@ import { buildLiveFloorRows, buildRunningNow } from "/lib/runningNow.mjs";
     stopChatPoll();
     chatTimer = setInterval(async () => {
       if (parseRoute().name !== "chat") return stopChatPoll();
+      // Advance the clock in place. Never a repaint for this.
+      const pending = document.querySelector("[data-chat-started]");
+      const elapsed = pending?.querySelector("[data-chat-elapsed]");
+      const started = Date.parse(pending?.dataset.chatStarted || "");
+      if (elapsed && Number.isFinite(started)) elapsed.textContent = ` · ${formatElapsed(Date.now() - started)}`;
       const data = await apiJson(`/api/founder/threads/${encodeURIComponent(threadId)}`).catch(() => null);
       const thread = data?.threads?.find((t) => t.id === threadId);
       if (!thread) return stopChatPoll();

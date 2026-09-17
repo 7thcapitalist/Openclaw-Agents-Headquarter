@@ -3,6 +3,7 @@ import dotenv from "dotenv";
 import express from "express";
 import session from "express-session";
 import { renderUntrustedMarkdown } from "./lib/safeMarkdown.mjs";
+import { withRenderedReplies } from "./lib/threadMarkdown.mjs";
 import {
   LoginThrottle,
   clientKey,
@@ -98,6 +99,8 @@ import {
   listThreads,
   postFounderTurn,
   runThreadTurn,
+  FOUNDER_THREAD_TIMEOUT_MS,
+  failStrandedThreads,
   settleProposal,
   postTaskComment,
   resolveFounderDecision,
@@ -122,6 +125,7 @@ import {
 } from "./lib/founderApproval.mjs";
 import { readAutonomy } from "../../factory/lib/hq/autonomy.mjs";
 import { retryStuckTasks } from "../../factory/lib/hq/auto-retry.mjs";
+import { readAutoRetryHalt } from "../../factory/lib/hq/state-watchdog.mjs";
 import { resumeStrandedObjectives } from "../../factory/lib/hq/objective-reconciler.mjs";
 import { reconcileMergedTasks } from "../../factory/lib/hq/merge-reconciler.mjs";
 import { resumeState as resumeTaskState, readState as readTaskState, writeState as writeTaskState } from "../../factory/lib/task-workflow.mjs";
@@ -851,7 +855,7 @@ app.get("/api/founder/threads/:id", (req, res) => {
   if (!threadIdOr400(req, res)) return;
   const thread = findThread(ROOT, req.params.id);
   if (!thread) return res.status(404).json({ error: "Conversation not found." });
-  res.json(buildThreadsPanel(listThreads(ROOT), { detailId: req.params.id }));
+  res.json(withRenderedReplies(buildThreadsPanel(listThreads(ROOT), { detailId: req.params.id })));
 });
 
 app.delete("/api/founder/threads/:id", (req, res) => {
@@ -867,7 +871,7 @@ app.post("/api/founder/threads/:id/turns", (req, res) => {
   if (!threadIdOr400(req, res)) return;
   try {
     const thread = postFounderTurn(ROOT, req.params.id, req.body?.message);
-    void runThreadTurn(ROOT, req.params.id, { timeoutMs: FOUNDER_QUESTION_TIMEOUT_MS });
+    void runThreadTurn(ROOT, req.params.id, { timeoutMs: FOUNDER_THREAD_TIMEOUT_MS });
     res.status(202).json({ thread });
   } catch (e) {
     res.status(e?.statusCode || 500).json({ error: String(e.message || e) });
@@ -1889,6 +1893,8 @@ checkBootConfig();
 app.listen(PORT, HOST, () => {
   console.log(`[agent-lab] dashboard http://${HOST}:${PORT} (root=${ROOT})`);
   resumePendingFounderQuestions();
+  const strandedThreads = failStrandedThreads(ROOT);
+  if (strandedThreads) console.log(`[chat] ${strandedThreads} conversation(s) were mid-answer at restart; marked failed`);
   resumeStrandedObjectivesOnBoot();
 });
 
@@ -1928,7 +1934,8 @@ function resumeStrandedObjectivesOnBoot() {
 // Infra failures (no result file, timeout, provider 5xx) should recover on
 // their own, not sit in the Founder Inbox. Every few minutes, resume tasks
 // blocked on an infra-class failure and drive them again — bounded per task.
-// Disable with HQ_AUTO_RETRY=0.
+// Disable with HQ_AUTO_RETRY=0. hq-state-watchdog can also halt it at runtime
+// by writing AUTO_RETRY_HALTED.json into the state root; delete it to resume.
 if (process.env.HQ_AUTO_RETRY !== "0") {
   const FACTORY_STATE_ROOT = join(ROOT, "dashboard", "backend", "data", "factory");
   const intervalMs = Math.max(60_000, Number(process.env.HQ_AUTO_RETRY_INTERVAL_MS) || 180_000);
@@ -1936,6 +1943,11 @@ if (process.env.HQ_AUTO_RETRY !== "0") {
   let sweeping = false;
   const sweep = async () => {
     if (sweeping) return;
+    const halt = readAutoRetryHalt(FACTORY_STATE_ROOT);
+    if (halt) {
+      console.warn(`[auto-retry] halted by watchdog since ${halt.haltedAt || "unknown"}: ${halt.reason}`);
+      return;
+    }
     sweeping = true;
     try {
       const out = await retryStuckTasks({ hqRoot: ROOT, stateRoot: FACTORY_STATE_ROOT, max: maxPerTask, log: (m) => console.log(m) });

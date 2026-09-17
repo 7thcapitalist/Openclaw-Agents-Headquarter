@@ -95,12 +95,13 @@ module.exports = {
       max_memory_restart: "2G",
       env: {
         ...common,
-        // Not in .env, not in the repo, and load-bearing: with auto-retry on,
-        // infra-class failures recover on their own instead of waiting in the
-        // Founder Inbox. It is OFF deliberately — see the gate-integrity
-        // campaign, which requires verdict attribution to land before anything
-        // retries automatically.
-        HQ_AUTO_RETRY: "0",
+        // Load-bearing: with auto-retry on, infra-class failures recover on
+        // their own instead of waiting in the Founder Inbox. Turned ON on
+        // 2026-09-16 as an explicit founder decision, ahead of Node 0's write
+        // budget (FACTORY_GATE_INTEGRITY_2026). The interim bound is
+        // hq-state-watchdog below: it halts these retries if any state file
+        // passes 50 MB, and stops this process at 500 MB. Set "0" to turn off.
+        HQ_AUTO_RETRY: "1",
         HQ_AUTO_RETRY_INTERVAL_MS: "90000",
         HQ_AUTO_RETRY_MAX: "3",
         // The orchestrator runs inside THIS process and every node it schedules
@@ -170,6 +171,20 @@ module.exports = {
         ...pick("HQ_CONTROL_PLANE_URL", "HQ_WRITE_TOKEN"),
         HQ_INTENT_INTERVAL_MS: file.HQ_INTENT_INTERVAL_MS || "30000",
       },
+    },
+    {
+      // The interim backstop for the 2026-09-14 write loop, and the condition
+      // HQ_AUTO_RETRY=1 was accepted on. Reads file sizes only; the one thing it
+      // ever does to another process is `pm2 stop hq-dashboard` at 500 MB.
+      name: "hq-state-watchdog",
+      script: join(ROOT, "scripts", "hq-state-watchdog.mjs"),
+      cwd: ROOT,
+      interpreter: "node",
+      exec_mode: "fork",
+      instances: 1,
+      autorestart: true,
+      max_memory_restart: "256M",
+      env: { ...common },
     },
     {
       // The public way in. --no-autoupdate because an unattended binary swap

@@ -11,6 +11,7 @@ import { toTaskRecord } from "../../../factory/lib/learning/evidence.mjs";
 import { classifyBlocker, classifyObjectiveNodeBlocker, founderApprovalSetupBlocker } from "../../../factory/lib/hq/blocker-class.mjs";
 import { buildOutcome } from "../../../factory/lib/failure-outcome.mjs";
 import { resumeObjectiveNodes, setObjectiveRecoveryInFlight, readObjState } from "../../../factory/lib/objective/orchestrator.mjs";
+import { cancelledObjectiveTaskIds } from "../../../factory/lib/objective/cancelled.mjs";
 import { defaultStateRoot } from "../../../factory/lib/natural-language-intake.mjs";
 import { briefBlocker, presentObjective, isSeedProject } from "../../../factory/lib/hq/presenter.mjs";
 import { presentFounderInbox } from "../../../factory/lib/hq/founder-inbox.mjs";
@@ -1120,31 +1121,6 @@ function shapeObjective(root, obj, dir) {
   };
 }
 
-// Ids of every task that is a node of an objective the founder cancelled.
-// Cancelling writes the objective only; its nodes keep the blockers they
-// stopped on. On 2026-09-16 six cancelled duplicates went on asking for
-// decisions from both the dashboard and the console until dismissed by hand.
-function cancelledObjectiveTaskIds(factoryDir) {
-  const ids = new Set();
-  if (!existsSync(factoryDir)) return ids;
-  for (const project of readdirSync(factoryDir, { withFileTypes: true })) {
-    if (!project.isDirectory()) continue;
-    const objDir = join(factoryDir, project.name, "objectives");
-    if (!existsSync(objDir)) continue;
-    for (const entry of readdirSync(objDir, { withFileTypes: true })) {
-      const path = join(objDir, entry.name, "objective-state.json");
-      if (!existsSync(path)) continue;
-      let obj;
-      try { obj = JSON.parse(readFileSync(path, "utf8")); } catch { continue; }
-      if (obj.status !== "cancelled") continue;
-      for (const node of [...Object.values(obj.nodes || {}), obj.integration]) {
-        if (node?.id) ids.add(node.id);
-      }
-    }
-  }
-  return ids;
-}
-
 export function discoverFactoryTasks(root) {
   const cancelled = cancelledObjectiveTaskIds(factoryRoot(root));
   return walkStateFiles(factoryRoot(root))
@@ -1915,6 +1891,30 @@ export function founderQuestionError(error, timeoutMs = FOUNDER_QUESTION_TIMEOUT
   return "OpenClaw could not answer the question. Check the factory logs for details.";
 }
 
+// A conversation turn is not a question. The question box asks for a lookup;
+// a thread talks to the Chief of Staff, who has 37 tools and uses them. The
+// first real message sent here — "what are the problems with the factory
+// nowadays?" — ran eight model rounds of investigation, ~10s each, and was
+// killed by the question lane's 90s limit at the moment it was writing its
+// answer. OpenClaw recorded the run as `aborted`; the founder got an error.
+//
+// Killing the CLI aborts the gateway run, so this limit is not "how long we
+// wait" — it is "how long he is allowed to think". The route is detached and
+// the page polls, so a long limit costs nothing while he works.
+export const FOUNDER_THREAD_TIMEOUT_MS = Math.max(
+  60_000,
+  Number(process.env.FOUNDER_THREAD_TIMEOUT_MS) || 15 * 60_000,
+);
+
+export function founderThreadError(error, timeoutMs = FOUNDER_THREAD_TIMEOUT_MS) {
+  if (error?.killed || error?.code === "ETIMEDOUT") {
+    return `He was still working after ${Math.round(timeoutMs / 60_000)} minutes, so the turn was stopped. `
+      + "Try a narrower question, or ask him to summarise what he found so far.";
+  }
+  if (error?.code) return `OpenClaw could not reply (process code ${String(error.code).slice(0, 40)}).`;
+  return "OpenClaw could not reply. Check the factory logs for details.";
+}
+
 export function isValidAgentId(agentId) {
   return /^[a-z0-9][a-z0-9-]*$/.test(String(agentId || ""));
 }
@@ -2193,7 +2193,7 @@ export function postFounderTurn(root, threadId, text) {
  */
 export async function runThreadTurn(root, threadId, {
   execFile: runner = null,
-  timeoutMs = FOUNDER_QUESTION_TIMEOUT_MS,
+  timeoutMs = FOUNDER_THREAD_TIMEOUT_MS,
 } = {}) {
   const thread = findThread(root, threadId);
   if (!thread) return null;
@@ -2252,7 +2252,7 @@ export async function runThreadTurn(root, threadId, {
         role: "agent",
         text: "",
         at: new Date().toISOString(),
-        error: founderQuestionError(error, timeoutMs),
+        error: founderThreadError(error, timeoutMs),
         proposals: [],
       }].slice(-THREAD_LIMITS.turnsPerThread),
     }));
@@ -2299,4 +2299,38 @@ export function settleProposal(root, threadId, turnId, proposalId, { status, det
       })),
     })),
   }));
+}
+
+/**
+ * Fail every thread a restart left mid-answer.
+ *
+ * The turn runs as a child of this process. A dashboard restart — deliberate
+ * ones are routine here — takes the waiting side with it, so a thread stays
+ * `running` forever: the composer stays disabled, the page polls forever, and
+ * the founder can never send another message in that conversation. A turn
+ * that can last fifteen minutes makes that the likely case, not the rare one.
+ *
+ * Failing is the honest recovery. Re-running would send the same message twice
+ * to an agent that may already have acted on it.
+ */
+export function failStrandedThreads(root, { now = new Date() } = {}) {
+  const control = readControl(root);
+  const stranded = (control.threads || []).filter((t) => t.status === "running");
+  if (!stranded.length) return 0;
+  const at = (now instanceof Date ? now : new Date(now)).toISOString();
+  control.threads = control.threads.map((t) => (t.status !== "running" ? t : {
+    ...t,
+    status: "failed",
+    updatedAt: at,
+    turns: [...(t.turns || []), {
+      id: `turn-${Date.now().toString(36)}-${randomUUID().slice(0, 6)}`,
+      role: "agent",
+      text: "",
+      at,
+      error: "The dashboard restarted while he was answering, so the reply was lost. Send it again.",
+      proposals: [],
+    }].slice(-THREAD_LIMITS.turnsPerThread),
+  }));
+  writeControl(root, control);
+  return stranded.length;
 }

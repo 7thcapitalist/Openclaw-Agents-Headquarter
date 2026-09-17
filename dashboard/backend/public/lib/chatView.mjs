@@ -47,7 +47,7 @@ export function transcriptPanel(thread, { esc = escapeHtml } = {}) {
         <button type="button" class="btn ghost small" data-chat-delete="${esc(thread.id)}">Delete</button></span>
     </header>
     <div class="chat-log" id="chat-log">${body}</div>
-    ${thread.status === "running" ? `<p class="chat-pending" role="status">Thinking… this takes up to 90 seconds.</p>` : ""}
+    ${thread.status === "running" ? pendingLine(turns, esc) : ""}
     <form class="chat-composer" data-chat-send="${esc(thread.id)}">
       <textarea id="chat-input" rows="3" placeholder="Ask, or describe what you want built…"
         aria-label="Message"${thread.status === "running" ? " disabled" : ""}></textarea>
@@ -56,15 +56,44 @@ export function transcriptPanel(thread, { esc = escapeHtml } = {}) {
   </section>`;
 }
 
+// While he works, say so, and say for how long. He investigates with tools, so
+// a real question takes minutes; a spinner with no clock reads as "broken"
+// after thirty seconds. app.js advances the clock in place without repainting.
+function pendingLine(turns, esc) {
+  const asked = [...turns].reverse().find((t) => t.role === "founder")?.at || "";
+  return `<p class="chat-pending" role="status" data-chat-started="${esc(asked)}">
+    Working<span data-chat-elapsed></span> — he looks things up before answering, so this can take a few minutes. You can leave this page.
+  </p>`;
+}
+
+export function formatElapsed(ms) {
+  const seconds = Math.max(0, Math.floor(Number(ms) / 1000) || 0);
+  if (seconds < 60) return `${seconds}s`;
+  return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s`;
+}
+
 function renderTurn(turn, esc) {
   if (turn.error) {
     return `<div class="chat-turn chat-agent"><div class="chat-bubble chat-error">${esc(turn.error)}</div></div>`;
   }
   const proposals = (turn.proposals || []).map((p) => renderProposal(p, turn.id, esc)).join("");
+  const body = replyBody(turn, esc);
   return `<div class="chat-turn chat-${turn.role === "agent" ? "agent" : "founder"}">
-    <div class="chat-bubble">${paragraphs(turn.text, esc)}${turn.truncated ? `<p class="muted small">(truncated)</p>` : ""}</div>
+    <div class="chat-bubble${body.rendered ? " chat-markdown" : ""}">${body.html}${turn.truncated ? `<p class="muted small">(truncated)</p>` : ""}</div>
     ${proposals}
   </div>`;
+}
+
+// An agent reply arrives with `html` already produced by the server's
+// untrusted-Markdown renderer (dashboard/backend/lib/threadMarkdown.mjs), which
+// has passed its generation and sanitization layers. That is the only HTML this
+// view inserts unescaped. A founder turn never carries `html`, and anything
+// without it is escaped here as before.
+function replyBody(turn, esc) {
+  if (turn.role === "agent" && typeof turn.html === "string" && turn.html) {
+    return { html: turn.html, rendered: true };
+  }
+  return { html: paragraphs(turn.text, esc), rendered: false };
 }
 
 // A proposal, shown as the exact thing that will run.
