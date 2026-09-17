@@ -7,6 +7,7 @@ import { costLimitsPanel } from "/cost-limits.mjs";
 import { operationsPanel } from "/lib/operationsView.mjs";
 import { renderFounderInboxCard, renderFounderInboxEmpty } from "/lib/founderInbox.mjs";
 import { goalsPanel } from "/lib/goalsView.mjs";
+import { factoryHealthPanel } from "/lib/factoryHealthView.mjs";
 import { proposerPanel } from "/lib/proposerView.mjs";
 import { blastRadiusPanel } from "/lib/blastRadiusView.mjs";
 import { deploymentsPanel } from "/lib/deploymentsView.mjs";
@@ -272,7 +273,7 @@ import { buildLiveFloorRows, buildRunningNow } from "/lib/runningNow.mjs";
   // ── Today: the founder observability surface ───────────────────
 
   async function renderToday() {
-    const [state, fc, learning, objectivesResp, autonomy, costs, planLimits, overnight, goals, proposals, decisions, scorecards, budgets, permissions, blastRadius, deployments, readiness] = await Promise.all([
+    const [state, fc, learning, objectivesResp, autonomy, costs, planLimits, overnight, goals, factoryReport, proposals, decisions, scorecards, budgets, permissions, blastRadius, deployments, readiness] = await Promise.all([
       loadCompany(),
       apiJson("/api/founder/overview").catch(() => ({ jobs: [] })),
       loadLearning().catch(() => null),
@@ -282,6 +283,7 @@ import { buildLiveFloorRows, buildRunningNow } from "/lib/runningNow.mjs";
       apiJson("/api/hq/plan-limits").catch(() => null),
       apiJson("/api/founder/overnight").catch(() => ({ status: "unavailable", items: [] })),
       apiJson("/api/hq/goals").catch(() => null),
+      apiJson("/api/hq/factory-report").catch(() => null),
       apiJson("/api/hq/proposals").catch(() => null),
       apiJson("/api/hq/decisions").catch(() => null),
       apiJson("/api/hq/scorecards").catch(() => null),
@@ -310,7 +312,7 @@ import { buildLiveFloorRows, buildRunningNow } from "/lib/runningNow.mjs";
     const liveJobs = jobs.filter((j) => j.status === "starting" || j.status === "running" || j.status === "decomposing");
 
     const asOf = new Date().toISOString();
-    app.innerHTML = renderFounderHome({ state, projects, agents, inbox, dismissedInbox, objectives, allTasks, runningRows, liveJobs, autoRecovering, finishedTasks, inboxActionable, overnight, goals, proposals, decisions, scorecards, budgets, permissions, blastRadius, deployments, readiness, asOf });
+    app.innerHTML = renderFounderHome({ state, projects, agents, inbox, dismissedInbox, objectives, allTasks, runningRows, liveJobs, autoRecovering, finishedTasks, inboxActionable, overnight, goals, factoryReport, proposals, decisions, scorecards, budgets, permissions, blastRadius, deployments, readiness, asOf });
     renderMachineChip(readiness);
     bindFounderControls();
     return;
@@ -444,7 +446,7 @@ import { buildLiveFloorRows, buildRunningNow } from "/lib/runningNow.mjs";
     </section>`;
   }
 
-  function renderFounderHome({ state, projects, agents, inbox, dismissedInbox, objectives, allTasks, runningRows, liveJobs, autoRecovering, finishedTasks, inboxActionable, overnight, goals, proposals, decisions, scorecards, budgets, permissions, blastRadius, deployments, readiness, asOf }) {
+  function renderFounderHome({ state, projects, agents, inbox, dismissedInbox, objectives, allTasks, runningRows, liveJobs, autoRecovering, finishedTasks, inboxActionable, overnight, goals, factoryReport, proposals, decisions, scorecards, budgets, permissions, blastRadius, deployments, readiness, asOf }) {
     const groups = objectiveView.groupObjectives(objectives);
     const active = [...groups.running, ...groups.waiting, ...groups.blocked];
     const workingAgents = runningRows.filter((row) => row.working);
@@ -463,6 +465,7 @@ import { buildLiveFloorRows, buildRunningNow } from "/lib/runningNow.mjs";
         ${renderSearchBox()}
         ${proposerPanel(proposals, { esc })}
         ${goalsPanel(goals, { esc })}
+        ${factoryHealthPanel(factoryReport, { esc })}
         ${decisionsPanel(decisions, { esc, fmtTime })}
         ${budgetPanel(budgets, { esc })}
         ${permissionsPanel(permissions, { esc, fmtTime })}
