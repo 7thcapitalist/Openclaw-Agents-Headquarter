@@ -38,6 +38,77 @@ function taskCardRenderer() {
   )(esc, (milliseconds) => `${Math.floor(milliseconds / 60_000)}m`);
 }
 
+function objectiveCardRenderer() {
+  return new Function(
+    "esc",
+    "fmtDuration",
+    "objectiveView",
+    `${functionSource("cardActionState")}\n${functionSource("objectiveCardInput")}\n${functionSource("cardActions")}\n${functionSource("founderObjectiveCard")}\nreturn founderObjectiveCard;`,
+  )(esc, (milliseconds) => `${Math.floor(milliseconds / 60_000)}m`, { shortObjectiveTitle: (title) => title });
+}
+
+// Every attribute bindObjectiveControls / the Today binders give a plain
+// `onclick`. On anything but a <button> it fires for every click inside that
+// element as well — which is how Reject on an objective card used to be
+// replaced by the execution view before its form could be used.
+const CLICK_ATTRIBUTES = [
+  "data-objective-details", "data-objective-execution", "data-report-task", "data-report-objective",
+  "data-task-execution", "data-retry-task", "data-retry-objective", "data-approve", "data-reject",
+];
+
+function nonButtonClickTargets(html) {
+  return [...html.matchAll(/<([a-z][a-z0-9]*)\b([^>]*)>/g)]
+    .filter(([, tag, attrs]) => tag !== "button" && CLICK_ATTRIBUTES.some((name) => new RegExp(`\\s${name}=`).test(attrs)))
+    .map(([whole]) => whole);
+}
+
+const objective = (overrides = {}) => ({
+  objectiveId: "obj-1234abcd",
+  title: "Ship it",
+  project: "HQ",
+  status6: "RUNNING",
+  updatedAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+  ...overrides,
+});
+
+test("an objective card's actions are buttons, never the card itself", () => {
+  const render = objectiveCardRenderer();
+  const inbox = [{ objectiveId: "obj-1234abcd", taskId: "obj-1234abcd-builder", kind: "approval", statePath: "/tmp/s.json" }];
+  for (const [label, html] of [
+    ["running", render(objective())],
+    ["blocked", render(objective({ status6: "BLOCKED" }))],
+    ["approval", render(objective({ status6: "WAITING_FOR_FOUNDER" }), false, inbox)],
+    ["complete", render(objective({ status6: "COMPLETE" }), true)],
+  ]) {
+    assert.deepEqual(nonButtonClickTargets(html), [], `${label} card must not make a non-button element a click target`);
+    assert.match(html, /<article class="founder-objective[^"]*" data-objective-id="obj-1234abcd"/, `${label} card stays clickable through the guarded listener`);
+  }
+});
+
+test("the guarded card listener, not an onclick, opens an objective", () => {
+  const bind = functionSource("bindObjectiveControls");
+  assert.match(bind, /querySelectorAll\("\.founder-objective"\)[\s\S]*?event\.target\.closest\("button, a"\)[\s\S]*?openExecutionView\(card\.dataset\.objectiveId\)/);
+});
+
+test("Retry on a blocked objective retries the objective, not one of its tasks", () => {
+  const html = objectiveCardRenderer()(objective({ status6: "BLOCKED", blockedOn: null, nodes: { a: { id: "obj-1234abcd-a", status: "pending" } } }));
+  assert.match(html, /<button class="btn tiny" data-retry-objective="obj-1234abcd">Retry<\/button>/);
+  assert.doesNotMatch(html, /data-retry-task/);
+});
+
+test("a running objective offers one Open, not two buttons that do the same thing", () => {
+  const html = objectiveCardRenderer()(objective());
+  assert.equal((html.match(/<button\b/g) || []).length, 1);
+  assert.match(html, /data-objective-execution="obj-1234abcd">Open</);
+});
+
+test("a diagnostic card names the objective it came from, not a fixed id", () => {
+  const html = needsYouRenderer()([], [], 0, [{ kind: "divergence", taskId: "obj-9999ffff-builder", objectiveId: "obj-9999ffff" }]);
+  assert.match(html, /data-diagnostic-source="obj-9999ffff"/);
+  assert.doesNotMatch(html, /obj-c58897c0|obj-c7b263bb/);
+  assert.equal(nonButtonClickTargets(html).length, 0);
+});
+
 test("Needs You renders divergence and changed-nothing diagnostics with task actions", () => {
   const renderNeedsYou = needsYouRenderer();
   const html = renderNeedsYou([], [], 0, [

@@ -492,8 +492,10 @@ import { buildLiveFloorRows, buildRunningNow } from "/lib/runningNow.mjs";
   // it is the one surface that is about the founder rather than the factory.
   // Sorted and worded by the backend translation (factory/lib/hq/founder-inbox.mjs);
   // this only decides where it lives on the page.
-  function renderNeedsYou(inbox, dismissedInbox = [], inboxActionable = 0) {
-    const diagnostics = Array.isArray(arguments[3]) ? arguments[3] : [];
+  // `diagnostics` (graph-health / rewake-throttle findings) is optional: the
+  // backend does not send it yet, so today's three-argument call is unchanged.
+  function renderNeedsYou(inbox, dismissedInbox = [], inboxActionable = 0, diagnostics = []) {
+    if (!Array.isArray(diagnostics)) diagnostics = [];
     const diagnosticCards = diagnostics.map((finding) => diagnosticInboxCard(finding)).join("");
     const attentionCards = `${inbox.map((x) => inboxItem(x)).join("")}${diagnosticCards}`;
     const actionable = Number(inboxActionable || 0) + diagnostics.length;
@@ -518,10 +520,9 @@ import { buildLiveFloorRows, buildRunningNow } from "/lib/runningNow.mjs";
     const copy = divergence
       ? "This objective says it is running. Nothing is actually running."
       : `${runCountWord(finding.streak).replace(/^./, (letter) => letter.toUpperCase())} runs in a row changed nothing.`;
-    const source = divergence ? "obj-c58897c0" : "obj-c7b263bb";
     const type = divergence ? "Objective mismatch" : "Stalled loop";
     const tone = divergence ? "bad" : "warn";
-    return `<div class="inbox-entry diagnostic-entry" data-diagnostic-source="${source}"><article class="fi-card fi-tone-${tone}">
+    return `<div class="inbox-entry diagnostic-entry" data-diagnostic-kind="${esc(finding.kind)}"${finding.objectiveId ? ` data-diagnostic-source="${esc(finding.objectiveId)}"` : ""}><article class="fi-card fi-tone-${tone}">
       <div class="fi-type">${type}</div>
       <h3 class="fi-title">${esc(copy)}</h3>
       <p class="fi-subject">Task <code>${esc(finding.taskId)}</code>${finding.project ? ` · ${esc(finding.project)}` : ""}</p>
@@ -592,14 +593,10 @@ import { buildLiveFloorRows, buildRunningNow } from "/lib/runningNow.mjs";
 
   function objectiveCardInput(objective, inbox = []) {
     const related = inbox.find((item) => item.objectiveId === objective.objectiveId);
-    const blockedOn = Array.isArray(objective.blockedOn) ? objective.blockedOn[0] : objective.blockedOn;
-    const rawNodes = objective.nodes || objective.nodeBriefs || [];
-    const nodes = Array.isArray(rawNodes) ? rawNodes : Object.values(rawNodes);
-    const nextNode = nodes.find((node) => !["complete", "completed", "cancelled", "canceled"].includes(String(node.status || "").toLowerCase()));
     return {
       itemKind: "objective",
       objectiveId: objective.objectiveId,
-      taskId: related?.taskId || (typeof blockedOn === "string" ? blockedOn : blockedOn?.id) || nextNode?.id,
+      taskId: related?.taskId,
       updatedAt: objective.updatedAt,
       status6: objective.status6,
       status: objective.status,
@@ -608,19 +605,29 @@ import { buildLiveFloorRows, buildRunningNow } from "/lib/runningNow.mjs";
     };
   }
 
+  // An objective has one live view, so its card offers a single Open; a task
+  // has both a live execution view (Follow) and a report (Open). Retry on an
+  // objective goes through the objective retry, which resumes the recoverable
+  // nodes *and* the orchestrator — retrying one task leaves the wrapper stale.
   function cardActions(action, item) {
-    const open = item.itemKind === "objective"
-      ? `data-objective-details="${esc(item.objectiveId)}"`
-      : `data-report-task="${esc(item.taskId)}"`;
-    const follow = item.itemKind === "objective"
-      ? `data-objective-execution="${esc(item.objectiveId)}"`
-      : `data-task-execution="${esc(item.taskId)}"`;
+    const objective = item.itemKind === "objective";
+    const open = objective
+      ? `<button class="btn secondary tiny" data-objective-execution="${esc(item.objectiveId)}">Open</button>`
+      : `<button class="btn secondary tiny" data-report-task="${esc(item.taskId)}">Open</button>`;
     if (action.pattern === "reason") return `<span class="card-action-reason" data-action-reason>${esc(action.reason)}</span>`;
     if (action.pattern === "approve-reject") return `<button class="btn tiny" data-approve="${esc(item.taskId)}">Approve</button><button class="btn secondary tiny" data-reject="${esc(item.taskId)}">Reject</button>`;
-    if (action.pattern === "retry-open") return `<button class="btn tiny" data-retry-task="${esc(item.taskId)}">Retry</button><button class="btn secondary tiny" ${open}>Open</button>`;
-    return `<button class="btn secondary tiny" ${follow}>Follow</button><button class="btn secondary tiny" ${open}>Open</button>`;
+    if (action.pattern === "retry-open") {
+      const retry = objective
+        ? `data-retry-objective="${esc(item.objectiveId)}"`
+        : `data-retry-task="${esc(item.taskId)}"`;
+      return `<button class="btn tiny" ${retry}>Retry</button>${open}`;
+    }
+    if (objective) return open;
+    return `<button class="btn secondary tiny" data-task-execution="${esc(item.taskId)}">Follow</button>${open}`;
   }
 
+  // Not on the Today page yet: the task-level card is the rendering contract a
+  // follow-up wires in. Covered by factory/test/today-card-content.test.mjs.
   function founderTaskCard(task, now = Date.now()) {
     const item = taskCardInput(task);
     const action = cardActionState(item, now);
@@ -635,7 +642,7 @@ import { buildLiveFloorRows, buildRunningNow } from "/lib/runningNow.mjs";
     const item = objectiveCardInput(o, inbox);
     const action = cardActionState(item);
     const approval = action.pattern === "approve-reject" ? ` data-approval-task="${esc(item.taskId)}" data-approval-statepath="${esc(item.statePath)}"` : "";
-    return `<article class="founder-objective ${compact ? "is-compact" : ""}" data-objective-details="${esc(o.objectiveId)}"${approval}><div class="objective-head"><div><span class="eyebrow">${esc(o.project || "Factory")}</span><h3>${esc(title)}</h3></div><span class="objective-status status-${esc(String(o.statusTone || "info"))}">${esc(o.statusLabel || o.status6 || "In progress")}</span></div><p class="objective-headline">${esc(o.headline || "The team is moving this outcome forward.")}</p><div class="objective-progress"><span style="width:${Math.max(0, Math.min(100, Number(o.progress?.percent) || 0))}%"></span></div><div class="objective-now"><span>NOW</span><strong>${esc(current)}</strong></div><div class="objective-foot"><div><span>${esc(o.progress?.label || "Progress updating")}</span><span class="card-moved">${esc(action.moved)}</span></div><div class="card-actions">${cardActions(action, item)}</div></div></article>`;
+    return `<article class="founder-objective ${compact ? "is-compact" : ""}" data-objective-id="${esc(o.objectiveId)}"${approval}><div class="objective-head"><div><span class="eyebrow">${esc(o.project || "Factory")}</span><h3>${esc(title)}</h3></div><span class="objective-status status-${esc(String(o.statusTone || "info"))}">${esc(o.statusLabel || o.status6 || "In progress")}</span></div><p class="objective-headline">${esc(o.headline || "The team is moving this outcome forward.")}</p><div class="objective-progress"><span style="width:${Math.max(0, Math.min(100, Number(o.progress?.percent) || 0))}%"></span></div><div class="objective-now"><span>NOW</span><strong>${esc(current)}</strong></div><div class="objective-foot"><div><span>${esc(o.progress?.label || "Progress updating")}</span><span class="card-moved">${esc(action.moved)}</span></div><div class="card-actions">${cardActions(action, item)}</div></div></article>`;
   }
 
   function runtimeBanner(runtime) {
@@ -1295,7 +1302,7 @@ import { buildLiveFloorRows, buildRunningNow } from "/lib/runningNow.mjs";
   function bindObjectiveControls(scope) {
     scope.querySelectorAll(".founder-objective").forEach((card) => card.addEventListener("click", (event) => {
       if (event.target.closest("button, a")) return;
-      openExecutionView(card.dataset.objectiveDetails);
+      openExecutionView(card.dataset.objectiveId);
     }));
     scope.querySelectorAll("[data-report-task]").forEach((btn) => btn.onclick = () => openReportDrilldown("task", btn.dataset.reportTask));
     scope.querySelectorAll("[data-task-execution]").forEach((btn) => btn.onclick = () => openTaskExecutionView(btn.dataset.taskExecution));

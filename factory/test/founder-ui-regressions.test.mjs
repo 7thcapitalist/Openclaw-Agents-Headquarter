@@ -62,7 +62,7 @@ test("execution view leads with the task title, not the raw prompt", () => {
 test("the Founder Inbox renders founder-translated cards, not raw factory items", () => {
   assert.match(app, /import \{ renderFounderInboxCard, renderFounderInboxEmpty \} from "\/lib\/founderInbox\.mjs";/);
   assert.match(app, /renderFounderInboxCard\(x, \{ esc \}\)/);
-  assert.match(app, /function renderNeedsYou\(inbox, dismissedInbox = \[\], inboxActionable = 0\)/);
+  assert.match(app, /function renderNeedsYou\(inbox, dismissedInbox = \[\], inboxActionable = 0(, diagnostics = \[\])?\)/);
   assert.match(app, /\$\{renderNeedsYou\(inbox, dismissedInbox, inboxActionable\)\}/);
   // The old operator cards (raw question text + option list + state paths as the
   // primary content) must not come back.
