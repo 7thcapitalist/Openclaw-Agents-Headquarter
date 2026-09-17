@@ -90,3 +90,15 @@ test("objective recovery UI: failed request restores the retry button", async ()
   assert.equal(btn.textContent, "Retry recoverable work");
   assert.deepEqual(notices, [["Recovery already in progress", true]]);
 });
+
+test("objective recovery UI: a failed request restores the label the button was rendered with", async () => {
+  const btn = { disabled: false, textContent: "Retry", dataset: { retryObjective: "obj-aabbccdd-demo" } };
+  bindObjectiveRecovery({ querySelectorAll: () => [btn] }, {
+    request: async () => { throw new Error("Nothing to recover"); },
+    notify: () => {},
+    refresh: () => assert.fail("must not refresh after a failed request"),
+  });
+
+  await btn.onclick();
+  assert.equal(btn.textContent, "Retry");
+});

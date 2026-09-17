@@ -25,6 +25,9 @@ export function bindObjectiveRecovery(root, {
   schedule = setTimeout,
 }) {
   for (const btn of root.querySelectorAll("[data-retry-objective]")) {
+    // Restore whatever label the button was rendered with — the Today card
+    // says "Retry", the details modal "Retry recoverable work".
+    const label = btn.textContent;
     btn.onclick = async () => {
       btn.disabled = true;
       btn.textContent = "Recovering…";
@@ -36,7 +39,7 @@ export function bindObjectiveRecovery(root, {
       } catch (error) {
         notify(error.message, true);
         btn.disabled = false;
-        btn.textContent = "Retry recoverable work";
+        btn.textContent = label;
       }
     };
   }
