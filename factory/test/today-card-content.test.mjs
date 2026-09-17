@@ -43,8 +43,9 @@ function objectiveCardRenderer() {
     "esc",
     "fmtDuration",
     "objectiveView",
+    "objectiveRecovery",
     `${functionSource("cardActionState")}\n${functionSource("objectiveCardInput")}\n${functionSource("cardActions")}\n${functionSource("founderObjectiveCard")}\nreturn founderObjectiveCard;`,
-  )(esc, (milliseconds) => `${Math.floor(milliseconds / 60_000)}m`, { shortObjectiveTitle: (title) => title });
+  )(esc, (milliseconds) => `${Math.floor(milliseconds / 60_000)}m`, { shortObjectiveTitle: (title) => title }, { isObjectiveRecoverable: (o) => (o?.recovery?.count || 0) > 0 });
 }
 
 // Every attribute bindObjectiveControls / the Today binders give a plain
@@ -85,13 +86,36 @@ test("an objective card's actions are buttons, never the card itself", () => {
   }
 });
 
+test("an objective with a pending approval offers Approve and Reject, even behind a question", () => {
+  const inbox = [
+    { objectiveId: "obj-1234abcd", taskId: "obj-1234abcd-planner", kind: "question" },
+    { objectiveId: "obj-1234abcd", taskId: "obj-1234abcd-builder", kind: "approval", statePath: "/tmp/s.json" },
+  ];
+  const html = objectiveCardRenderer()(objective({ status6: "WAITING_FOR_FOUNDER" }), false, inbox);
+  assert.match(html, /data-approval-task="obj-1234abcd-builder" data-approval-statepath="\/tmp\/s\.json"/);
+  assert.match(html, /<button class="btn tiny" data-approve="obj-1234abcd-builder">Approve<\/button>/);
+  assert.match(html, /<button class="btn secondary tiny" data-reject="obj-1234abcd-builder">Reject<\/button>/);
+});
+
+test("a finished objective says why there is nothing to do instead of rendering buttons", () => {
+  const html = objectiveCardRenderer()(objective({ status6: "COMPLETE" }), true);
+  assert.match(html, /Done — no action needed\./);
+  assert.doesNotMatch(html, /<button\b/);
+});
+
+test("a blocked objective with nothing recoverable offers Open, not a Retry that would 409", () => {
+  const html = objectiveCardRenderer()(objective({ status6: "BLOCKED", recovery: { count: 0 } }));
+  assert.doesNotMatch(html, /data-retry-/);
+  assert.match(html, /data-objective-execution="obj-1234abcd">Open</);
+});
+
 test("the guarded card listener, not an onclick, opens an objective", () => {
   const bind = functionSource("bindObjectiveControls");
   assert.match(bind, /querySelectorAll\("\.founder-objective"\)[\s\S]*?event\.target\.closest\("button, a"\)[\s\S]*?openExecutionView\(card\.dataset\.objectiveId\)/);
 });
 
 test("Retry on a blocked objective retries the objective, not one of its tasks", () => {
-  const html = objectiveCardRenderer()(objective({ status6: "BLOCKED", blockedOn: null, nodes: { a: { id: "obj-1234abcd-a", status: "pending" } } }));
+  const html = objectiveCardRenderer()(objective({ status6: "BLOCKED", blockedOn: null, recovery: { count: 1 }, nodes: { a: { id: "obj-1234abcd-a", status: "pending" } } }));
   assert.match(html, /<button class="btn tiny" data-retry-objective="obj-1234abcd">Retry<\/button>/);
   assert.doesNotMatch(html, /data-retry-task/);
 });
@@ -106,10 +130,11 @@ test("a diagnostic card names the objective it came from, not a fixed id", () =>
   const html = needsYouRenderer()([], [], 0, [{ kind: "divergence", taskId: "obj-9999ffff-builder", objectiveId: "obj-9999ffff" }]);
   assert.match(html, /data-diagnostic-source="obj-9999ffff"/);
   assert.doesNotMatch(html, /obj-c58897c0|obj-c7b263bb/);
+  assert.match(html, /data-retry-objective="obj-9999ffff">Retry</, "a diagnostic retry goes through the objective, not one task");
   assert.equal(nonButtonClickTargets(html).length, 0);
 });
 
-test("Needs You renders divergence and changed-nothing diagnostics with task actions", () => {
+test("Needs You renders divergence and changed-nothing diagnostics with objective retry and task follow", () => {
   const renderNeedsYou = needsYouRenderer();
   const html = renderNeedsYou([], [], 0, [
     { kind: "divergence", taskId: "obj-c58897c0-builder", objectiveId: "obj-c58897c0", project: "HQ" },
@@ -118,11 +143,13 @@ test("Needs You renders divergence and changed-nothing diagnostics with task act
 
   assert.match(html, /This objective says it is running\. Nothing is actually running\./);
   assert.match(html, /Eight runs in a row changed nothing\./);
-  for (const taskId of ["obj-c58897c0-builder", "obj-c7b263bb-builder"]) {
+  for (const objectiveId of ["obj-c58897c0", "obj-c7b263bb"]) {
+    const taskId = `${objectiveId}-builder`;
     assert.match(html, new RegExp(`Task <code>${taskId}</code>`));
-    assert.match(html, new RegExp(`data-retry-task="${taskId}"`));
+    assert.match(html, new RegExp(`data-retry-objective="${objectiveId}"`));
     assert.match(html, new RegExp(`data-task-execution="${taskId}"`));
   }
+  assert.doesNotMatch(html, /data-retry-task/);
 });
 
 test("Needs You preserves the existing all-caught-up line without findings", () => {

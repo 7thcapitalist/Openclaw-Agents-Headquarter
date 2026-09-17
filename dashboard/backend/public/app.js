@@ -526,7 +526,7 @@ import { buildLiveFloorRows, buildRunningNow } from "/lib/runningNow.mjs";
       <div class="fi-type">${type}</div>
       <h3 class="fi-title">${esc(copy)}</h3>
       <p class="fi-subject">Task <code>${esc(finding.taskId)}</code>${finding.project ? ` · ${esc(finding.project)}` : ""}</p>
-      <div class="fi-actions"><button class="btn" data-retry-task="${esc(finding.taskId)}">Retry</button><button class="btn secondary" data-task-execution="${esc(finding.taskId)}">Open</button></div>
+      <div class="fi-actions"><button class="btn" ${finding.objectiveId ? `data-retry-objective="${esc(finding.objectiveId)}"` : `data-retry-task="${esc(finding.taskId)}"`}>Retry</button><button class="btn secondary" data-task-execution="${esc(finding.taskId)}">Open</button></div>
     </article></div>`;
   }
 
@@ -574,7 +574,9 @@ import { buildLiveFloorRows, buildRunningNow } from "/lib/runningNow.mjs";
     if (["decision", "post-task-decision", "question"].includes(item.inboxKind)) return { moved, pattern: "follow-open" };
     if (["COMPLETE", "COMPLETED", "MERGE-READY", "MERGED"].includes(status)) return { moved, pattern: "reason", reason: "Done — no action needed." };
     if (status === "CANCELLED" || status === "CANCELED") return { moved, pattern: "reason", reason: "Cancelled by you — no action needed." };
-    if (["BLOCKED", "FAILED", "RECOVERING"].includes(status)) return { moved, pattern: "retry-open" };
+    // An objective only offers Retry when the recovery route has something to
+    // resume; otherwise every click would answer 409.
+    if (["BLOCKED", "FAILED", "RECOVERING"].includes(status) && (item.itemKind !== "objective" || item.retryable)) return { moved, pattern: "retry-open" };
     return { moved, pattern: "follow-open" };
   }
 
@@ -592,10 +594,14 @@ import { buildLiveFloorRows, buildRunningNow } from "/lib/runningNow.mjs";
   }
 
   function objectiveCardInput(objective, inbox = []) {
-    const related = inbox.find((item) => item.objectiveId === objective.objectiveId);
+    // An approval is the one item the card can act on directly, so it wins
+    // over a question or decision filed for the same objective.
+    const mine = inbox.filter((item) => item.objectiveId === objective.objectiveId);
+    const related = mine.find((item) => item.kind === "approval") || mine[0];
     return {
       itemKind: "objective",
       objectiveId: objective.objectiveId,
+      retryable: objectiveRecovery.isObjectiveRecoverable(objective),
       taskId: related?.taskId,
       updatedAt: objective.updatedAt,
       status6: objective.status6,
