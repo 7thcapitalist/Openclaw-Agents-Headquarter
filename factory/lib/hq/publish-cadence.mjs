@@ -30,6 +30,24 @@ export const VOLATILE_KEYS = Object.freeze(new Set([
   "recordedAt",
   "elapsedMs",
   "sinceLastActivityMs",
+  // Free disk space, to the byte. Every log line the machine writes moves it,
+  // so it differed between every two snapshots and silently turned
+  // publish-on-change back into publish-always: on 2026-09-16/17, with the
+  // factory completely idle, the publisher wrote ~80 "changed" snapshots an
+  // hour (~1,900/day) and never once skipped. It was the only leaf that
+  // differed between two idle builds 20s apart.
+  //
+  // Dropping it loses nothing a viewer can see. The same check carries
+  // `detail` ("409 GiB free of 915 GiB", whole-GiB), `freePercent` (0.1%
+  // steps) and `status` (ok/warn/fail), and all three still count — so a disk
+  // that is genuinely filling still publishes immediately.
+  "freeBytes",
+  // How long each pm2 service has been up, in milliseconds. An age counter like
+  // `elapsedMs`, and the second leaf that kept an idle snapshot "changed" once
+  // the disk was fixed: readiness refreshes it about once a minute. A restart
+  // is still visible to the fingerprint through `restarts`, `state` and
+  // `startedAt`, none of which move while a service simply stays up.
+  "uptimeMs",
 ]));
 
 // Canonical JSON: keys sorted at every level, volatile keys removed, so two

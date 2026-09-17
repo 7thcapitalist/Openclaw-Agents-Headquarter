@@ -195,12 +195,16 @@ export async function checkServices({ exec = execFileAsync, expected = EXPECTED_
   const byName = new Map(list.map((entry) => [entry?.name, entry]));
   const services = expected.map((name) => {
     const entry = byName.get(name);
-    if (!entry) return { name, state: "missing", restarts: null, uptimeMs: null };
+    if (!entry) return { name, state: "missing", restarts: null, uptimeMs: null, startedAt: null };
     return {
       name,
       state: entry.pm2_env?.status || "unknown",
       restarts: Number(entry.pm2_env?.restart_time ?? 0),
       uptimeMs: entry.pm2_env?.pm_uptime ? Math.max(0, Date.now() - entry.pm2_env.pm_uptime) : null,
+      // The moment it started. Changes only on a restart, so a viewer can derive
+      // uptime from it and a publish-on-change fingerprint still sees restarts —
+      // which `uptimeMs`, growing every second, cannot be allowed to decide.
+      startedAt: entry.pm2_env?.pm_uptime ? new Date(entry.pm2_env.pm_uptime).toISOString() : null,
     };
   });
   const down = services.filter((service) => service.state !== "online");
