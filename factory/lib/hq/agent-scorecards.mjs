@@ -20,6 +20,7 @@ import { basename, dirname, join, resolve } from "path";
 import { readCostEvents, summarizeCostLedger } from "./cost-ledger.mjs";
 import { loadPricing, priceUsage } from "./cost.mjs";
 import { defaultStateRoot } from "./tasks.mjs";
+import { median } from "./statistics.mjs";
 
 // Below this many accepted-or-rejected outcomes, a rate is noise. The number is
 // reported either way; `confidence` is what stops a founder acting on 1/1.
@@ -218,13 +219,6 @@ function durationMs(dispatch) {
   const start = Date.parse(dispatch.startedAt || dispatch.createdAt || "");
   const end = Date.parse(dispatch.completedAt || "");
   return Number.isFinite(start) && Number.isFinite(end) && end >= start ? end - start : null;
-}
-
-function median(values) {
-  if (!values.length) return null;
-  const sorted = [...values].sort((a, b) => a - b);
-  const middle = Math.floor(sorted.length / 2);
-  return sorted.length % 2 ? sorted[middle] : Math.round((sorted[middle - 1] + sorted[middle]) / 2);
 }
 
 function round(value) {
