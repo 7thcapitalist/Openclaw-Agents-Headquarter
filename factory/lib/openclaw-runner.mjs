@@ -484,7 +484,9 @@ export function recordRunnerCrash({ statePath, error, now = new Date().toISOStri
         if (!state) return undefined;
         if (state.status === "blocked") return undefined;
         // A task that already finished is never re-opened by a late throw.
-        if (state.status === "merge-ready" || state.status === "verified") return undefined;
+        // `complete` is here because the merge reconciler settles a finished
+        // task with no pull request into it; it is as terminal as the others.
+        if (["merge-ready", "verified", "complete"].includes(state.status)) return undefined;
         settled = true;
         const next = structuredClone(state);
         const stage = state.blocker?.stage || state.currentDispatch?.stage || state.currentStage || null;

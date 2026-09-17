@@ -1996,7 +1996,9 @@ if (process.env.HQ_AUTO_RETRY !== "0") {
 // request on GitHub. Without this the task never learns, stays `merge-ready`
 // forever, and the founder's view of the company fills up with work that
 // shipped days ago. The sweep only reads GitHub and only settles tasks that
-// are already finished — it merges nothing and advances no stage.
+// are already finished — it merges nothing and advances no stage. It also
+// settles the finished tasks that can never have a pull request at all
+// (objective build nodes, analysis tasks), which otherwise accumulate.
 if (process.env.HQ_MERGE_RECONCILE !== "0") {
   const FACTORY_STATE_ROOT = join(ROOT, "dashboard", "backend", "data", "factory");
   const intervalMs = Math.max(60_000, Number(process.env.HQ_MERGE_RECONCILE_INTERVAL_MS) || 300_000);
@@ -2006,7 +2008,12 @@ if (process.env.HQ_MERGE_RECONCILE !== "0") {
     reconciling = true;
     try {
       const out = await reconcileMergedTasks({ stateRoot: FACTORY_STATE_ROOT, log: (m) => console.log(m) });
-      if (out.merged.length) console.log(`[merge-reconcile] settled ${out.merged.length} merged task(s) of ${out.scanned} state files`);
+      if (out.merged.length || out.settled.length) {
+        const parts = [];
+        if (out.merged.length) parts.push(`${out.merged.length} merged`);
+        if (out.settled.length) parts.push(`${out.settled.length} delivered without a PR`);
+        console.log(`[merge-reconcile] settled ${parts.join(" and ")} task(s) of ${out.scanned} state files`);
+      }
     } catch (error) {
       console.error("[merge-reconcile] sweep failed:", error?.message || error);
     } finally {

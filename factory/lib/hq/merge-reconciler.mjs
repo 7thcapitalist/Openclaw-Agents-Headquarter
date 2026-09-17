@@ -13,6 +13,14 @@
 // never touches a task that is not already finished, and the only field it
 // decides is the one GitHub is authoritative for.
 //
+// Some finished tasks can never have a pull request: a build node of an
+// objective is carried by the integration branch, and an analysis task changes
+// no files. Asking GitHub about them is meaningless, so they were skipped —
+// and skipping is forever. They sat on the board as "Ready to merge" for
+// 238-256 hours, and since every objective produces build nodes, the board
+// could only fill up. `merge-ready` -> `complete` is the other half of the
+// loop: see deliveredWithoutPullRequest for what does and does not qualify.
+//
 // Node builtins only.
 
 import { execFile } from "node:child_process";
@@ -69,6 +77,64 @@ export function pullRequestRef(state) {
   if (ownerRepo !== match[1]) return null;
   return { ownerRepo, number: Number(match[2]), url };
 }
+
+/**
+ * Why a finished task legitimately carries no pull request — or null when the
+ * absence is unexplained and the task must be left alone.
+ *
+ * `merge-ready` means all seven gates passed and the release stage ran. Most
+ * such tasks carry a pull request and this reconciler settles them against
+ * GitHub. Some never can, by design:
+ *
+ *   * a build node of an objective — its commits are carried by the
+ *     integration branch, which opens the one pull request for the whole
+ *     objective. Every objective the factory runs produces N of these.
+ *   * a task that changed no files — an analysis or advisory task. There is
+ *     no diff, so there is nothing to open a pull request for.
+ *
+ * Both are finished work. Left unsettled they sit on the founder's board as
+ * "Ready to merge" forever, waiting for a merge that can never happen: on
+ * 2026-09-17 four tasks had been doing so for 238-256 hours, and because the
+ * first class recurs on every objective, the board could only get worse.
+ *
+ * What this deliberately does NOT cover is a publish that was attempted and
+ * failed — `published: true` with no URL, or a `gh pr create failed:` reason.
+ * That work did not land, and settling it would hide exactly the failure the
+ * founder needs to see. Anything not positively recognised here stays put.
+ *
+ * @param {object} state task state
+ * @returns {string|null} the reason, phrased for the event record
+ */
+export function deliveredWithoutPullRequest(state) {
+  const publish = state?.githubPublish;
+  // Nothing recorded at all: the release stage never said what happened, so
+  // there is no evidence either way. Not ours to settle.
+  if (!publish) return null;
+  // A publish that ran is answerable by GitHub, and pullRequestRef has already
+  // failed to find a URL by the time we are called. That is a failure to
+  // publish, not a delivery without one.
+  if (publish.published) return null;
+  const reason = String(publish.reason || "");
+  for (const { test: pattern, detail } of DELIVERED_WITHOUT_PR) {
+    if (pattern.test(reason)) return detail;
+  }
+  return null;
+}
+
+// The reasons publishAndRecord writes when it correctly declines to open a
+// pull request. Matched against the recorded reason rather than inferred from
+// the task's shape, so only a reason the factory itself wrote can settle a
+// task, and an unrecognised one is always left alone.
+const DELIVERED_WITHOUT_PR = Object.freeze([
+  {
+    pattern: /^objective build node\b/i,
+    detail: "delivered via the objective's integration branch",
+  },
+  {
+    pattern: /^no changes to publish\b/i,
+    detail: "the task changed no files, so there was nothing to merge",
+  },
+].map(({ pattern, detail }) => ({ test: pattern, detail })));
 
 /**
  * Ask GitHub what happened to one pull request. Default implementation; tests
@@ -141,6 +207,45 @@ function recordMerge(statePath, lookup, at) {
 }
 
 /**
+ * Settle one finished task that was delivered without a pull request.
+ *
+ * Same discipline as recordMerge: re-reads inside the transaction, so a task
+ * that moved while the sweep was elsewhere is left exactly as it moved. The
+ * status is `complete` and not `merged` — `merged` asserts a pull request was
+ * merged, and none was. `complete` already reads as "Done" in the founder's
+ * vocabulary (control-plane/public/stage-vocabulary.mjs), so this needs no
+ * change on either console.
+ */
+function recordDelivered(statePath, detail, at) {
+  return mutateTransactionalState(statePath, {
+    // Stable key: re-running the sweep must not append a second event.
+    commandId: `merge-reconcile:delivered:${statePath}`,
+    toResponse: (state) => ({ status: state?.status ?? null }),
+    mutate: (state) => {
+      if (state.status !== ELIGIBLE_STATUS) return state;
+      const next = structuredClone(state);
+      next.status = "complete";
+      next.githubPublish = {
+        ...(next.githubPublish || {}),
+        // Not `merged` — nothing was merged. This records that the delivery
+        // question has been answered and needs no pull request.
+        deliveredWithoutPullRequest: true,
+        settledAt: at,
+      };
+      next.updatedAt = at;
+      next.events.push({
+        at,
+        type: "delivered-without-pr",
+        stage: "release",
+        actor: "system",
+        detail,
+      });
+      return next;
+    },
+  });
+}
+
+/**
  * Scan the factory state tree and settle every finished task whose pull request
  * GitHub says is merged.
  *
@@ -153,7 +258,7 @@ function recordMerge(statePath, lookup, at) {
  * @param {Function} [input.lookup]    injected PR lookup (tests)
  * @param {Function} [input.now]
  * @param {Function} [input.log]
- * @returns {Promise<{scanned:number, merged:Array, pending:Array, skipped:Array}>}
+ * @returns {Promise<{scanned:number, merged:Array, settled:Array, pending:Array, skipped:Array}>}
  */
 export async function reconcileMergedTasks({
   stateRoot,
@@ -163,6 +268,7 @@ export async function reconcileMergedTasks({
 }) {
   const files = existsSync(stateRoot) ? walkStateFiles(stateRoot) : [];
   const merged = [];
+  const settled = [];
   const pending = [];
   const skipped = [];
   const cache = new Map();
@@ -174,9 +280,27 @@ export async function reconcileMergedTasks({
 
     const ref = pullRequestRef(state);
     if (!ref) {
-      // A finished task with no pull request was delivered some other way (a
-      // demo run, a local-only project). There is nothing to reconcile against.
-      skipped.push({ taskId: state.task?.id, statePath, reason: "no pull request recorded" });
+      // A finished task with no pull request. When the release stage recorded
+      // why — a build node carried by the integration branch, or a task with
+      // no diff — that is a delivery, and this is the only thing that will
+      // ever settle it. Anything else (including a failed publish) is left.
+      const delivered = deliveredWithoutPullRequest(state);
+      if (!delivered) {
+        skipped.push({ taskId: state.task?.id, statePath, reason: "no pull request recorded" });
+        continue;
+      }
+      const at = now();
+      try {
+        const next = recordDelivered(statePath, delivered, at);
+        if (next.status !== "complete") {
+          skipped.push({ taskId: state.task?.id, statePath, reason: `moved to ${next.status} during the sweep` });
+          continue;
+        }
+        settled.push({ taskId: state.task?.id, statePath, reason: delivered });
+        log(`[merge-reconcile] ${state.task?.id}: ${delivered}, task settled`);
+      } catch (error) {
+        skipped.push({ taskId: state.task?.id, statePath, reason: `could not settle: ${error?.message || error}` });
+      }
       continue;
     }
 
@@ -210,5 +334,5 @@ export async function reconcileMergedTasks({
     }
   }
 
-  return { scanned: files.length, merged, pending, skipped };
+  return { scanned: files.length, merged, settled, pending, skipped };
 }

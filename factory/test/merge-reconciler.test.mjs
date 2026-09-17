@@ -11,7 +11,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { recoverExistingPrUrl } from "../lib/hq/github-publish.mjs";
-import { pullRequestRef, reconcileMergedTasks } from "../lib/hq/merge-reconciler.mjs";
+import { deliveredWithoutPullRequest, pullRequestRef, reconcileMergedTasks } from "../lib/hq/merge-reconciler.mjs";
 import { createState, writeState } from "../lib/task-workflow.mjs";
 
 const MERGED = { merged: true, state: "MERGED", mergedAt: "2026-09-12T06:40:00.000Z", mergeCommitSha: "abc123" };
@@ -195,7 +195,7 @@ test("one unreadable state file never stops the sweep", async () => {
 test("a missing state root is an empty sweep, not a crash", async () => {
   const { root } = fixture();
   const out = await reconcileMergedTasks({ stateRoot: join(root, "nothing-here"), lookup: async () => MERGED });
-  assert.deepEqual(out, { scanned: 0, merged: [], pending: [], skipped: [] });
+  assert.deepEqual(out, { scanned: 0, merged: [], settled: [], pending: [], skipped: [] });
 });
 
 // `gh pr create` refuses when the branch already has a pull request and names
@@ -237,4 +237,95 @@ test("a task whose pull request survived only in the failure reason is still rec
 
   assert.equal(out.merged.length, 1);
   assert.equal(read(statePath).status, "merged");
+});
+
+// ── Finished work that can never have a pull request ────────────────────────
+// The other half of the delivery loop. A build node is carried by the
+// objective's integration branch and an analysis task changes no files, so
+// GitHub has nothing to say about either. Skipping them is forever, and the
+// first kind recurs on every objective the factory runs.
+
+const BUILD_NODE = { published: false, reason: "objective build node — delivered via the integration branch" };
+const NO_DIFF = { published: false, pushed: false, ownerRepo: "acme/widget", reason: "no changes to publish (task branch is not ahead of its base)" };
+
+test("deliveredWithoutPullRequest recognises the reasons the factory itself writes", () => {
+  assert.equal(deliveredWithoutPullRequest({ githubPublish: BUILD_NODE }), "delivered via the objective's integration branch");
+  assert.equal(
+    deliveredWithoutPullRequest({ githubPublish: NO_DIFF }),
+    "the task changed no files, so there was nothing to merge",
+  );
+});
+
+test("deliveredWithoutPullRequest refuses anything that is not positively a delivery", () => {
+  // Nothing recorded: no evidence either way.
+  assert.equal(deliveredWithoutPullRequest({}), null);
+  assert.equal(deliveredWithoutPullRequest({ githubPublish: null }), null);
+  // A publish that ran. GitHub is authoritative for these, and a missing URL
+  // is a failure to publish — settling it would hide work that did not land.
+  assert.equal(deliveredWithoutPullRequest({ githubPublish: { published: true, prUrl: null } }), null);
+  assert.equal(deliveredWithoutPullRequest({
+    githubPublish: { published: true, pushed: true, prUrl: null, reason: "gh pr create failed: GraphQL: Could not resolve to a Repository" },
+  }), null);
+  // An unrecognised reason is left alone rather than guessed at.
+  assert.equal(deliveredWithoutPullRequest({ githubPublish: { published: false, reason: "something new" } }), null);
+  assert.equal(deliveredWithoutPullRequest({ githubPublish: { published: false } }), null);
+});
+
+test("a build node and an analysis task are settled complete, not merged", async () => {
+  const { repo, stateRoot } = fixture();
+  const node = writeTask({ stateRoot, repo, id: "obj-a1b2c3d4-add-greet", githubPublish: BUILD_NODE });
+  const analysis = writeTask({ stateRoot, repo, id: "task-analysis", githubPublish: NO_DIFF });
+
+  const out = await reconcileMergedTasks({
+    stateRoot,
+    lookup: async () => { throw new Error("GitHub must not be asked about a task with no pull request"); },
+  });
+
+  assert.equal(out.settled.length, 2);
+  assert.equal(out.merged.length, 0);
+  for (const path of [node, analysis]) {
+    const state = read(path);
+    assert.equal(state.status, "complete");
+    // Never `merged`: nothing was merged, and the claim would be false.
+    assert.notEqual(state.status, "merged");
+    assert.equal(state.githubPublish.deliveredWithoutPullRequest, true);
+    assert.equal(state.githubPublish.merged, undefined);
+    assert.equal(state.events.at(-1).type, "delivered-without-pr");
+  }
+});
+
+test("a failed publish is left on the board, not settled away", async () => {
+  const { repo, stateRoot } = fixture();
+  // Exactly the shape of demo/obj-af76143f-integration on 2026-09-17: pushed,
+  // but `gh pr create` could not resolve the repository. The work did not land.
+  const path = writeTask({
+    stateRoot, repo, id: "obj-failed-publish",
+    githubPublish: { published: true, pushed: true, prUrl: null, ownerRepo: "ghost/repo", reason: "gh pr create failed: GraphQL: Could not resolve to a Repository with the name 'ghost/repo'. (repository)" },
+  });
+
+  const out = await reconcileMergedTasks({ stateRoot, lookup: async () => null });
+
+  assert.equal(out.settled.length, 0);
+  assert.equal(read(path).status, "merge-ready");
+  assert.ok(out.skipped.some((s) => s.taskId === "obj-failed-publish"));
+});
+
+test("settling is idempotent and never touches live work", async () => {
+  const { repo, stateRoot } = fixture();
+  const node = writeTask({ stateRoot, repo, id: "obj-a1b2c3d4-add-greet", githubPublish: BUILD_NODE });
+  // A build node still being built: same reason, but not finished.
+  const active = writeTask({ stateRoot, repo, id: "obj-a1b2c3d4-add-version", status: "active", githubPublish: BUILD_NODE });
+
+  const first = await reconcileMergedTasks({ stateRoot, lookup: async () => null });
+  assert.equal(first.settled.length, 1);
+  const afterFirst = read(node);
+
+  const second = await reconcileMergedTasks({ stateRoot, lookup: async () => null });
+  assert.equal(second.settled.length, 0, "a settled task is not settled twice");
+
+  const afterSecond = read(node);
+  assert.equal(afterSecond.events.filter((e) => e.type === "delivered-without-pr").length, 1);
+  assert.equal(afterSecond.updatedAt, afterFirst.updatedAt);
+  // Live work is untouched whatever its publish record says.
+  assert.equal(read(active).status, "active");
 });
