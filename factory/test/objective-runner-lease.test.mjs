@@ -170,3 +170,44 @@ test("running such an objective never redoes the superseded integration", async 
   assert.equal(result.status, "complete");
   assert.equal(readObjState(path).integration.status, "skipped");
 });
+
+// ── the timer must not become a spend loop ───────────────────────────────────
+
+test("the periodic sweep leaves ready work alone unless its runner is proven dead", async () => {
+  // An objective that finished blocked can still show a `pending` node the
+  // scheduler calls ready. Boot takes it once; a ten-minute timer taking it
+  // would re-dispatch a failing objective forever.
+  const dir = root();
+  objective(dir, "obj-p", { status: "blocked", nodes: { a: { id: "a", status: "pending", dependsOn: [] } } });
+  const started = [];
+  const out = await resumeStrandedObjectives({ hqRoot: null, stateRoot: dir, mode: "periodic", history: new Map(), runObjective: async (a) => { started.push(a); } });
+  assert.equal(started.length, 0);
+  assert.match(out.skipped[0].reason, /left for boot/);
+});
+
+test("the periodic sweep resumes a dead runner's objective, but only a bounded number of times", async () => {
+  const dir = root();
+  const history = new Map();
+  const deadRunner = { pid: DEAD_PID, processStart: "1", instance: "gone", host: hostname() };
+  const path = objective(dir, "obj-q", { nodes: { a: { id: "a", status: "pending", dependsOn: [] } }, runner: deadRunner });
+  const started = [];
+  for (let i = 0; i < 5; i += 1) {
+    await resumeStrandedObjectives({ hqRoot: null, stateRoot: dir, mode: "periodic", history, maxPeriodicResumes: 3, runObjective: async (a) => { started.push(a); } });
+  }
+  assert.equal(started.length, 3, "a failing objective must not be re-dispatched every ten minutes forever");
+  assert.equal(history.get(path), 3);
+});
+
+test("settling reads before it writes, so an ordinary objective costs no transaction", async () => {
+  const { settleSupersededObjective } = await import("../lib/objective/orchestrator.mjs");
+  const { statSync } = await import("node:fs");
+  const dir = root();
+  const path = objective(dir, "obj-r", { nodes: { a: { id: "a", status: "running", dependsOn: [] } } });
+  readObjState(path); // let the store settle into its steady form
+  const store = (p) => ["", ".sqlite", "-wal"].map((suffix) => { try { return statSync(p.replace(/objective-state\.json$/, `state${suffix}`)).mtimeMs; } catch { return null; } });
+  const jsonBefore = statSync(path).mtimeMs;
+  const storeBefore = store(path);
+  assert.equal(settleSupersededObjective(path), false);
+  assert.equal(statSync(path).mtimeMs, jsonBefore, "nothing to settle must write nothing");
+  assert.deepEqual(store(path), storeBefore);
+});

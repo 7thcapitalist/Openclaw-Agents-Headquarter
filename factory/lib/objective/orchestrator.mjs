@@ -94,15 +94,24 @@ export const INTEGRATION_SKIPPED = "skipped";
  * "active" forever. Returns true when it settled something.
  */
 export function settleSupersededObjective(objectivePath, { now = () => new Date().toISOString() } = {}) {
+  // Read before writing. The reconciler calls this for every objective on
+  // every sweep, and a sweep now repeats every ten minutes; opening a write
+  // transaction each time to discover there is nothing to settle is exactly
+  // the idle write amplification the publisher was just cured of.
+  if (!isSupersededButActive(readObjState(objectivePath))) return false;
   let settled = false;
   mutate(objectivePath, (s) => {
-    if (s.status !== "active" || s.integration?.status !== INTEGRATION_SKIPPED || !buildNodesComplete(s)) return;
+    if (!isSupersededButActive(s)) return;
     const at = now();
     s.status = "complete";
     s.events.push({ at, type: "objective-finished", detail: "complete", reason: "all build nodes passed; integration superseded" });
     settled = true;
   });
   return settled;
+}
+
+function isSupersededButActive(s) {
+  return s?.status === "active" && s.integration?.status === INTEGRATION_SKIPPED && buildNodesComplete(s);
 }
 
 // The one write primitive every node/integration step in this file uses,

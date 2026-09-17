@@ -1916,7 +1916,7 @@ app.listen(PORT, HOST, () => {
 // Every unfinished objective it leaves alone is now logged with the reason.
 //
 // Disable with HQ_RESUME_OBJECTIVES=0.
-const QUIET_SKIP = /^objective is (cancelled|complete|completed|superseded)$|^no node is ready to run$|^run in progress/;
+const QUIET_SKIP = /^objective is (cancelled|complete|completed|superseded)$|^no node is ready to run$|^run in progress|^left for boot/;
 
 function resumeStrandedObjectivesSweep(when) {
   const stateRoot = join(ROOT, "dashboard", "backend", "data", "factory");
@@ -1924,6 +1924,7 @@ function resumeStrandedObjectivesSweep(when) {
     hqRoot: ROOT,
     stateRoot,
     runObjective,
+    mode: when === "boot" ? "boot" : "periodic",
     max: Math.max(1, Number(process.env.HQ_RESUME_OBJECTIVES_MAX) || 10),
     log: (message) => console.log(message),
   })
