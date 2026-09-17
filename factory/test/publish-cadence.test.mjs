@@ -15,6 +15,7 @@ import {
   shouldPublish,
   snapshotFingerprint,
 } from "../lib/hq/publish-cadence.mjs";
+import { checkDisk } from "../lib/hq/readiness.mjs";
 
 function snap(overrides = {}) {
   return {
@@ -109,4 +110,51 @@ test("a failure run gets reported, with how long it has been going on", () => {
   assert.equal(failureAlert({ failureStreak: 7, firstFailureAtMs: first, now: first }), null);
   assert.ok(failureAlert({ failureStreak: 10, firstFailureAtMs: first, now: first }));
   assert.ok(failureAlert({ failureStreak: 1350, firstFailureAtMs: first, now: first }));
+});
+
+// ── an idle machine must not publish ────────────────────────────────────────
+//
+// `freeBytes` moved by a few kilobytes between every two snapshots — log lines
+// being written — and made every idle build look changed. ~1,900 writes a day
+// with nothing happening, the same amplification that got the blob store
+// suspended on 2026-09-14.
+
+
+const withDisk = (disk) => ({ panels: { readiness: { checks: { disk } } } });
+
+test("a few kilobytes of log output does not count as a change", () => {
+  const base = { status: "ok", totalBytes: 982_000_000_000, freePercent: 44.7, detail: "409 GiB free of 915 GiB" };
+  const a = snapshotFingerprint(withDisk({ ...base, freeBytes: 438_872_150_016 }));
+  const b = snapshotFingerprint(withDisk({ ...base, freeBytes: 438_872_064_000 }));
+  assert.equal(a, b, "byte-level free space must not defeat publish-on-change");
+  assert.equal(shouldPublish({ fingerprint: b, lastFingerprint: a, lastPublishedAtMs: 0, now: 1_000 }).publish, false);
+});
+
+test("a disk that is actually filling still publishes at once", () => {
+  const before = { status: "ok", totalBytes: 982e9, freeBytes: 439e9, freePercent: 44.7, detail: "409 GiB free of 915 GiB" };
+  const lessSpace = { ...before, freeBytes: 437e9, freePercent: 44.5, detail: "407 GiB free of 915 GiB" };
+  const warning = { ...before, status: "warn" };
+  for (const after of [lessSpace, warning]) {
+    assert.notEqual(snapshotFingerprint(withDisk(before)), snapshotFingerprint(withDisk(after)));
+  }
+});
+
+test("the real disk check still reports the byte count it no longer publishes on", () => {
+  const disk = checkDisk(process.cwd());
+  assert.equal(typeof disk.freeBytes, "number");
+  // Every field that DOES count toward the fingerprint is coarse by construction.
+  assert.match(disk.detail, /^\d+(\.\d)? [KMGT]iB free of/);
+  assert.equal(Math.round(disk.freePercent * 10) / 10, disk.freePercent);
+});
+
+test("services staying up do not count as a change; a restart does", () => {
+  const svc = (over = {}) => ({ panels: { readiness: { checks: { services: { status: "ok", services: [
+    { name: "hq-dashboard", state: "online", restarts: 6, uptimeMs: 35_969_955, startedAt: "2026-09-16T19:31:29.000Z", ...over },
+  ] } } } } });
+  assert.equal(snapshotFingerprint(svc()), snapshotFingerprint(svc({ uptimeMs: 36_032_369 })),
+    "uptime ticking by is not news");
+  assert.notEqual(snapshotFingerprint(svc()),
+    snapshotFingerprint(svc({ restarts: 7, uptimeMs: 1_000, startedAt: "2026-09-17T06:00:00.000Z" })),
+    "a restart must still publish");
+  assert.notEqual(snapshotFingerprint(svc()), snapshotFingerprint(svc({ state: "errored" })));
 });
