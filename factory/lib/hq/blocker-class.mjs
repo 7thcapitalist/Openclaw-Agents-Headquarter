@@ -49,6 +49,14 @@ function isInfraText(text) {
   return INFRA_FAIL_RE.test(str);
 }
 
+// Text-only form for readers of the append-only objective event ledger. Older
+// node-blocked events retain the blocker prose but not the structured blocker,
+// so report projections need the same canonical classification without
+// duplicating INFRA_FAIL_RE.
+export function isInfraBlockerText(text) {
+  return isInfraText(text);
+}
+
 // A high-risk task cannot even initialize until the founder's approval authority
 // is configured (FACTORY_FOUNDER_PUBLIC_KEY). That is a founder setup action, not
 // a code failure and not an infra hiccup — it must reach the Founder Inbox.

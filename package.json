@@ -20,6 +20,7 @@
     "factory:prune-sessions": "node scripts/prune-factory-sessions.mjs",
     "factory:route-review": "node scripts/apply-review-model-routing.mjs",
     "factory:doctor": "node scripts/factory-doctor.mjs",
+    "factory:report": "node scripts/factory-report.mjs",
     "register:example": "AGENT_LAB_ROOT=$PWD ./scripts/register-agent.sh example-project research-analyst",
     "factory:objective": "node scripts/factory-objective.mjs",
     "objective:smoke": "node scripts/objective-smoke.mjs",
