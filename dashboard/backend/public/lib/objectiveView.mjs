@@ -59,6 +59,36 @@ export function objectiveSummaryLine(o, { esc }) {
   return bits.join(" · ");
 }
 
+// Derived from the current presenter projection on every render. This is not
+// persisted objective state: stage, role, elapsed time, and founder attention
+// all come from the live node briefs returned by presentObjective().
+export function whatIsHappeningNowLine(o, { fmtDuration = (ms) => `${Math.round(ms / 60_000)}m` } = {}) {
+  const briefs = o?.nodeBriefs || [];
+  const focus = briefs.find((n) => n.status === "RUNNING")
+    || briefs.find((n) => n.status === "WAITING_FOR_FOUNDER")
+    || briefs.find((n) => n.status === "RECOVERING")
+    || briefs.find((n) => n.status === "BLOCKED" || n.status === "FAILED")
+    || briefs.find((n) => n.status === "PENDING")
+    || null;
+  const stage = focus?.stageLabel || "Waiting for the next safe step";
+  const who = focus?.role || (o?.builders || [])[0] || "Factory team";
+  const elapsed = focus?.elapsedMs != null ? `${fmtDuration(focus.elapsedMs)} so far` : "time not available";
+
+  if (o?.status6 === "WAITING_FOR_FOUNDER") {
+    return `${stage} — ${who} is waiting on you — ${elapsed}. Your action is needed.`;
+  }
+  if (o?.status6 === "RECOVERING") {
+    return `${stage} — ${who} is recovering automatically — ${elapsed}. Nothing needed from you.`;
+  }
+  if (o?.status6 === "BLOCKED" || o?.status6 === "FAILED") {
+    return `${stage} — ${who} is paused — ${elapsed}. Nothing needed from you.`;
+  }
+  if (focus?.status === "RUNNING") {
+    return `${stage} — ${who} is working — ${elapsed}. Nothing needed from you.`;
+  }
+  return `${stage} — ${who} is queued — ${elapsed}. Nothing needed from you.`;
+}
+
 // Split the real (non-seed) objective list into the four ACTIVE buckets plus
 // HISTORY and ARCHIVED. `lifecycle` comes from the backend; the ACTIVE split is
 // just the presenter status.
@@ -101,11 +131,13 @@ function cancelButton(o, { esc }) {
 // Compact ACTIVE card: human title, one summary line, the headline, the recovery
 // affordance if any, and drill-down / report / archive controls. No raw prompt,
 // no node dump.
-export function renderObjectiveCard(o, { esc }) {
+export function renderObjectiveCard(o, { esc, fmtDuration } = {}) {
   if (o.status === "invalid") {
     return `<article class="obj-card"><strong>${esc(o.objectiveId)}</strong><p class="danger-text small">${esc(o.error || "invalid objective state")}</p></article>`;
   }
   const recovery = renderObjectiveRecovery(o, { esc }) || "";
+  const active = !["COMPLETE", "CANCELLED"].includes(o.status6);
+  const nowLine = active ? whatIsHappeningNowLine(o, { fmtDuration }) : null;
   return `<article class="obj-card obj-card-compact">
     <div class="obj-card-head">
       <div>
@@ -115,6 +147,7 @@ export function renderObjectiveCard(o, { esc }) {
       <span class="badge ${STATUS_TONE_CLASS[o.statusTone] || "badge-type"}">${esc(o.statusLabel || o.status6 || "—")}</span>
     </div>
     ${o.headline ? `<p class="obj-headline">${esc(o.headline)}</p>` : ""}
+    ${nowLine ? `<p class="muted small obj-now-line"><strong>What is happening now:</strong> ${esc(nowLine)}</p>` : ""}
     ${recovery}
     <div class="obj-card-foot">
       <button class="btn secondary tiny" data-objective-details="${esc(o.objectiveId)}">Details</button>

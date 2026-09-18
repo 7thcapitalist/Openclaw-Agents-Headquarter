@@ -9,6 +9,7 @@ import {
   renderObjectiveCard,
   renderObjectiveHistoryRow,
   shortObjectiveTitle,
+  whatIsHappeningNowLine,
 } from "../../dashboard/backend/public/lib/objectiveView.mjs";
 
 function esc(s) {
@@ -33,19 +34,37 @@ const sample = {
   nextAction: { label: null },
   builders: ["Backend Builder"],
   nodeBriefs: [
-    { title: "Build the endpoint", role: "Backend Builder", status: "RUNNING", stage: "builder", statusLabel: "Running", statusTone: "info" },
+    { title: "Build the endpoint", role: "Backend Builder", status: "RUNNING", stage: "builder", stageLabel: "Building", elapsedMs: 12 * 60_000, statusLabel: "Running", statusTone: "info" },
   ],
   lifecycle: "active",
   recovery: { count: 0 },
 };
 
+test("the live objective line names stage, role, elapsed time, and founder action", () => {
+  const fmtDuration = (ms) => `${ms / 60_000}m`;
+  assert.equal(
+    whatIsHappeningNowLine(sample, { fmtDuration }),
+    "Building — Backend Builder is working — 12m so far. Nothing needed from you.",
+  );
+  assert.equal(
+    whatIsHappeningNowLine({ ...sample, status6: "WAITING_FOR_FOUNDER", nodeBriefs: [{ ...sample.nodeBriefs[0], status: "WAITING_FOR_FOUNDER", role: "Reviewer", stageLabel: "Independent review" }] }, { fmtDuration }),
+    "Independent review — Reviewer is waiting on you — 12m so far. Your action is needed.",
+  );
+  assert.equal(
+    whatIsHappeningNowLine({ ...sample, status6: "RECOVERING", nodeBriefs: [{ ...sample.nodeBriefs[0], status: "RECOVERING", role: "QA", stageLabel: "Quality check", elapsedMs: 4 * 60_000 }] }, { fmtDuration }),
+    "Quality check — QA is recovering automatically — 4m so far. Nothing needed from you.",
+  );
+});
+
 test("objective card shows the short human title, never the raw objective prompt", () => {
-  const html = renderObjectiveCard(sample, { esc });
+  const html = renderObjectiveCard(sample, { esc, fmtDuration: (ms) => `${ms / 60_000}m` });
   assert.match(html, /Add Health Endpoint/);
   assert.doesNotMatch(html, /dependency-free health endpoint/);
   assert.doesNotMatch(html, /ops team/);
   assert.match(html, /data-objective-details="obj-deadbeef"/);
   assert.match(html, /data-archive-objective="obj-deadbeef"/);
+  assert.match(html, /What is happening now:/);
+  assert.match(html, /Building — Backend Builder is working — 12m so far\. Nothing needed from you\./);
 });
 
 test("shortObjectiveTitle collapses legacy long prompts for founder surfaces", () => {
