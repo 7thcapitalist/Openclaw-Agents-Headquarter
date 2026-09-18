@@ -302,7 +302,7 @@ test("routine failure routing uses the same no-action sentences as the dashboard
   const feed = homeActivity({ company: { activityFeed: events } });
   assert.deepEqual(feed.map((item) => item.verb), [
     "The change was locked in for review. Nothing needed from you.",
-    "Independent review found a problem — sending it back to the builder. Nothing needed from you.",
+    "Independent review found a problem. Nothing needed from you.",
     "Sent back to the builder to fix. Nothing needed from you.",
   ]);
 });

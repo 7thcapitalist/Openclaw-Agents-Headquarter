@@ -14,8 +14,8 @@ import {
 test("routine routing events are plain sentences that need no founder action", () => {
   const cases = [
     [{ type: "commit-frozen", stage: "reviewer" }, "The change was locked in for review. Nothing needed from you."],
-    [{ type: "stage-fail", stage: "reviewer" }, "Independent review found a problem — sending it back to the builder. Nothing needed from you."],
-    [{ type: "stage-fail", stage: "release" }, "Preparing delivery found a problem — sending it back to the builder. Nothing needed from you."],
+    [{ type: "stage-fail", stage: "reviewer" }, "Independent review found a problem. Nothing needed from you."],
+    [{ type: "stage-fail", stage: "release" }, "Preparing delivery found a problem. Nothing needed from you."],
     [{ type: "failure-routed", fromStage: "reviewer", stage: "builder" }, "Sent back to the builder to fix. Nothing needed from you."],
   ];
   for (const [event, expected] of cases) {
@@ -23,6 +23,21 @@ test("routine routing events are plain sentences that need no founder action", (
     assert.ok(eventLine(event).endsWith("Nothing needed from you."));
     assert.notEqual(eventLine(event), event.type);
   }
+});
+
+test("stage-fail never contradicts the failure-routed event that follows it", () => {
+  // routeStageFailure decides the real destination AFTER stage-fail fires: a
+  // real review FAIL goes to the builder, but an infra-classified failure
+  // (crash, no result file, timeout) retries the SAME stage in place. stage-fail
+  // must not guess a destination it cannot know yet.
+  const stageFailLine = eventLine({ type: "stage-fail", stage: "reviewer" });
+  assert.doesNotMatch(stageFailLine, /builder|another attempt/);
+
+  const infraRoutedLine = eventLine({ type: "failure-routed", fromStage: "reviewer", stage: "reviewer", infra: true });
+  assert.equal(infraRoutedLine, "Sent back to independent review for another attempt. Nothing needed from you.");
+
+  const realFailRoutedLine = eventLine({ type: "failure-routed", fromStage: "reviewer", stage: "builder" });
+  assert.equal(realFailRoutedLine, "Sent back to the builder to fix. Nothing needed from you.");
 });
 
 test("every mapped event and unknown fallback reads as words, never its raw key", () => {
