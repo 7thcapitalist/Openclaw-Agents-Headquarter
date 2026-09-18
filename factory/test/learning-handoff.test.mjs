@@ -35,26 +35,30 @@ test("injection is off by default and on via env or config flag", () => {
   assert.equal(learningInjectionEnabled(rootOn, {}), true);
 });
 
-test("buildKnowledgeBlock returns empty when disabled", () => {
+test("buildKnowledgeBlock returns empty text and no sources when disabled", () => {
   const root = fakeHq({ roleNote: "- always run the suite", lessons: ACCEPTED_LESSON });
-  assert.equal(buildKnowledgeBlock({ hqRoot: root, role: "builder", env: {} }), "");
+  assert.deepEqual(buildKnowledgeBlock({ hqRoot: root, role: "builder", env: {} }), { text: "", sources: [] });
 });
 
-test("buildKnowledgeBlock includes role notes and only accepted lessons when enabled", () => {
+test("buildKnowledgeBlock includes role notes and only accepted lessons when enabled, and reports only the contributing sources", () => {
   const root = fakeHq({ roleNote: "- always run the existing suite\n- keep the diff minimal", lessons: ACCEPTED_LESSON });
-  const block = buildKnowledgeBlock({ hqRoot: root, role: "builder", env: { FACTORY_LEARNING_IN_HANDOFF: "1" } });
-  assert.match(block, /## Company knowledge/);
-  assert.match(block, /For the builder role/);
-  assert.match(block, /always run the existing suite/);
-  assert.match(block, /Test before implementing/);
+  const { text, sources } = buildKnowledgeBlock({ hqRoot: root, role: "builder", env: { FACTORY_LEARNING_IN_HANDOFF: "1" } });
+  assert.match(text, /## Company knowledge/);
+  assert.match(text, /For the builder role/);
+  assert.match(text, /always run the existing suite/);
+  assert.match(text, /Test before implementing/);
+  assert.deepEqual(sources, ["factory/knowledge/agents/builder.md", "factory/knowledge/LESSONS_LEARNED.md"]);
 });
 
-test("buildKnowledgeBlock omits proposed (non-accepted) lessons", () => {
+test("buildKnowledgeBlock omits proposed (non-accepted) lessons and reports no sources", () => {
   const root = fakeHq({ lessons: PROPOSED_LESSON });
   const block = buildKnowledgeBlock({ hqRoot: root, role: "builder", env: { FACTORY_LEARNING_IN_HANDOFF: "1" } });
-  assert.equal(block, "");
+  assert.deepEqual(block, { text: "", sources: [] });
 });
 
 test("buildKnowledgeBlock never throws on a broken hqRoot", () => {
-  assert.equal(buildKnowledgeBlock({ hqRoot: "/definitely/not/here", role: "builder", env: { FACTORY_LEARNING_IN_HANDOFF: "1" } }), "");
+  assert.deepEqual(
+    buildKnowledgeBlock({ hqRoot: "/definitely/not/here", role: "builder", env: { FACTORY_LEARNING_IN_HANDOFF: "1" } }),
+    { text: "", sources: [] },
+  );
 });

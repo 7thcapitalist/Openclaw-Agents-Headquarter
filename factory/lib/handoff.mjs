@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { assembleAgentContext } from "./hq/company-context.mjs";
-import { buildKnowledgeBlock } from "./learning/handoff-inject.mjs";
+import { buildKnowledgeBlock, recordKnowledgeInjection } from "./learning/handoff-inject.mjs";
 import { FOUNDER_IMPACTS } from "./hq/escalation-gate.mjs";
 
 
@@ -89,12 +89,17 @@ export function writeHandoff({ hqRoot, statePath, state, companyState = null, re
       "- proceed using the task context below; note this in your summary.\n\n";
   }
   let knowledgeBlock = "";
+  let knowledgeSources = [];
   try {
     const block = buildKnowledgeBlock({ hqRoot, role: stage });
-    if (block) knowledgeBlock = `${block}\n`;
+    if (block.text) {
+      knowledgeBlock = `${block.text}\n`;
+      knowledgeSources = block.sources;
+    }
   } catch {
     knowledgeBlock = "";
   }
+  recordKnowledgeInjection({ statePath, stage, dispatchId, injected: Boolean(knowledgeBlock), sources: knowledgeSources });
   const advisory = state.task.advisory?.decisionClassification;
   const advisoryBlock = advisory
     ? "## Advisory decision classification\n\n" +

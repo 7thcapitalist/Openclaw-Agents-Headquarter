@@ -66,6 +66,27 @@ function blockersEncountered(state) {
   return lines;
 }
 
+// The last dispatch recorded for a stage — mirrors how `state.stages[stage]`
+// itself already collapses retries to one current verdict, so this report
+// never itemizes every attempt, only the outcome that stands.
+function lastStageDispatch(state, stage) {
+  const dispatches = Array.isArray(state.dispatches) ? state.dispatches : [];
+  return dispatches.filter((d) => d.stage === stage && (d.kind === "stage" || !d.kind)).at(-1) || null;
+}
+
+function knowledgeInjectionSection(state) {
+  const lines = [];
+  for (const stage of STAGES) {
+    const fact = lastStageDispatch(state, stage)?.knowledgeInjection;
+    if (!fact) continue; // nothing recorded — pre-feature dispatch, never backfilled
+    lines.push(fact.injected && fact.sources?.length
+      ? `- **${stage}** — knowledge injected from: ${fact.sources.join(", ")}`
+      : `- **${stage}** — no knowledge block injected`);
+  }
+  if (!lines.length) return [];
+  return ["## Knowledge injection", ...lines, ""];
+}
+
 function githubSection(state) {
   const gp = state.githubPublish;
   if (!gp) {
@@ -129,6 +150,8 @@ export function buildCompletionReport(state, { now = Date.now() } = {}) {
   }
   if (!ran) out.push("- (no stage has produced a verdict yet)");
   out.push("");
+
+  out.push(...knowledgeInjectionSection(state));
 
   // Every choice a stage flagged along the way, including the ones it decided
   // itself. The escalation gate keeps unclassified decisions out of the Founder
