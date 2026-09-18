@@ -45,6 +45,47 @@ export function stageStatusLabel(status) {
   return STAGE_STATUS[status] || deslug(status || "pending");
 }
 
+/** Event type -> what happened, in words shared by both founder consoles. */
+export const EVENT_VERB = Object.freeze({
+  "stage-pass": "finished",
+  "stage-decision-required": "asked you",
+  "task-resumed": "resumed",
+  "task-created": "started",
+  "handoff-ready": "handed over",
+  "merge-ready": "ready to merge",
+  "recovery-diagnosing": "started recovery",
+  "recovery-escalated": "escalated",
+  "dispatch-blocked": "blocked",
+  "task-closed-unsigned": "closed",
+  "founder-decision-applied": "you decided",
+});
+
+/**
+ * A founder-readable event line. Routine failure routing is explicit about
+ * requiring no founder action; a separate decision/escalation event is the
+ * signal when the workflow genuinely needs the founder.
+ */
+export function eventLine(event) {
+  const type = String(event?.type || "event");
+  if (type === "commit-frozen") {
+    return "The change was locked in for review. Nothing needed from you.";
+  }
+  if (type === "stage-fail") {
+    const stage = stageLabel(event?.stage);
+    const route = ["reviewer", "qa", "security"].includes(String(event?.stage || ""))
+      ? "sending it back to the builder"
+      : "the factory is routing it for another attempt";
+    return `${stage} found a problem — ${route}. Nothing needed from you.`;
+  }
+  if (type === "failure-routed") {
+    const destination = event?.stage === "builder"
+      ? "the builder to fix"
+      : `${stageLabel(event?.stage).toLowerCase()} for another attempt`;
+    return `Sent back to ${destination}. Nothing needed from you.`;
+  }
+  return EVENT_VERB[type] || deslug(type);
+}
+
 /** Task status -> how it reads to a person. */
 export const TASK_STATUS = Object.freeze({
   active: "In progress",
