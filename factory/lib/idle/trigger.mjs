@@ -8,6 +8,7 @@ import { readRepoAwareness } from "../hq/github.mjs";
 import { decideIdleLaunch, idleTriggerConfig, resetDurationHours } from "./decide.mjs";
 import { buildIdleObjectiveText } from "./objective-text.mjs";
 import { launchesOnDay, readIdleState, updateIdleState } from "./state.mjs";
+import { effectiveMode } from "./mode.mjs";
 
 const execFileAsync = promisify(execFile);
 const ACTIVE = new Set(["starting", "decomposing", "planned", "active", "running", "recovering", "incomplete", "integration-blocked", "yielded"]);
@@ -59,7 +60,7 @@ function recordDecision(stateRoot, result, now, field, extra = {}) {
 
 export async function evaluateIdleTrigger({ hqRoot, stateRoot = join(hqRoot, "dashboard", "backend", "data", "factory", "hq-runtime"), now = new Date().toISOString(), trigger = "event", deps = {} } = {}) {
   const config = deps.config || readJson(join(hqRoot, "factory", "factory.config.json"), {});
-  const settings = idleTriggerConfig(config);
+  const settings = { ...idleTriggerConfig(config), mode: effectiveMode(config, stateRoot).mode };
   if (settings.mode === "off") return { action: "off", mode: "off" };
   const state = readIdleState(stateRoot);
   if (trigger === "heartbeat" && state.lastHeartbeatAt && Date.parse(now) - Date.parse(state.lastHeartbeatAt) < settings.heartbeatMinutes * 60_000) return { action: "rate-limited", mode: settings.mode };
@@ -122,7 +123,7 @@ export function idleEventFingerprint({ objectives = [], founderQueued = false, h
 export async function tickIdleTrigger(options = {}) {
   const { stateRoot, now = new Date().toISOString(), deps = {} } = options;
   const config = deps.config || readJson(join(options.hqRoot, "factory", "factory.config.json"), {});
-  if (idleTriggerConfig(config).mode === "off") return { action: "off", mode: "off" };
+  if (effectiveMode(config, stateRoot).mode === "off") return { action: "off", mode: "off" };
   const injectedInputs = Boolean(deps.inputs);
   const inputs = deps.inputs || await gatherIdleInputs({ ...options, config, now, deps });
   const state = readIdleState(stateRoot);
