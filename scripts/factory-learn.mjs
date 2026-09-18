@@ -19,7 +19,7 @@ import { collectTaskRecords, defaultFactoryStateRoot } from "../factory/lib/lear
 import { analyzeTasks } from "../factory/lib/learning/analyze.mjs";
 import { runLearningAnalysisPass } from "../factory/lib/learning/run-analysis.mjs";
 import {
-  learningRootFor, readQueue, writeQueue, reconcile, setStatus, selectFindings, findById, pruneEvidence,
+  learningRootFor, readQueue, updateQueue, reconcile, setStatus, selectFindings, findById, pruneEvidence,
 } from "../factory/lib/learning/queue.mjs";
 import {
   KNOWLEDGE_DIR, KNOWLEDGE_FILES, knowledgeFilePath, appendEntryToBody, entryFromFinding,
@@ -292,11 +292,18 @@ function promote(request, deps) {
   }
 
   if (changeStatus) {
-    const { store: updated } = setStatus(store, request.id, "promoted", {
-      reason: wantTask ? "scaffolded factory task" : "appended knowledge entry",
-      now,
+    // Re-validate and apply against the latest committed store, not the
+    // snapshot read above -- the post-run trigger may have committed findings
+    // concurrently via its own atomic updateQueue path.
+    updateQueue(learningRoot, (current) => {
+      const currentFinding = findById(current, request.id);
+      if (!currentFinding) throw new Error(`No such finding: ${request.id}`);
+      if (currentFinding.status !== "open") throw new Error(`Finding ${request.id} is ${currentFinding.status}, not open.`);
+      return setStatus(current, request.id, "promoted", {
+        reason: wantTask ? "scaffolded factory task" : "appended knowledge entry",
+        now,
+      });
     });
-    writeQueue(learningRoot, updated);
   }
   return {
     version: 1,
@@ -312,17 +319,15 @@ function dismiss(request) {
   if (!request.id) throw new Error("dismiss requires an id.");
   if (!request.reason) throw new Error("dismiss requires a reason.");
   const learningRoot = learningRootFor(stateRootFor(request));
-  const store = readQueue(learningRoot);
-  const { store: updated, finding } = setStatus(store, request.id, "dismissed", { reason: request.reason, now: nowFor(request) });
-  writeQueue(learningRoot, updated);
+  const now = nowFor(request);
+  const { finding } = updateQueue(learningRoot, (current) => setStatus(current, request.id, "dismissed", { reason: request.reason, now }));
   return { version: 1, status: "ok", dismissed: request.id, title: finding.title };
 }
 
 function prune(request) {
   const learningRoot = learningRootFor(stateRootFor(request));
-  const store = readQueue(learningRoot);
-  const { store: updated, pruned } = pruneEvidence(store, { days: Number(request.days) || 90, now: nowFor(request) });
-  writeQueue(learningRoot, updated);
+  const now = nowFor(request);
+  const { pruned } = updateQueue(learningRoot, (current) => pruneEvidence(current, { days: Number(request.days) || 90, now }));
   return { version: 1, status: "ok", pruned };
 }
 
@@ -426,8 +431,7 @@ async function cycle(request, deps = {}) {
     if (!mr.note) continue;
     incoming.push(...masteryFindings({ role: mr.role, note: mr.note, roleMetrics: roleMetricsFor(mr.role), now }));
   }
-  let { store, added, updated, recurred } = reconcile(readQueue(learningRoot), incoming, { now });
-  writeQueue(learningRoot, store);
+  let { store, added, updated, recurred } = updateQueue(learningRoot, (current) => reconcile(current, incoming, { now }));
 
   // dossier append per deep-dive role (a knowledge-append style write)
   const dossierWrites = [];
@@ -491,10 +495,15 @@ async function cycle(request, deps = {}) {
       publication = { published: false, reason: `publish failed: ${error.message || error}` };
     }
     if (publication.published || publication.pushed || publication.committed) {
-      for (const p of autoProposals) {
-        ({ store } = setStatus(store, p.findingId, "promoted", { reason: "autonomous cycle", actor: "learning", now }));
-      }
-      writeQueue(learningRoot, store);
+      // Re-apply against the latest committed store, not the `store` snapshot
+      // captured above -- a post-run trigger commit may have landed in between.
+      ({ store } = updateQueue(learningRoot, (current) => {
+        let next = current;
+        for (const p of autoProposals) {
+          ({ store: next } = setStatus(next, p.findingId, "promoted", { reason: "autonomous cycle", actor: "learning", now }));
+        }
+        return { store: next };
+      }));
     }
   }
 

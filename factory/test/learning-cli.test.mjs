@@ -4,6 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readdirSync, readFil
 import { join } from "path";
 import { tmpdir } from "os";
 import { handleRequest } from "../../scripts/factory-learn.mjs";
+import { learningRootFor, updateQueue, reconcile } from "../lib/learning/queue.mjs";
 
 const NOW = "2026-09-03T00:00:00Z";
 
@@ -93,6 +94,48 @@ test("promote routes gate/prompt recommendations to a scaffolded factory task", 
   assert.equal(contract.risk, "low");
   assert.equal(contract.project, "openclaw-factory");
   assert.ok(contract.constraints.some((c) => /workflow engine/i.test(c)));
+});
+
+test("promote does not lose a finding committed concurrently by the post-run trigger", async () => {
+  // Regression test for the queue lost-update bug three independent security
+  // reviews returned against obj-8f79f977-learning-post-run-trigger: promote
+  // (like dismiss, prune, and cycle) used to read the queue once at the top,
+  // do other work (including the publish call), and unconditionally write
+  // that stale snapshot back at the end -- silently dropping any finding the
+  // post-run trigger committed via its own atomic updateQueue() path in the
+  // meantime. The publish call is a real, deterministic point in that old
+  // window to land a concurrent commit: it runs after promote's original
+  // top-of-function read and before its final write.
+  const stateRoot = fixtureStateRoot();
+  await handleRequest({ version: 1, action: "analyze", stateRoot, now: NOW });
+  const listed = await handleRequest({ version: 1, action: "list", stateRoot });
+  const target = listed.findings.find((f) => f.kind === "failure") || listed.findings[0];
+  assert.ok(target);
+
+  const learningRoot = learningRootFor(stateRoot);
+  const publishDuringWindow = (args) => {
+    // Simulate an objective finishing while this promote call is publishing:
+    // the post-run trigger commits through the atomic path mid-call.
+    updateQueue(learningRoot, (current) => reconcile(current, [{
+      kind: "failure", scope: "global", project: "demo", targetRole: "builder",
+      fingerprint: "concurrent-post-run-trigger-finding", title: "concurrent-post-run-trigger-finding",
+      observation: "observed", recommendation: "fix", confidence: "high",
+      occurrences: 1, taskIds: ["concurrent-post-run-trigger-finding"], evidence: [],
+    }], { now: NOW }));
+    return { published: true, branch: args.branch, committed: true, pushed: false, prUrl: null, notes: [], files: args.files.map((f) => f.path) };
+  };
+
+  await handleRequest(
+    { version: 1, action: "promote", id: target.id, as: "entry", publish: true, stateRoot, now: NOW },
+    { publishProposals: publishDuringWindow },
+  );
+
+  const after = await handleRequest({ version: 1, action: "list", stateRoot, status: "any" });
+  assert.ok(
+    after.findings.some((f) => f.fingerprint === "concurrent-post-run-trigger-finding"),
+    "promote's final writeback must not clobber a finding the post-run trigger committed mid-call",
+  );
+  assert.equal(after.findings.find((f) => f.id === target.id)?.status, "promoted");
 });
 
 test("research writes a redacted, source-cited note via an injected model", async () => {
