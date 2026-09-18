@@ -150,6 +150,7 @@ import { buildAgentScorecards } from "../../factory/lib/hq/agent-scorecards.mjs"
 import { buildPermissionsSnapshot } from "../../factory/lib/hq/permissions-snapshot.mjs";
 import { buildBlastRadiusReport } from "../../factory/lib/hq/blast-radius.mjs";
 import { buildGoalsSnapshot } from "../../factory/lib/hq/goals.mjs";
+import { buildFactoryReportSnapshot } from "../../factory/lib/hq/factory-report.mjs";
 import { buildWorkProposals } from "../../factory/lib/hq/proposer.mjs";
 import { parseLayers, searchHq } from "../../factory/lib/hq/search.mjs";
 import { buildBudgetSnapshot } from "../../factory/lib/hq/budget-snapshot.mjs";
@@ -1262,6 +1263,11 @@ app.get("/api/hq/search", (req, res) => {
 app.get("/api/hq/goals", (_req, res) => {
   try { res.json(buildGoalsSnapshot({ hqRoot: ROOT })); }
   catch (e) { res.status(500).json({ version: 1, available: false, error: String(e.message || e) }); }
+});
+
+app.get("/api/hq/factory-report", (_req, res) => {
+  try { res.json(buildFactoryReportSnapshot({ hqRoot: ROOT })); }
+  catch (e) { res.status(500).json({ version: 1, available: false, metrics: [], error: String(e.message || e) }); }
 });
 
 // Read-only and alert-only. Policies are tracked in factory/budgets.json and
