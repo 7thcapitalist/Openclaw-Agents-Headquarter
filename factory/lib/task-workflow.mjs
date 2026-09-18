@@ -264,15 +264,6 @@ export function completeStage(state, { stage, actor, outcome, summary, evidence 
     return next;
   }
 
-  // The auto-retry sweep is the only thing that revives a task whose runner
-  // died, and its budget was counted once per task for the task's whole life.
-  // A task that needed reviving three times during a flaky builder phase then
-  // had no supervision left for the five stages after it, so any later stall
-  // was permanent until a human noticed. The budget is meant to stop a task
-  // looping on one stuck point, not to cap how long a task may live: a stage
-  // that actually passed is forward progress, so the allowance starts over.
-  delete next.autoRetries;
-
   if (deferredDecision) {
     const decision = normalizeDeferredDecision(deferredDecision, stage, now);
     next.stages[stage].deferredDecision = decision;
@@ -290,6 +281,20 @@ export function completeStage(state, { stage, actor, outcome, summary, evidence 
       reason: decision.escalationReason,
     });
   }
+
+  return advancePassedStage(next, { stage, actor, now });
+}
+
+function advancePassedStage(state, { stage, actor, now }) {
+  const next = structuredClone(state);
+  // The auto-retry sweep is the only thing that revives a task whose runner
+  // died, and its budget was counted once per task for the task's whole life.
+  // A task that needed reviving three times during a flaky builder phase then
+  // had no supervision left for the five stages after it, so any later stall
+  // was permanent until a human noticed. The budget is meant to stop a task
+  // looping on one stuck point, not to cap how long a task may live: a stage
+  // that actually passed is forward progress, so the allowance starts over.
+  delete next.autoRetries;
 
   const index = STAGES.indexOf(stage);
   if (index === STAGES.length - 1) {
@@ -428,6 +433,8 @@ export function countStageAttempts(state, stage) {
   let verdicts = 0;
   let infra = 0;
   let passes = 0;
+  let repeats = 0;
+  const judgedCommits = new Set();
   for (const item of dispatches) {
     // A dispatch parked on an exhausted seat never reached a model. It is
     // neither a verdict nor a lost run, and the seat's reset is what clears it,
@@ -439,9 +446,78 @@ export function countStageAttempts(state, stage) {
     // nothing judged the work — so it belongs in the infrastructure allowance.
     if (!item.outcome || item.infraFailure) { infra += 1; continue; }
     if (SUCCESS_OUTCOMES.has(item.outcome)) { passes += 1; continue; }
+    if (item.judgedCommit) {
+      if (judgedCommits.has(item.judgedCommit)) { repeats += 1; continue; }
+      judgedCommits.add(item.judgedCommit);
+    }
     verdicts += 1;
   }
-  return { verdicts, infra, passes, total: dispatches.length };
+  return { verdicts, infra, passes, repeats, total: dispatches.length };
+}
+
+// Re-apply a gate verdict already earned on the commit currently under review.
+// This is pure state transformation: callers persist the returned state or
+// dispatch normally when null is returned.
+export function reuseJudgedVerdict(state, { stage = state?.currentStage, maxAttemptsPerStage = 3, maxInfraAttemptsPerStage = DEFAULT_MAX_INFRA_ATTEMPTS, now = new Date().toISOString() } = {}) {
+  if (state?.status !== "active" || state.currentDispatch || state.yieldedGroup || state.recovery?.active) return null;
+  if (stage !== state.currentStage || !stageMustProveCriteria(stage)) return null;
+  if (state.stages?.[stage]?.status !== "pending") return null;
+  const commit = state.verifiedCommit?.sha;
+  const snapshot = commit && state.judgedVerdicts?.[stage]?.[commit];
+  if (!snapshot || !new Set(["pass", "fail"]).has(snapshot.outcome)) return null;
+  try {
+    verifyEvidence((snapshot.stageRecord?.evidence || []).map((item) => item.path || item), state.worktree);
+  } catch {
+    return null;
+  }
+
+  let next = structuredClone(state);
+  next.stages[stage] = structuredClone(snapshot.stageRecord);
+  next.updatedAt = now;
+  next.events.push({
+    at: now,
+    type: "verdict-reused",
+    stage,
+    actor: next.assignments[stage],
+    commit,
+    sourceDispatchId: snapshot.dispatchId,
+    outcome: snapshot.outcome,
+  });
+
+  if (snapshot.outcome === "pass") {
+    return advancePassedStage(next, { stage, actor: next.assignments[stage], now });
+  }
+
+  next.status = "blocked";
+  next.blocker = {
+    stage,
+    outcome: "fail",
+    summary: String(snapshot.stageRecord.summary),
+    actor: next.assignments[stage],
+    at: now,
+    dispatchId: snapshot.dispatchId,
+  };
+  next.dispatches = [...(next.dispatches || []), {
+    stage,
+    kind: "stage",
+    status: "completed",
+    verdictReused: true,
+    judgedCommit: commit,
+    sourceDispatchId: snapshot.dispatchId,
+    completedAt: now,
+  }];
+  const routed = routeStageFailure(next, { failedStage: stage, maxAttemptsPerStage, maxInfraAttemptsPerStage, now });
+  return routed !== next
+    ? routed
+    : startRecovery(next, {
+      failedStage: stage,
+      actor: next.assignments[stage],
+      error: snapshot.stageRecord.summary,
+      evidence: snapshot.stageRecord.evidence || [],
+      source: "project",
+      maxRecoveryAttempts: state.recovery?.maxAttempts || 3,
+      now,
+    });
 }
 
 // Which budget, if either, this stage has exhausted.
