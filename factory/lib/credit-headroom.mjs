@@ -1,13 +1,17 @@
 // Read-only model-seat credit headroom.
 //
-// Numeric headroom is reported only when it was read from `openclaw models
-// status`. Seat-pause history can add context to an unknown record, but it
-// never supplies or implies a numeric value and never upgrades the status.
+// Numeric headroom is reported only when it was read from a real usage source:
+// `openclaw models status` for the OpenAI seat, and `claude -p "/usage"` for the
+// Anthropic (claude-cli) seat. Seat-pause history can add context to an unknown
+// record, but it never supplies or implies a numeric value and never upgrades
+// the status. A failed, timed-out or unparseable read is always unknown.
 
+import { execFileSync } from "child_process";
 import { existsSync, readFileSync, readdirSync } from "fs";
+import { tmpdir } from "os";
 import { join } from "path";
 import { cleanSeat, readConfiguredSeats, resolveSeat } from "./hq/seats.mjs";
-import { parseUsageWindow } from "./model-usage-window.mjs";
+import { parseClaudeUsage, parseUsageWindow } from "./model-usage-window.mjs";
 
 const DEFAULT_LOOKBACK_HOURS = 24;
 
@@ -22,11 +26,45 @@ function timestamp(value) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+const CLAUDE_USAGE_ARGS = ["-p", "/usage", "--no-session-persistence"];
+
+// Read-only probe of the Claude Code seat. Prints local subscription usage and
+// makes no model call. Any throw, non-zero exit or timeout maps to unknown.
+export function readClaudeUsage({ run = defaultClaudeRun } = {}) {
+  try {
+    const result = run(CLAUDE_USAGE_ARGS);
+    return result?.ok ? { ok: true, out: String(result.out || "") } : { ok: false, out: "" };
+  } catch {
+    return { ok: false, out: "" };
+  }
+}
+
+function defaultClaudeRun(args) {
+  try {
+    return {
+      ok: true,
+      out: execFileSync("claude", args, {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        timeout: 15000,
+        cwd: tmpdir(),
+      }),
+    };
+  } catch (error) {
+    return { ok: false, out: String(error?.stdout || "") + String(error?.stderr || error?.message || "") };
+  }
+}
+
 function describeUnknownReason(seat, modelsOut) {
   const output = String(modelsOut || "");
   const escapedSeat = seat.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   if (new RegExp(`${escapedSeat}[^\\n]*(?:\\[indeterminate\\]|\\bindeterminate\\b)`, "i").test(output)) {
-    return "openclaw models status reports this seat as [indeterminate]";
+    return seat.split("/")[0] === "anthropic"
+      ? "claude -p /usage did not return a readable session usage window; openclaw models status reports this seat as [indeterminate]"
+      : "openclaw models status reports this seat as [indeterminate]";
+  }
+  if (seat.split("/")[0] === "anthropic") {
+    return "claude -p /usage did not return a readable session usage window; openclaw models status does not report a numeric usage window for this seat";
   }
   if (seat.split("/")[0] === "openai") {
     return "openclaw models status did not report a 5h usage window for this seat";
@@ -61,12 +99,14 @@ function inferredSeatHistory({ roles, seatPauses, now, lookbackHours }) {
 
 export function readCreditHeadroom({
   modelsOut = "",
+  claudeUsageOut = "",
   pipelineSeats = [],
   seatPauses = [],
   now = Date.now(),
   lookbackHours = DEFAULT_LOOKBACK_HOURS,
 } = {}) {
-  const windows = parseUsageWindow(modelsOut);
+  const openAiWindows = parseUsageWindow(modelsOut);
+  const claudeWindows = parseClaudeUsage(claudeUsageOut, { now });
   const hours = normalizedLookback(lookbackHours);
   const seats = new Map();
 
@@ -79,7 +119,9 @@ export function readCreditHeadroom({
 
   return [...seats.entries()].map(([seat, roleSet]) => {
     const roles = [...roleSet].sort();
-    const readable = seat.split("/")[0] === "openai"
+    const provider = seat.split("/")[0];
+    const windows = provider === "openai" ? openAiWindows : provider === "anthropic" ? claudeWindows : {};
+    const readable = (provider === "openai" || provider === "anthropic")
       && Number.isFinite(windows.shortWindow?.percentLeft);
     if (readable) {
       return {
@@ -160,6 +202,7 @@ export function collectRecentSeatPauses({
 
 export function readPipelineCreditHeadroom({
   modelsOut = "",
+  claudeUsageOut = "",
   hqRoot,
   configPath,
   now = Date.now(),
@@ -167,6 +210,7 @@ export function readPipelineCreditHeadroom({
 } = {}) {
   return readCreditHeadroom({
     modelsOut,
+    claudeUsageOut,
     pipelineSeats: collectPipelineSeats({ configPath }),
     seatPauses: collectRecentSeatPauses({ hqRoot, now, lookbackHours }),
     now,
