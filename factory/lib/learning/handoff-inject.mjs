@@ -13,6 +13,7 @@
 
 import { existsSync, readFileSync } from "fs";
 import { join, resolve } from "path";
+import { clampSection, SECTION_BUDGETS } from "../intel/assemble.mjs";
 import { KNOWLEDGE_DIR, KNOWLEDGE_FILES } from "./knowledge.mjs";
 import { readState, writeState } from "../task-workflow.mjs";
 
@@ -73,7 +74,7 @@ export function buildKnowledgeBlock({ hqRoot, role, env = process.env, maxPerFil
     }
 
     if (!parts.length) return { text: "", sources: [] };
-    const text = [
+    const block = [
       "## Company knowledge",
       "",
       "Accepted lessons from prior tasks across the company. Apply them; if one is wrong for this task, say so in your summary.",
@@ -81,6 +82,7 @@ export function buildKnowledgeBlock({ hqRoot, role, env = process.env, maxPerFil
       parts.join("\n\n"),
       "",
     ].join("\n");
+    const text = clampSection(block, SECTION_BUDGETS.knowledge, "factory/knowledge/agents/", { boundary: "line" });
     return { text, sources };
   } catch {
     return { text: "", sources: [] };

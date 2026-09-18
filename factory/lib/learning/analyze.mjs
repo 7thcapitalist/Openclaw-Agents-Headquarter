@@ -8,8 +8,13 @@
 // never replaces this layer.
 
 import { fingerprint, slugify } from "../common/fingerprint.mjs";
+import { sanitizeExcerpt } from "../common/redact.mjs";
+import { classifyObjectiveNodeBlocker } from "../hq/blocker-class.mjs";
+import { isNoVerdictContent } from "../hq/report/no-verdict.mjs";
 
 const REVIEW_STAGES = new Set(["reviewer", "qa", "security"]);
+const FINDING_ROLES = new Set(["product", "architect", "builder", "reviewer", "qa", "security", "release"]);
+const findingRole = (stage) => FINDING_ROLES.has(stage) ? stage : null;
 
 // Ordered cause buckets. First match wins. Keep the vocabulary aligned with the
 // role prompts so a founder can trace a finding back to a stage instruction.
@@ -50,6 +55,13 @@ function makeFinding(partial) {
 function stageEvidenceFor(record, stage) {
   const items = record.evidenceByStage?.[stage] || [];
   return items.map((e) => ({ path: `${record.id}:${e.path}`, excerpt: e.excerpt, verdicts: e.verdicts }));
+}
+
+function dispatchEvidence(record, dispatches, fallback) {
+  return dispatches.map((dispatch) => ({
+    path: dispatch.resultPath || `${record.id}:dispatch:${dispatch.stage}#${dispatch.attempt || 1}`,
+    excerpt: dispatch.summary || dispatch.error || fallback,
+  }));
 }
 
 // ---- Failure classifiers -------------------------------------------------------
@@ -199,6 +211,177 @@ export function classifyRecoverySuccesses(records, now) {
     });
 }
 
+export function classifyNoVerdictDispatches(records, now) {
+  const findings = [];
+  for (const record of records) {
+    for (const dispatch of record.dispatches.filter((item) => isNoVerdictContent(`${item.summary || ""} ${item.error || ""}`))) {
+      findings.push(makeFinding({
+        project: record.project,
+        objectiveId: record.objectiveId,
+        targetRole: findingRole(dispatch.stage),
+        fingerprint: fingerprint(["no-verdict-dispatch", dispatch.stage || "unknown"]),
+        title: `${dispatch.stage || "Agent"} dispatch produced no verdict`,
+        observation: `Objective ${record.objectiveId || "unknown"}, task ${record.id}: the ${dispatch.stage || "unknown"} dispatch ended without a usable result verdict.`,
+        evidence: dispatchEvidence(record, [dispatch], "dispatch produced no verdict"),
+        recommendation: `Inspect the ${dispatch.stage || "agent"} route and result-file handoff; a dispatch must either write its contracted result or fail with an actionable infrastructure classification.`,
+        confidence: "high",
+        taskIds: [record.id],
+        raisedAt: now,
+      }));
+    }
+  }
+  return findings;
+}
+
+export function classifyRepeatedStageRuns(records, now) {
+  const findings = [];
+  for (const record of records) {
+    for (const [stage, retries] of Object.entries(record.retryByStage || {})) {
+      if (retries < 1) continue;
+      const dispatches = record.dispatches.filter((dispatch) => dispatch.stage === stage);
+      findings.push(makeFinding({
+        scope: "agent",
+        project: record.project,
+        objectiveId: record.objectiveId,
+        targetRole: findingRole(stage),
+        fingerprint: fingerprint(["repeated-stage-run", stage, slugify(record.workType || "any")]),
+        title: `${stage} stage ran more than once`,
+        observation: `Objective ${record.objectiveId || "unknown"}, task ${record.id}: ${stage} ran ${retries + 1} times.`,
+        evidence: dispatchEvidence(record, dispatches, "repeated stage run").slice(0, 4),
+        recommendation: `Review the first ${stage} result and the following handoff to remove the reason this stage needed another run.`,
+        confidence: "high",
+        taskIds: [record.id],
+        raisedAt: now,
+      }));
+    }
+  }
+  return findings;
+}
+
+export function classifyUnchangedGateReruns(records, now) {
+  const findings = [];
+  for (const record of records) {
+    const approvedAt = record.events?.find((event) => event.type === "founder-approval-recorded")?.at;
+    if (!approvedAt) continue;
+    for (const stage of REVIEW_STAGES) {
+      if ((record.retryByStage?.[stage] || 0) < 1) continue;
+      const dispatches = record.dispatches.filter((dispatch) => dispatch.stage === stage);
+      const reranAfterApproval = dispatches.slice(1).some((dispatch) => {
+        const at = dispatch.createdAt || dispatch.startedAt || dispatch.completedAt;
+        return at && Date.parse(at) >= Date.parse(approvedAt);
+      });
+      if (!reranAfterApproval) continue;
+      const invalidated = record.events.some((event) => event.type === "evidence-invalidated" && event.stages?.includes(stage));
+      if (invalidated) continue;
+      findings.push(makeFinding({
+        project: record.project,
+        objectiveId: record.objectiveId,
+        targetRole: stage,
+        fingerprint: fingerprint(["unchanged-gate-rerun", stage, slugify(record.workType || "any")]),
+        title: `${stage} gate re-ran after approval without a file change`,
+        observation: `Objective ${record.objectiveId || "unknown"}, task ${record.id}: ${stage} ran again after founder approval, with no evidence-invalidated event naming that gate.`,
+        evidence: dispatchEvidence(record, dispatches, "gate re-run against unchanged source").slice(0, 4),
+        recommendation: `Preserve the approved ${stage} verdict when the verified commit is unchanged; only re-open it after evidence invalidation.`,
+        confidence: "high",
+        taskIds: [record.id],
+        raisedAt: now,
+      }));
+    }
+  }
+  return findings;
+}
+
+const UPSTREAM_EVIDENCE_GAP_RE = /missing context|insufficient acceptance criteria|no vision|lack(?:ing|ed)? (?:background|context)|missing (?:handoff|evidence)|acceptance criteria (?:missing|insufficient)/i;
+
+export function classifyBuilderReworkFromUpstreamGaps(records, now) {
+  const findings = [];
+  for (const record of records) {
+    for (let index = 0; index < record.dispatches.length; index += 1) {
+      const builder = record.dispatches[index];
+      if (builder.stage !== "builder" || (builder.attempt || 1) <= 1) continue;
+      const prior = record.dispatches.slice(0, index).reverse().find((dispatch) => dispatch.stage !== "builder");
+      if (!prior || !UPSTREAM_EVIDENCE_GAP_RE.test(`${prior.summary || ""} ${prior.error || ""}`)) continue;
+      findings.push(makeFinding({
+        project: record.project,
+        objectiveId: record.objectiveId,
+        targetRole: findingRole(prior.stage),
+        fingerprint: fingerprint(["builder-rework-upstream-gap", prior.stage || "unknown", slugify(record.workType || "any")]),
+        title: `Builder rework followed missing ${prior.stage || "upstream"} evidence`,
+        observation: `Objective ${record.objectiveId || "unknown"}, task ${record.id}: builder attempt ${builder.attempt} followed a ${prior.stage || "prior-stage"} result that reported missing context or evidence.`,
+        evidence: dispatchEvidence(record, [prior, builder], "builder rework from upstream evidence gap"),
+        recommendation: `Require the ${prior.stage || "upstream"} handoff to include the missing context and acceptance evidence before routing to builder.`,
+        confidence: "high",
+        taskIds: [record.id],
+        raisedAt: now,
+      }));
+    }
+  }
+  return findings;
+}
+
+export function classifyInfrastructureFounderInterruptions(records, now) {
+  const findings = [];
+  for (const record of records) {
+    const joined = record.objectiveNodeBlocker;
+    if (!joined || joined.blocker?.outcome !== "decision-required" || classifyObjectiveNodeBlocker(joined.blocker) !== "infra") continue;
+    const dispatches = record.dispatches.filter((dispatch) => dispatch.outcome === "fail" || dispatch.status === "failed");
+    findings.push(makeFinding({
+      project: record.project,
+      objectiveId: joined.objectiveId || record.objectiveId,
+      targetRole: findingRole(joined.blocker.stage),
+      fingerprint: fingerprint(["founder-interruption-infrastructure", joined.blocker.stage || "unknown"]),
+      title: "Founder interruption was caused by infrastructure",
+      observation: `Objective ${joined.objectiveId || record.objectiveId || "unknown"}, task ${record.id}: infrastructure was surfaced as a decision-required interruption rather than a product decision.`,
+      evidence: [
+        { path: joined.objectivePath, excerpt: sanitizeExcerpt(joined.blocker.summary || joined.blocker.why || "infrastructure blocker").text },
+        ...dispatchEvidence(record, dispatches, "infrastructure dispatch failure"),
+      ].slice(0, 4),
+      recommendation: "Route this blocker through infrastructure recovery and keep it out of the founder decision queue unless a genuine product or authority choice remains.",
+      confidence: "high",
+      taskIds: [record.id],
+      raisedAt: now,
+    }));
+  }
+  return findings;
+}
+
+function median(values) {
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
+export function classifySlowCycles(records, now) {
+  const findings = [];
+  const groups = new Map();
+  for (const record of records) {
+    if (typeof record.cycleMs !== "number" || record.cycleMs <= 0 || !record.workType) continue;
+    if (!groups.has(record.workType)) groups.set(record.workType, []);
+    groups.get(record.workType).push(record);
+  }
+  for (const [workType, group] of groups) {
+    if (group.length < 4) continue;
+    for (const record of group) {
+      const baseline = median(group.filter((other) => other !== record).map((other) => other.cycleMs));
+      if (!baseline || record.cycleMs <= baseline * 2) continue;
+      findings.push(makeFinding({
+        project: record.project,
+        objectiveId: record.objectiveId,
+        targetRole: null,
+        fingerprint: fingerprint(["slow-cycle-outlier", slugify(workType)]),
+        title: `Wall time far above median for ${workType} work`,
+        observation: `Objective ${record.objectiveId || "unknown"}, task ${record.id}: ${Math.round(record.cycleMs / 6e4)} min wall time was more than 2x the ${Math.round(baseline / 6e4)} min median of similar terminal tasks.`,
+        evidence: dispatchEvidence(record, record.dispatches, "slow task result").slice(0, 4),
+        recommendation: "Inspect the longest stage transitions and remove avoidable waits or repeated handoffs for this work type.",
+        confidence: "medium",
+        taskIds: [record.id],
+        raisedAt: now,
+      }));
+    }
+  }
+  return findings;
+}
+
 // ---- Success classifiers ----------------------------------------------------
 
 export function classifyCleanDeliveries(records, now, { stageCount = 7 } = {}) {
@@ -290,6 +473,7 @@ export function clusterFindings(findings, { patternThreshold = 2, now } = {}) {
       kind: "pattern",
       scope: lead.scope,
       project: group.every((f) => f.project === lead.project) ? lead.project : null,
+      objectiveId: group.every((f) => f.objectiveId === lead.objectiveId) ? (lead.objectiveId ?? null) : null,
       targetRole: lead.targetRole,
       fingerprint: fp,
       title: `Recurring: ${lead.title}`,
@@ -321,6 +505,12 @@ export function clusterFindings(findings, { patternThreshold = 2, now } = {}) {
 export function analyzeTasks(records, { now = new Date().toISOString(), patternThreshold = 2, maxAttemptsPerStage = 3 } = {}) {
   const list = Array.isArray(records) ? records : [];
   const failures = [
+    ...classifyNoVerdictDispatches(list, now),
+    ...classifyRepeatedStageRuns(list, now),
+    ...classifyUnchangedGateReruns(list, now),
+    ...classifyBuilderReworkFromUpstreamGaps(list, now),
+    ...classifyInfrastructureFounderInterruptions(list, now),
+    ...classifySlowCycles(list, now),
     ...classifyBuilderFailures(list, now),
     ...classifyReviewRejections(list, now),
     ...classifyRetryExhaustion(list, now, { maxAttemptsPerStage }),

@@ -149,6 +149,7 @@ test("one-click: an objective node resumes its objective, not a bare task", asyn
   assert.equal(runObjective.calls.length, 1);
   assert.equal(runTask.calls.length, 0);
   assert.match(runObjective.calls[0][0].objectivePath, /objective-state\.json$/);
+  assert.equal(runObjective.calls[0][0].hqRoot, root);
   assert.equal(readState(path).status, "active");
 });
 

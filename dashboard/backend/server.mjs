@@ -748,7 +748,7 @@ app.post("/api/founder/objectives/:id/cancel", (req, res) => {
     const statePath = findObjectiveStatePath(ROOT, req.params.id);
     if (!statePath) return res.status(404).json({ error: "No such objective." });
     const reason = typeof req.body?.reason === "string" ? req.body.reason : "";
-    const cancelled = cancelObjective(statePath, { reason });
+    const cancelled = cancelObjective(statePath, { reason, hqRoot: ROOT });
     const archived = setObjectiveArchived(ROOT, req.params.id, true, { reason: reason || "cancelled by the founder" });
     res.json({ ...cancelled, archived: archived.archived, archivedAt: archived.archivedAt });
   } catch (e) {
@@ -1886,6 +1886,10 @@ app.get("/lib/board.mjs", (req, res) => {
 
 app.get("/lib/stage-vocabulary.mjs", (req, res) => {
   res.type("text/javascript").sendFile(join(ROOT, "control-plane", "public", "stage-vocabulary.mjs"));
+});
+
+app.get("/lib/founder-vocabulary.mjs", (req, res) => {
+  res.type("text/javascript").sendFile(join(ROOT, "control-plane", "public", "founder-vocabulary.mjs"));
 });
 
 app.use(express.static(join(__dirname, "public")));
