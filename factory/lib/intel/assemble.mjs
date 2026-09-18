@@ -8,6 +8,7 @@ import { assertInsideDir, isSecretFilename, scrubText } from "./redact.mjs";
 // their whole body; the full files are in the agent's worktree.
 export const SECTION_BUDGETS = {
   factory: 1400,
+  knowledge: 2000,
   ownership: 1800,
   vision: 700,
   mission: 500,
@@ -279,7 +280,12 @@ function truncate(text, budget = 600, pointer = null) {
   return `${cut} … (truncated${pointer ? ` — see ${pointer}` : ""})`;
 }
 
-function clampSection(text, budget, pointer) {
+export function clampSection(text, budget, pointer, { boundary = "word" } = {}) {
   if (text.length <= budget) return text;
-  return `${text.slice(0, budget).replace(/\s+\S*$/, "")}\n… (section truncated — see ${pointer})`;
+  const marker = `\n… (section truncated — see ${pointer})`;
+  const cut = text.slice(0, Math.max(0, budget - marker.length));
+  const safe = boundary === "line"
+    ? cut.slice(0, Math.max(0, cut.lastIndexOf("\n")))
+    : cut.replace(/\s+\S*$/, "");
+  return `${safe}${marker}`;
 }

@@ -13,6 +13,26 @@ import { FOUNDER_IMPACTS } from "./hq/escalation-gate.mjs";
 // them. On lifemaxing the recovery agent ran the project's whole verify gate
 // and an independent verifier confirmed it, and the re-dispatched qa agent was
 // handed a blank prompt and started over.
+// The dossier files under factory/knowledge/agents/ are named by resolved
+// runtime agent id (backend-builder.md, frontend-builder.md, ...), not by
+// pipeline stage. Every stage except "builder" already resolves 1:1 (stage
+// "architect" -> role "architect"), but "builder" fans out to whichever
+// harness the task picked, so passing the bare stage name would only ever
+// look for a nonexistent "builder.md". Mirror the same
+// `${stage}:${actor}` -> `${stage}` routing openclaw-runner.mjs's
+// selectAgentId() uses to pick the runtime agent, so the dossier looked up
+// here is the one the dispatched agent actually studied.
+function knowledgeRoleFor(hqRoot, state, stage) {
+  try {
+    const config = JSON.parse(readFileSync(join(hqRoot, "factory", "factory.config.json"), "utf8"));
+    const routes = config?.openclawIntegration?.agentIds || {};
+    const actor = state.assignments?.[stage];
+    return routes[`${stage}:${actor}`] || routes[stage] || stage;
+  } catch {
+    return stage;
+  }
+}
+
 function settledRecoveryFor(state, stage) {
   if (state.recovery?.active) return null;
   const attempts = (state.recovery?.attempts || []).filter(
@@ -90,7 +110,7 @@ export function writeHandoff({ hqRoot, statePath, state, companyState = null, re
   }
   let knowledgeBlock = "";
   try {
-    const block = buildKnowledgeBlock({ hqRoot, role: stage });
+    const block = buildKnowledgeBlock({ hqRoot, role: knowledgeRoleFor(hqRoot, state, stage) });
     if (block) knowledgeBlock = `${block}\n`;
   } catch {
     knowledgeBlock = "";

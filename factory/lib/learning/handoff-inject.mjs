@@ -13,6 +13,7 @@
 
 import { existsSync, readFileSync } from "fs";
 import { join, resolve } from "path";
+import { clampSection, SECTION_BUDGETS } from "../intel/assemble.mjs";
 import { KNOWLEDGE_FILES } from "./knowledge.mjs";
 
 export function learningInjectionEnabled(hqRoot, env = process.env) {
@@ -61,7 +62,7 @@ export function buildKnowledgeBlock({ hqRoot, role, env = process.env, maxPerFil
     }
 
     if (!parts.length) return "";
-    return [
+    const block = [
       "## Company knowledge",
       "",
       "Accepted lessons from prior tasks across the company. Apply them; if one is wrong for this task, say so in your summary.",
@@ -69,6 +70,7 @@ export function buildKnowledgeBlock({ hqRoot, role, env = process.env, maxPerFil
       parts.join("\n\n"),
       "",
     ].join("\n");
+    return clampSection(block, SECTION_BUDGETS.knowledge, "factory/knowledge/agents/", { boundary: "line" });
   } catch {
     return "";
   }
