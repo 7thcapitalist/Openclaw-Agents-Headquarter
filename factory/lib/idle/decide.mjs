@@ -9,6 +9,7 @@ export const IDLE_TRIGGER_DEFAULTS = Object.freeze({
 });
 
 const ACTIVE = new Set(["starting", "decomposing", "planned", "active", "running", "recovering", "incomplete", "integration-blocked", "yielded"]);
+const ACTIONABLE_FINDING_KINDS = new Set(["failure", "pattern", "agent-improvement"]);
 const HIGH_RISK = /security|secret|credential|permission|approval|gate|state machine|workflow engine|auto.?merge|deploy|production|billing|payment|privacy/i;
 
 export function idleTriggerConfig(config = {}) {
@@ -41,6 +42,7 @@ function findingRisk(finding) {
 }
 
 export function evaluateFinding(finding, { patternThreshold = 2, objectives = [], openPrs = [], evidenceExists = () => true } = {}) {
+  if (!ACTIONABLE_FINDING_KINDS.has(finding?.kind)) return { eligible: false, reason: "non-actionable-kind" };
   if (!finding || finding.status !== "open" || Number(finding.occurrences || 0) < patternThreshold) return { eligible: false, reason: "below-threshold" };
   if (!Array.isArray(finding.evidence) || finding.evidence.length === 0) return { eligible: false, reason: "missing-evidence" };
   if (!finding.evidence.every((entry) => evidenceExists(typeof entry === "string" ? entry : entry?.path))) return { eligible: false, reason: "missing-evidence" };
