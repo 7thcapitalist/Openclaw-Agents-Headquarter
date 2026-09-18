@@ -24,6 +24,24 @@ test("decision files one eligible low/medium finding", () => {
   assert.equal(decideIdleLaunch(base()).action, "launch");
 });
 
+test("decision ignores positive success findings and selects actionable learning findings", () => {
+  const success = finding({
+    id: "L-0001",
+    kind: "success",
+    title: "Clean delivery",
+    observation: "Keep routing backend work through the current path.",
+    recommendation: "Keep routing backend work through the current path.",
+    occurrences: 99,
+  });
+  const result = decideIdleLaunch(base({ findings: [success, finding()] }));
+  assert.equal(result.action, "launch");
+  assert.equal(result.finding.id, "L-0042");
+
+  const onlySuccess = decideIdleLaunch(base({ findings: [success] }));
+  assert.equal(onlySuccess.action, "skip");
+  assert.deepEqual(onlySuccess.findings, [{ findingId: "L-0001", reason: "non-actionable-kind" }]);
+});
+
 const failedConditions = [
   ["founder active", "founder-active", { objectives: [{ status: "running" }] }],
   ["founder queued", "founder-queued", { founderQueued: true }],
