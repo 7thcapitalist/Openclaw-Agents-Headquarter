@@ -7,7 +7,7 @@ import { basename, dirname, join } from "path";
 import { PROTOCOL_VERSION, blockDispatch, computeDispatchPaths, failDispatch, ingestResult, markDispatchRunning, prepareDispatch, readResultFile, recordDispatchAgentId, recordDispatchRoute, recordRouteFailure } from "./openclaw-protocol.mjs";
 import { describeAgentCompletion, parseAgentMeta } from "./hq/agent-meta.mjs";
 import { rotatedRouteFor } from "./agent-routes.mjs";
-import { DEFAULT_MAX_INFRA_ATTEMPTS, STAGES, readState } from "./task-workflow.mjs";
+import { DEFAULT_MAX_INFRA_ATTEMPTS, STAGES, readState, reuseJudgedVerdict } from "./task-workflow.mjs";
 import { mutateTransactionalState, peekRevision } from "./store/transactional-json.mjs";
 import { recordReleaseDeployment } from "./deploy/record-release.mjs";
 import { writeHandoff } from "./handoff.mjs";
@@ -533,7 +533,25 @@ export function recordRunnerCrash({ statePath, error, now = new Date().toISOStri
 // at a time. Returns the engine response, or null when no fan-out applies (the
 // caller then does a normal sequential `runOneStage`).
 export async function runConcurrentGroupIfReady({ hqRoot, statePath, agentIds = {}, maxAttemptsPerStage = 3, maxInfraAttemptsPerStage = DEFAULT_MAX_INFRA_ATTEMPTS, execute = executeOpenClaw, publish = publishMergeReadyTask, groups = DEFAULT_CONCURRENT_GROUPS, waitForResult = waitForYieldedResult }) {
-  const state = readState(statePath);
+  let state = readState(statePath);
+  if (reuseJudgedVerdict(state, { maxAttemptsPerStage, maxInfraAttemptsPerStage })) {
+    mutateTransactionalState(statePath, {
+      commandId: `reuse-group-verdicts:${randomUUID()}`,
+      replayable: false,
+      mutate: (current) => {
+        let next = current;
+        let reused = false;
+        while (true) {
+          const candidate = reuseJudgedVerdict(next, { maxAttemptsPerStage, maxInfraAttemptsPerStage });
+          if (!candidate) break;
+          next = candidate;
+          reused = true;
+        }
+        return reused ? next : undefined;
+      },
+    });
+    state = readState(statePath);
+  }
   if (state.status !== "active" || state.currentDispatch || state.recovery?.active) return null;
   if (state.yieldedGroup) {
     if (state.yieldedGroup.some((m) => !existsSync(m.resultPath))) {

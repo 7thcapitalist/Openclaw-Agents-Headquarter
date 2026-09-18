@@ -82,7 +82,7 @@ test("an exhausted seat pauses the stage without spending any budget", async () 
   assert.match(state.blocker.summary, /Nothing was charged/);
   assert.equal(classifyBlocker(state.blocker), "infra", "the system resumes it; the founder is not paged");
   // Neither budget moved, and recovery never started.
-  assert.deepEqual(countStageAttempts(state, "builder"), { verdicts: 0, infra: 0, passes: 0, total: 1 });
+  assert.deepEqual(countStageAttempts(state, "builder"), { verdicts: 0, infra: 0, passes: 0, repeats: 0, total: 1 });
   assert.equal(state.recovery.attempts.length, 0);
   assert.equal(state.recovery.active, null);
   assert.ok(state.events.some((e) => e.type === "dispatch-paused-seats"));
