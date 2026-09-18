@@ -501,9 +501,10 @@ export function reuseJudgedVerdict(state, { stage = state?.currentStage, maxAtte
   next.updatedAt = now;
   next.events.push({
     at: now,
-    type: "verdict-reused",
+    type: "task-resumed",
     stage,
     actor: next.assignments[stage],
+    reason: "verdict-reused",
     commit,
     sourceDispatchId: snapshot.dispatchId,
     outcome: snapshot.outcome,

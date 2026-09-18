@@ -159,7 +159,7 @@ test("prepareDispatch reuses a verdict on an unchanged commit without creating a
   assert.equal(final.currentStage, "qa");
   assert.equal(final.currentDispatch, undefined);
   assert.equal(final.dispatches.length, 1, "reuse creates no new dispatch");
-  assert.equal(final.events.at(-2).type, "verdict-reused");
+  assert.equal(final.events.at(-2).reason, "verdict-reused");
   assert.equal(final.events.at(-2).sourceDispatchId, "reviewer-original");
 });
 
@@ -213,7 +213,7 @@ test("the concurrent gate path reuses prior verdicts with zero agent dispatches"
   assert.equal(response, null);
   assert.equal(dispatches, 0);
   assert.equal(final.currentStage, "release");
-  assert.equal(final.events.filter((event) => event.type === "verdict-reused").length, 3);
+  assert.equal(final.events.filter((event) => event.reason === "verdict-reused").length, 3);
 });
 
 test("an already-yielded review group keeps ownership instead of reusing history", async () => {
@@ -232,7 +232,7 @@ test("an already-yielded review group keeps ownership instead of reusing history
   const final = readState(statePath);
   assert.equal(response.waiting, true);
   assert.equal(final.currentStage, "reviewer");
-  assert.equal(final.events.some((event) => event.type === "verdict-reused"), false);
+  assert.equal(final.events.some((event) => event.reason === "verdict-reused"), false);
 });
 
 test("only distinct rejected commits spend the three-verdict budget", () => {
