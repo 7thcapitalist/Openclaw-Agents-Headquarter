@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 const APP = readFileSync(new URL("../../dashboard/backend/public/app.js", import.meta.url), "utf8");
+const CSS = readFileSync(new URL("../../dashboard/backend/public/styles.css", import.meta.url), "utf8");
 
 function functionSource(name) {
   const start = APP.indexOf(`function ${name}`);
@@ -97,6 +98,7 @@ test("an objective card's actions are buttons, never the card itself", () => {
 test("an active objective card states what is happening and whether the founder must act", () => {
   const html = objectiveCardRenderer()(objective());
   assert.match(html, /Building — Backend Builder is working — 5m so far\. Nothing needed from you\./);
+  assert.match(CSS, /\.objective-now strong \{[^}]*min-width: 0;[^}]*overflow-wrap: anywhere;/, "the longer live sentence must wrap on narrow cards");
 });
 
 test("an objective with a pending approval offers Approve and Reject, even behind a question", () => {
