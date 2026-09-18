@@ -206,7 +206,7 @@ export async function resumeStrandedObjectives({
     // anything else, because an objective in this shape has no node to resume
     // and would otherwise be skipped as "nothing ready" every sweep, forever.
     try {
-      if (settle(objectivePath)) {
+      if (settle(objectivePath, { hqRoot })) {
         log(`[objective-reconcile] ${objective.objectiveId} is complete: every build node passed and its integration was superseded`);
         skipped.push({ objectivePath, objectiveId: objective.objectiveId, reason: "settled as complete" });
         continue;

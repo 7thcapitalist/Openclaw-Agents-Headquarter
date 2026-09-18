@@ -23,6 +23,7 @@ import { classifyBlocker, classifyObjectiveNodeBlocker, founderApprovalSetupBloc
 import { classifyFailure, isDeterministicProjectFailure } from "../failure-classification.mjs";
 import { checkCapability } from "../hq/capability-check.mjs";
 import { beginRun, endRun, isOurs, runnerIdentity } from "./runner-lease.mjs";
+import { triggerObjectiveLearningRun } from "../learning/objective-trigger.mjs";
 
 const INTEGRATION_SYNTHETIC_STAGES = new Set(["product", "architect", "builder"]);
 
@@ -84,6 +85,13 @@ export function readObjState(path) { return readTransactionalState(path, { forma
 
 export const INTEGRATION_SKIPPED = "skipped";
 
+function fireLearningTrigger(learningTrigger, payload) {
+  if (!payload.hqRoot || typeof learningTrigger !== "function") return;
+  // Defer invocation itself, not only its result. Synchronous setup in the
+  // learning pass therefore cannot lengthen or fail the objective's return.
+  void Promise.resolve().then(() => learningTrigger(payload)).catch(() => {});
+}
+
 /**
  * Finish an objective whose work is done but which nothing will ever finish.
  *
@@ -93,19 +101,26 @@ export const INTEGRATION_SKIPPED = "skipped";
  * objective reconciled by hand into this shape (obj-c58897c0, 2026-09-15) reads
  * "active" forever. Returns true when it settled something.
  */
-export function settleSupersededObjective(objectivePath, { now = () => new Date().toISOString() } = {}) {
+export function settleSupersededObjective(objectivePath, {
+  now = () => new Date().toISOString(),
+  hqRoot = null,
+  learningTrigger = triggerObjectiveLearningRun,
+} = {}) {
   // Read before writing. The reconciler calls this for every objective on
   // every sweep, and a sweep now repeats every ten minutes; opening a write
   // transaction each time to discover there is nothing to settle is exactly
   // the idle write amplification the publisher was just cured of.
   if (!isSupersededButActive(readObjState(objectivePath))) return false;
   let settled = false;
-  mutate(objectivePath, (s) => {
+  const next = mutate(objectivePath, (s) => {
     if (!isSupersededButActive(s)) return;
     const at = now();
     s.status = "complete";
     s.events.push({ at, type: "objective-finished", detail: "complete", reason: "all build nodes passed; integration superseded" });
     settled = true;
+  });
+  if (settled) fireLearningTrigger(learningTrigger, {
+    hqRoot, objectivePath, objectiveId: next.objectiveId, project: next.project, reason: "objective-finished:complete",
   });
   return settled;
 }
@@ -685,7 +700,12 @@ export function setObjectiveRecoveryInFlight(objectivePath, inFlight) {
 // of what the run actually did, and cancelling is not a claim about that.
 export const CANCELLED = "cancelled";
 
-export function cancelObjective(objectivePath, { reason = "", at = new Date().toISOString() } = {}) {
+export function cancelObjective(objectivePath, {
+  reason = "",
+  at = new Date().toISOString(),
+  hqRoot = null,
+  learningTrigger = triggerObjectiveLearningRun,
+} = {}) {
   const before = readObjState(objectivePath);
   if (before.status === CANCELLED) {
     return {
@@ -706,6 +726,9 @@ export function cancelObjective(objectivePath, { reason = "", at = new Date().to
     s.cancelledAt = at;
     if (detail) s.cancelReason = detail;
     s.events.push({ at, type: "objective-cancelled", by: "founder", detail: detail || "cancelled by the founder" });
+  });
+  fireLearningTrigger(learningTrigger, {
+    hqRoot, objectivePath, objectiveId: next.objectiveId, project: next.project, reason: "objective-cancelled:cancelled",
   });
   return {
     objectiveId: next.objectiveId,
@@ -739,7 +762,7 @@ export async function runObjective(args) {
   }
 }
 
-async function driveObjective({ hqRoot, objectivePath, maxConcurrent = 3, execute = executeOpenClaw, agentIds = {}, maxAttemptsPerStage = 3, concurrentGroups, publish, stateRoot }) {
+async function driveObjective({ hqRoot, objectivePath, maxConcurrent = 3, execute = executeOpenClaw, agentIds = {}, maxAttemptsPerStage = 3, concurrentGroups, publish, stateRoot, learningTrigger = triggerObjectiveLearningRun }) {
   // Scheduling an objective's nodes is checked before anything is read or
   // written, because everything below it — publishing a stalled node, resuming
   // descendants, dispatching stages — follows from this one decision.
@@ -858,7 +881,10 @@ async function driveObjective({ hqRoot, objectivePath, maxConcurrent = 3, execut
     : buildNodesComplete(obj) ? "integration-blocked"
     : isDeadlocked(obj) ? "blocked" : "incomplete";
   if (!cancelled) {
-    mutate(objectivePath, (s) => { s.status = finalStatus; s.events.push({ at: new Date().toISOString(), type: "objective-finished", detail: finalStatus }); });
+    const next = mutate(objectivePath, (s) => { s.status = finalStatus; s.events.push({ at: new Date().toISOString(), type: "objective-finished", detail: finalStatus }); });
+    fireLearningTrigger(learningTrigger, {
+      hqRoot, objectivePath, objectiveId: next.objectiveId, project: next.project, reason: `objective-finished:${finalStatus}`,
+    });
   }
 
   // Record graph health and enqueue a durable wakeup for anything that became

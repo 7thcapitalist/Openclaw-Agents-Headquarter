@@ -74,14 +74,17 @@ test("runObjective: A+B concurrent, C waits for A, integration merges all, gates
   const { objectivePath, objDir } = writeObjective(root, repo, NODES);
   const windows = [];
   const stateRoot = join(root, "factory-state");
+  let learningPayload = null;
 
   const res = await runObjective({
     hqRoot: HQ, objectivePath, maxConcurrent: 3, stateRoot,
     execute: makeExecute({ windows }),
     publish: () => ({ published: false, reason: "no remote in this test" }),
+    learningTrigger: (payload) => { learningPayload = payload; return new Promise(() => {}); },
   });
 
   assert.equal(res.status, "complete", JSON.stringify(res.integrationResp || res.status));
+  assert.equal(learningPayload.reason, "objective-finished:complete", "terminal event fires learning without awaiting its unresolved promise");
   const obj = readObjState(objectivePath);
   for (const id of Object.keys(obj.nodes)) assert.equal(obj.nodes[id].status, "gate-satisfied", `${id} not satisfied`);
   assert.equal(obj.integration.status, "gate-satisfied");
@@ -202,7 +205,12 @@ test("runObjective: an infrastructure failure becomes an actionable decision, no
     return base(args);
   };
 
-  const res = await runObjective({ hqRoot: HQ, objectivePath, maxConcurrent: 2, stateRoot, execute: rateLimited, publish: () => ({ published: false }) });
+  let learningPayload = null;
+  const res = await runObjective({
+    hqRoot: HQ, objectivePath, maxConcurrent: 2, stateRoot, execute: rateLimited,
+    publish: () => ({ published: false }),
+    learningTrigger: (payload) => { learningPayload = payload; return new Promise(() => {}); },
+  });
   const obj = readObjState(objectivePath);
   const node = Object.values(obj.nodes)[0];
   assert.equal(node.status, "blocked", "an infra failure blocks (needs the founder), it does not just die");
@@ -210,6 +218,7 @@ test("runObjective: an infrastructure failure becomes an actionable decision, no
   assert.equal(node.blocker.infra, true, "synthesized blocker carries an explicit infra tag");
   assert.match(node.blocker.summary, /could not run|Retry the objective later|adjust model routing/i);
   assert.notEqual(res.status, "complete");
+  assert.equal(learningPayload.reason, "objective-finished:blocked", "blocked terminal event also fires learning without waiting");
 });
 
 test("resumeObjectiveNodes + re-run: infra-blocked node reuses worktree and can complete", async () => {

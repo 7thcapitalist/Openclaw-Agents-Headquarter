@@ -92,8 +92,12 @@ export function toTaskRecord(state, statePath = null, { attachEvidence = true } 
     attempt: d.attempt ?? null,
     outcome: d.outcome ?? null,
     status: d.status ?? null,
+    createdAt: d.createdAt || null,
+    startedAt: d.startedAt || null,
+    completedAt: d.completedAt || null,
     summary: sanitizeExcerpt(d.summary || "", { maxLength: 300 }).text || null,
     error: d.error ? sanitizeExcerpt(d.error, { maxLength: 300 }).text : null,
+    resultPath: d.resultPath ? resolve(d.resultPath) : null,
   }));
   const retryByStage = {};
   for (const d of dispatches) {
@@ -102,7 +106,15 @@ export function toTaskRecord(state, statePath = null, { attachEvidence = true } 
   for (const stage of Object.keys(retryByStage)) {
     retryByStage[stage] = Math.max(0, retryByStage[stage] - 1);
   }
-  const events = (state.events || []).map((e) => ({ at: e.at, type: e.type, stage: e.stage || null, actor: e.actor || null }));
+  const events = (state.events || []).map((e) => ({
+    at: e.at,
+    type: e.type,
+    stage: e.stage || null,
+    actor: e.actor || null,
+    commit: e.commit || null,
+    previous: e.previous || null,
+    stages: Array.isArray(e.stages) ? [...e.stages] : [],
+  }));
   const decisionEvents = events.filter((e) =>
     e.type === "stage-decision-required" ||
     e.type === "founder-decision-recorded" ||
@@ -119,6 +131,7 @@ export function toTaskRecord(state, statePath = null, { attachEvidence = true } 
 
   return {
     id: state.task?.id || (statePath ? basename(dirname(statePath)) : "unknown"),
+    objectiveId: /^(obj-[0-9a-f]{8})-/i.exec(state.task?.id || "")?.[1] || null,
     project: state.task?.project || (state.repo ? basename(state.repo) : "unknown"),
     repo: state.repo || null,
     statePath: statePath ? resolve(statePath) : null,
@@ -146,6 +159,7 @@ export function toTaskRecord(state, statePath = null, { attachEvidence = true } 
     failedDispatches: dispatches.filter((d) => d.outcome === "fail" || d.status === "failed"),
     retryByStage,
     decisionEvents,
+    events,
     founderDecisions: (state.founderDecisions || []).map((f) => ({
       at: f.at,
       direction: sanitizeExcerpt(f.direction || "", { maxLength: 300 }).text,
@@ -214,6 +228,32 @@ export function collectObjectiveMetrics({ factoryStateRoot } = {}) {
       if (!existsSync(path)) continue;
       try { out.push({ ...JSON.parse(readFileSync(path, "utf8")), project: project.name }); }
       catch { /* skip malformed */ }
+    }
+  }
+  return out;
+}
+
+// Map task ids to the objective-level blocker that wrapped them. Infrastructure
+// escalation is recorded on objective-state.json, not on the child task, so the
+// learning pass joins this read-only projection onto TaskRecords.
+export function collectObjectiveNodeBlockers({ factoryStateRoot } = {}) {
+  const out = new Map();
+  const root = factoryStateRoot;
+  if (!root || !existsSync(root)) return out;
+  for (const project of readdirSync(root, { withFileTypes: true })) {
+    if (!project.isDirectory()) continue;
+    const objDir = join(root, project.name, "objectives");
+    if (!existsSync(objDir)) continue;
+    for (const entry of readdirSync(objDir, { withFileTypes: true })) {
+      const path = join(objDir, entry.name, "objective-state.json");
+      if (!existsSync(path)) continue;
+      try {
+        const objective = JSON.parse(readFileSync(path, "utf8"));
+        for (const node of [...Object.values(objective.nodes || {}), objective.integration].filter(Boolean)) {
+          if (!node.id || !node.blocker) continue;
+          out.set(node.id, { objectiveId: objective.objectiveId || entry.name, blocker: node.blocker, objectivePath: resolve(path) });
+        }
+      } catch { /* skip malformed objective state */ }
     }
   }
   return out;
