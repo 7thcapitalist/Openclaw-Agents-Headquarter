@@ -35,7 +35,7 @@ const apiDir = join(root, "api");
 // here; an asset absent from this list is not protected by the check.
 const REQUIRED = [
   "index.html", "styles.css", "app.js",
-  "render.mjs", "home.mjs", "stage-vocabulary.mjs", "board.mjs", "views.mjs",
+  "render.mjs", "home.mjs", "stage-vocabulary.mjs", "founder-vocabulary.mjs", "board.mjs", "views.mjs",
   "task-detail.mjs", "money.mjs", "command-center.mjs",
 ];
 
