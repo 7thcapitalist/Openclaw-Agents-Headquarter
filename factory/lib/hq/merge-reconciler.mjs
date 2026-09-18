@@ -25,7 +25,7 @@
 
 import { execFile } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 
 import { mutateTransactionalState, readTransactionalState } from "../store/transactional-json.mjs";
@@ -135,6 +135,50 @@ const DELIVERED_WITHOUT_PR = Object.freeze([
     detail: "the task changed no files, so there was nothing to merge",
   },
 ].map(({ pattern, detail }) => ({ test: pattern, detail })));
+
+/**
+ * Whether an objective build node landed through its objective's integration
+ * pull request — or null when that is not proven.
+ *
+ * Every objective publishes each build node as its own pull request and then
+ * an integration branch that merges them all. Merging the integration PR
+ * makes the node PRs redundant, and closing them left their tasks reading
+ * "Ready to merge" forever: obj-e8209a43's two nodes, 2026-09-18, after #308
+ * carried both and #305/#307 were closed as superseded. This recurs on every
+ * objective.
+ *
+ * Both of these must be on record, or nothing is settled:
+ *   * the objective's integration merge log shows THIS node's branch merged
+ *     cleanly into the integration branch, and
+ *   * the integration task itself is `merged` — GitHub confirmed its PR, via
+ *     this same reconciler.
+ * A node whose branch never entered the integration, or an integration that
+ * has not merged, is left exactly as it was.
+ *
+ * @returns {string|null} the reason, phrased for the event record
+ */
+export function deliveredByIntegration(statePath, state) {
+  const taskId = String(state?.task?.id || basename(dirname(statePath)));
+  const match = taskId.match(/^(obj-[0-9a-f]{8})-/);
+  if (!match || taskId === `${match[1]}-integration`) return null;
+  const projectRoot = dirname(dirname(dirname(statePath)));
+  const objectivePath = join(projectRoot, "objectives", match[1], "objective-state.json");
+  if (!existsSync(objectivePath)) return null;
+  let objective;
+  try { objective = readTransactionalState(objectivePath, { format: "objective-state" }); } catch { return null; }
+  const integration = objective?.integration;
+  const branch = state?.branch || objective?.nodes?.[taskId]?.branch;
+  if (!integration?.id || !branch) return null;
+  const mergedIn = (integration.mergeLog || []).some((entry) => entry?.branch === branch && entry.ok === true);
+  if (!mergedIn) return null;
+  const integrationPath = join(projectRoot, "tasks", integration.id, "state.json");
+  if (!existsSync(integrationPath)) return null;
+  let integrationState;
+  try { integrationState = readTransactionalState(integrationPath); } catch { return null; }
+  if (integrationState?.status !== "merged") return null;
+  const pr = integrationState.githubPublish?.prUrl?.match(/\/pull\/(\d+)/)?.[1];
+  return `delivered via the objective's integration pull request${pr ? ` #${pr}` : ""}`;
+}
 
 /**
  * Ask GitHub what happened to one pull request. Default implementation; tests
@@ -313,9 +357,30 @@ export async function reconcileMergedTasks({
       continue;
     }
     if (!answer.merged) {
-      // Recorded, not acted on. A closed-unmerged PR means the work did not
-      // land, which is a different question from this one — deciding what that
-      // does to the task is a workflow change, not a reconciliation.
+      // A build node opens its own pull request, and the objective's
+      // integration branch then merges that node and opens the one that
+      // lands. When the integration PR merges, the node's own PR is redundant
+      // and gets closed — so "not merged" here does not mean the work did not
+      // land. deliveredByIntegration settles it only on recorded proof.
+      const viaIntegration = deliveredByIntegration(statePath, state);
+      if (viaIntegration) {
+        const at = now();
+        try {
+          const next = recordDelivered(statePath, viaIntegration, at);
+          if (next.status === "complete") {
+            settled.push({ taskId: state.task?.id, statePath, reason: viaIntegration });
+            log(`[merge-reconcile] ${state.task?.id}: ${viaIntegration}, task settled`);
+          } else {
+            skipped.push({ taskId: state.task?.id, statePath, reason: `moved to ${next.status} during the sweep` });
+          }
+        } catch (error) {
+          skipped.push({ taskId: state.task?.id, statePath, reason: `could not settle: ${error?.message || error}` });
+        }
+        continue;
+      }
+      // Otherwise recorded, not acted on. A closed-unmerged PR with no
+      // integration that carried it means the work did not land — deciding
+      // what that does to the task is a workflow change, not a reconciliation.
       pending.push({ taskId: state.task?.id, statePath, pr: key, state: answer.state });
       continue;
     }
