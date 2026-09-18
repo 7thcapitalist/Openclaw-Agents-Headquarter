@@ -14,6 +14,7 @@ import { writeHandoff } from "./handoff.mjs";
 import { publishMergeReadyTask } from "./hq/github-publish.mjs";
 import { buildCompletionReport } from "./hq/completion-report.mjs";
 import { sanitizeExcerpt } from "./common/redact.mjs";
+import { detectSeatExhaustion, seatExhaustionExcerpt } from "./seat-exhaustion.mjs";
 import { observeDispatchState } from "./telemetry/dispatch.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -723,11 +724,23 @@ function writeMissingResultDiagnostic({ worktree, dispatchId, stage, actor, sess
   // string is what the failure classifier and the founder both read.
   const finished = describeAgentCompletion({ stdout });
   const route = [finished.provider, finished.model].filter(Boolean).join("/");
-  const summary = finished.completed
+  // A seat that ran out of credit can exit with a generic "Command failed"
+  // while the provider's own sentence sits only in stdout (Codex prints it as
+  // a JSON "message"). failDispatch decides pause-vs-recovery from this
+  // summary alone, so lift that sentence into it. Without this, an exhausted
+  // Codex seat on 2026-09-18 read as a broken task and recovery ran three
+  // times against a seat that would not come back for five hours.
+  const providerExcerpt = detectSeatExhaustion(cleanReason)
+    ? null
+    : seatExhaustionExcerpt(`${stdout ?? ""}\n${stderr ?? ""}`);
+  const provider = providerExcerpt ? sanitizeExcerpt(providerExcerpt, { maxLength: 300 }).text : "";
+  const providerNote = provider ? ` Provider: ${provider}` : "";
+  const summary = (finished.completed
     ? `${stage} agent completed its turn without writing a result file${route ? ` (${route})` : ""}; ` +
       `the route ran but produced no gate artifact, so retrying it unchanged will repeat. ` +
       `Session ${sessionKey}; redacted executor output captured at ${rel}.${cleanReason ? ` Reason: ${cleanReason}` : ""}`
-    : `${stage} dispatch wrote no result file (session ${sessionKey}); redacted executor output captured at ${rel}.${cleanReason ? ` Reason: ${cleanReason}` : ""}`;
+    : `${stage} dispatch wrote no result file (session ${sessionKey}); redacted executor output captured at ${rel}.${cleanReason ? ` Reason: ${cleanReason}` : ""}`)
+    + providerNote;
   try {
     mkdirSync(join(worktree, "evidence"), { recursive: true });
     const lines = [
@@ -741,6 +754,7 @@ function writeMissingResultDiagnostic({ worktree, dispatchId, stage, actor, sess
       finished.completed ? `- agentCompletedTurn: yes (stopReason ${finished.stopReason || "unknown"})` : null,
       finished.completed && route ? `- route: ${route}` : null,
       cleanReason ? `- reason: ${cleanReason}` : null,
+      provider ? `- provider: ${provider}` : null,
       "",
       "## Executor stdout (redacted, truncated)",
       "",
