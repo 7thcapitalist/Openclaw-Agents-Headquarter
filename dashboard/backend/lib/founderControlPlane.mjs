@@ -687,6 +687,7 @@ export async function handleObjectiveStart({
   projectId,
   repo: repoInput = null,
   allowDuplicate = false,
+  origin,
   decompose,
   runObjective,
   now = () => new Date().toISOString(),
@@ -730,6 +731,7 @@ export async function handleObjectiveStart({
   const jobId = `founder-${Date.now().toString(36)}`;
   const job = {
     id: jobId, kind: "objective", projectId: project, objective: text, repo,
+    ...(origin ? { origin } : {}),
     status: "decomposing", createdAt: startedAt, updatedAt: startedAt,
   };
   saveFounderJob(root, job);
@@ -751,6 +753,8 @@ export async function handleObjectiveStart({
     }));
     throw error;
   }
+
+  if (origin) graph.origin = origin;
 
   const dir = join(defaultStateRoot(hq, repo), "objectives", graph.objectiveId);
   mkdirSync(dir, { recursive: true });
