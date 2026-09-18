@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync } from "fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import {
@@ -11,6 +11,7 @@ import {
   checkFactoryActivity,
   checkGateway,
   runDoctor,
+  checkAnthropicSeat,
 } from "../../scripts/factory-doctor.mjs";
 
 test("checkOpenAiSeat flags cooldown and 0% as failure, low as warning, headroom as ok", () => {
@@ -108,10 +109,34 @@ test("runDoctor composes all checks with an injected run fn", () => {
     "sessions --all-agents --json --limit all": JSON.stringify({ sessions: [] }),
   };
   const run = (args) => ({ ok: true, out: canned[args.join(" ")] ?? "" });
-  const results = runDoctor({ run, configText: JSON.stringify({ plugins: { entries: { acpx: { config: { agents: { cursor: {} } } } } } }), hqRoot: mkdtempSync(join(tmpdir(), "doctor-compose-")) });
-  assert.equal(results.length, 7);
+  const runClaude = () => ({ ok: true, out: readFileSync(new URL("./fixtures/claude-usage.txt", import.meta.url), "utf8") });
+  const results = runDoctor({ run, runClaude, now: Date.parse("2026-09-18T19:45:00Z"), configText: JSON.stringify({ plugins: { entries: { acpx: { config: { agents: { cursor: {} } } } } } }), hqRoot: mkdtempSync(join(tmpdir(), "doctor-compose-")) });
+  assert.equal(results.length, 8);
   assert.equal(results.find((r) => r.line.includes("gateway")).level, "ok");
   assert.equal(results.find((r) => r.line.includes("OpenAI")).level, "ok");
+  const anthropic = results.find((r) => r.line.includes("Anthropic"));
+  assert.equal(anthropic.level, "ok");
+  assert.match(anthropic.line, /Anthropic seat has headroom/);
+  assert.match(anthropic.detail, /session 75% left \(resets in 2h 45m\), week 28% left \(resets in 3d 1h\)/);
   // Seat auth says a route can be reached; this one says it finishes work.
   assert.ok(results.some((r) => /dispatch history|gate stage\(s\)/.test(r.line)));
+});
+
+test("checkAnthropicSeat uses the shared parser and never reports unreadable reads as ok", () => {
+  const NOW = Date.parse("2026-09-18T19:45:00Z");
+  const fixture = readFileSync(new URL("./fixtures/claude-usage.txt", import.meta.url), "utf8");
+  assert.equal(checkAnthropicSeat({ ok: true, out: fixture }, { now: NOW }).level, "ok");
+  assert.equal(checkAnthropicSeat({ ok: true, out: "Current session: 90% used" }, { now: NOW }).level, "warn");
+  assert.equal(checkAnthropicSeat({ ok: true, out: "Current session: 100% used" }, { now: NOW }).level, "fail");
+  for (const bad of [{ ok: false, out: fixture }, { ok: true, out: "" }, { ok: true, out: "Current session: 150% used" }, undefined]) {
+    const result = checkAnthropicSeat(bad, { now: NOW });
+    assert.equal(result.level, "warn");
+    assert.match(result.line, /unknown/);
+  }
+});
+
+test("factory-doctor does not carry its own Anthropic usage parser", () => {
+  const source = readFileSync(new URL("../../scripts/factory-doctor.mjs", import.meta.url), "utf8");
+  assert.match(source, /import \{[^}]*parseClaudeUsage[^}]*\} from "..\/factory\/lib\/model-usage-window\.mjs"/);
+  assert.doesNotMatch(source, /% used/);
 });
