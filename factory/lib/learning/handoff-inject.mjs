@@ -25,6 +25,26 @@ export function learningInjectionEnabled(hqRoot, env = process.env) {
   }
 }
 
+// Character budget for the whole rendered knowledge block, following the same
+// budget-then-clamp convention factory/lib/intel/assemble.mjs uses for its
+// context-pack sections (SECTION_BUDGETS + clampSection): a fixed character
+// cap with a pointer back to the full source. That helper is unexported and
+// only word-boundary safe. Every line this module renders (a role-note bullet
+// or a "- ID → recommendation" entry) is one complete markdown line, so this
+// clamp cuts on the last full line instead — a truncated dossier never lands
+// mid-bullet.
+export const KNOWLEDGE_BLOCK_BUDGET = 2000;
+
+export function clampKnowledgeBlock(text, budget = KNOWLEDGE_BLOCK_BUDGET, pointer = "factory/knowledge/agents/") {
+  if (text.length <= budget) return text;
+  const marker = `\n… (truncated — see ${pointer})`;
+  const room = Math.max(0, budget - marker.length);
+  const cut = text.slice(0, room);
+  const lastBreak = cut.lastIndexOf("\n");
+  const safe = lastBreak > 0 ? cut.slice(0, lastBreak) : cut;
+  return `${safe}${marker}`;
+}
+
 function acceptedEntries(text, limit) {
   // "## <ID> — <title>" blocks whose Status line is "accepted".
   const re = /## ([A-Z]{2}-\d{4}-\d{3,}) — ([^\n]+)\n([\s\S]*?)(?=\n## [A-Z]{2}-\d{4}-\d{3,} — |$)/g;
@@ -61,7 +81,7 @@ export function buildKnowledgeBlock({ hqRoot, role, env = process.env, maxPerFil
     }
 
     if (!parts.length) return "";
-    return [
+    const block = [
       "## Company knowledge",
       "",
       "Accepted lessons from prior tasks across the company. Apply them; if one is wrong for this task, say so in your summary.",
@@ -69,6 +89,7 @@ export function buildKnowledgeBlock({ hqRoot, role, env = process.env, maxPerFil
       parts.join("\n\n"),
       "",
     ].join("\n");
+    return clampKnowledgeBlock(block);
   } catch {
     return "";
   }
