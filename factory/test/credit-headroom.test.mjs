@@ -6,11 +6,14 @@ import { join } from "path";
 import {
   collectPipelineSeats,
   collectRecentSeatPauses,
+  readClaudeUsage,
   readCreditHeadroom,
   readPipelineCreditHeadroom,
 } from "../lib/credit-headroom.mjs";
 
 const NOW = Date.parse("2026-09-17T12:00:00.000Z");
+const CLAUDE_NOW = Date.parse("2026-09-18T19:45:00.000Z");
+const CLAUDE_FIXTURE = readFileSync(new URL("./fixtures/claude-usage.txt", import.meta.url), "utf8");
 const OPENAI = "openai/gpt-5.6-sol";
 const CLAUDE = "anthropic/claude-sonnet-5";
 
@@ -154,4 +157,57 @@ test("credit headroom implementation never imports cost-ledger signals", () => {
     const source = readFileSync(new URL(relative, import.meta.url), "utf8");
     assert.doesNotMatch(source, /cost-ledger|company-state|budget-snapshot/);
   }
+});
+
+test("the claude-cli seat reports numeric windows from claude /usage in the OpenAI record shape", () => {
+  const configPath = join(mkdtempSync(join(tmpdir(), "credit-headroom-claude-")), "openclaw.json");
+  writeFileSync(configPath, JSON.stringify({ agents: { defaults: { model: OPENAI }, entries: { reviewer: { model: { primary: CLAUDE } } } } }));
+  const records = readPipelineCreditHeadroom({
+    modelsOut: `openai usage: 5h 75% left ⏱2h · Week 50% left ⏱3d\n${CLAUDE} [indeterminate]`,
+    claudeUsageOut: CLAUDE_FIXTURE,
+    configPath,
+    now: CLAUDE_NOW,
+  });
+  assert.deepEqual(records.find((record) => record.seat === CLAUDE), {
+    seat: CLAUDE,
+    roles: ["reviewer"],
+    status: "available",
+    shortWindow: { percentLeft: 75, resetIn: "2h 45m" },
+    weekWindow: { percentLeft: 28, resetIn: "3d 1h" },
+    reason: null,
+    inference: null,
+  });
+});
+
+test("an unreadable, malformed, failed or timed-out claude /usage read leaves the seat unknown", () => {
+  const timeout = () => { throw Object.assign(new Error("spawnSync claude ETIMEDOUT"), { code: "ETIMEDOUT" }); };
+  const reads = [
+    readClaudeUsage({ run: timeout }),
+    readClaudeUsage({ run: () => ({ ok: false, out: CLAUDE_FIXTURE }) }),
+    readClaudeUsage({ run: () => ({ ok: true, out: "" }) }),
+    readClaudeUsage({ run: () => ({ ok: true, out: "Error: not logged in" }) }),
+    readClaudeUsage({ run: () => ({ ok: true, out: "Current session: 250% used · resets Sep 18, 6:30pm (America/New_York)" }) }),
+    { ok: true, out: "Current week (all models): 72% used" },
+  ];
+  assert.deepEqual(reads.slice(0, 2), [{ ok: false, out: "" }, { ok: false, out: "" }]);
+  for (const read of reads) {
+    const [record] = readCreditHeadroom({
+      claudeUsageOut: read.out,
+      pipelineSeats: [{ roleId: "reviewer", seat: CLAUDE }],
+      now: CLAUDE_NOW,
+    });
+    assert.equal(record.status, "unknown");
+    assert.equal(record.shortWindow, null);
+    assert.equal(record.weekWindow, null);
+    assert.match(record.reason, /claude -p \/usage did not return a readable session usage window/);
+  }
+});
+
+test("claude /usage output never marks a non-Anthropic seat available", () => {
+  const [record] = readCreditHeadroom({
+    claudeUsageOut: CLAUDE_FIXTURE,
+    pipelineSeats: [{ roleId: "main", seat: "github-copilot/gpt-4.1" }],
+    now: CLAUDE_NOW,
+  });
+  assert.equal(record.status, "unknown");
 });

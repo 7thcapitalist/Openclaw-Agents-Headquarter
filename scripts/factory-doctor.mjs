@@ -13,7 +13,8 @@ import { existsSync, readFileSync, readdirSync } from "fs";
 import { homedir } from "os";
 import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
-import { parseUsageWindow } from "../factory/lib/model-usage-window.mjs";
+import { readClaudeUsage } from "../factory/lib/credit-headroom.mjs";
+import { parseClaudeUsage, parseUsageWindow } from "../factory/lib/model-usage-window.mjs";
 
 const HQ_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const OPENCLAW_CONFIG = process.env.OPENCLAW_CONFIG || join(homedir(), ".openclaw", "openclaw.json");
@@ -39,6 +40,23 @@ export function checkOpenAiSeat(modelsOut) {
   if (cooldown || pct === 0) return { level: "fail", line: "OpenAI seat is rate-limited / in cooldown", detail: `${detail}. Factory runs only on the github-copilot fallback until this clears.` };
   if (pct !== null && pct <= 15) return { level: "warn", line: `OpenAI seat low (${pct}% of the 5h window left)`, detail };
   return { level: "ok", line: "OpenAI seat has headroom", detail };
+}
+
+// Anthropic (claude-cli) seat, read from `claude -p /usage` through the same
+// shared parser credit-headroom uses. An unreadable read is a warning, never ok.
+export function checkAnthropicSeat(claudeUsage, { now = Date.now() } = {}) {
+  const { shortWindow, weekWindow } = parseClaudeUsage(claudeUsage?.ok ? claudeUsage.out : "", { now });
+  if (!Number.isFinite(shortWindow?.percentLeft)) {
+    return { level: "warn", line: "Anthropic seat headroom unknown", detail: "claude -p /usage did not return a readable session usage window; treat the seat as unavailable, not as having headroom." };
+  }
+  const pct = shortWindow.percentLeft;
+  const detail = [
+    `session ${pct}% left${shortWindow.resetIn ? ` (resets in ${shortWindow.resetIn})` : ""}`,
+    weekWindow ? `week ${weekWindow.percentLeft}% left${weekWindow.resetIn ? ` (resets in ${weekWindow.resetIn})` : ""}` : null,
+  ].filter(Boolean).join(", ");
+  if (pct === 0 || weekWindow?.percentLeft === 0) return { level: "fail", line: "Anthropic seat is out of usage", detail };
+  if (pct <= 15) return { level: "warn", line: `Anthropic seat low (${pct}% of the session window left)`, detail };
+  return { level: "ok", line: "Anthropic seat has headroom", detail };
 }
 
 export function checkCopilotFallback(modelsOut) {
@@ -203,11 +221,12 @@ export function checkGateway(daemonOut) {
 
 // ── orchestration
 
-export function runDoctor({ run = realRun, configText = null, hqRoot = HQ_ROOT } = {}) {
+export function runDoctor({ run = realRun, runClaude = () => readClaudeUsage(), now = Date.now(), configText = null, hqRoot = HQ_ROOT } = {}) {
   const cfg = configText ?? (existsSync(OPENCLAW_CONFIG) ? readFileSync(OPENCLAW_CONFIG, "utf8") : "{}");
   const results = [
     checkGateway(run(["daemon", "status"]).out),
     checkOpenAiSeat(run(["models"]).out),
+    checkAnthropicSeat(runClaude(), { now }),
     checkCopilotFallback(run(["models"]).out),
     checkSessions(run(["sessions", "--all-agents", "--json", "--limit", "all"]).out),
     checkAcpxAgents(cfg),
