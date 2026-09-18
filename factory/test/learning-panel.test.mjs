@@ -33,8 +33,8 @@ test("every specified idle code has a non-empty human label", () => {
   assert.equal(idleReasonLabel(null), null);
 });
 
-test("idle reason is hidden when a launch is present", () => {
-  assert.doesNotMatch(learningPanel(state()), /Anthropic headroom unknown/);
+test("current idle reason remains visible when launch history exists", () => {
+  assert.match(learningPanel(state()), /Anthropic headroom unknown/);
 });
 
 test("renders empty and unavailable states", () => {

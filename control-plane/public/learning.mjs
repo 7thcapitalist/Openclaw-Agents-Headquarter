@@ -9,6 +9,8 @@ export const IDLE_REASON_LABELS = Object.freeze({
   "self-improvement-running": "self-improvement objective already running",
   "daily-cap": "daily self-improvement limit reached",
   "no-eligible-finding": "no eligible finding",
+  "open-prs-unknown": "open PR status unknown",
+  "launch-recheck-failed": "launch conditions changed before start",
   "not-evaluated": "not evaluated yet",
   "state-unavailable": "learning state unavailable",
 });

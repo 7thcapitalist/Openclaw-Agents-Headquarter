@@ -49,6 +49,25 @@ test("console mode controls call the provided intent bridge", () => {
 
 test("console and dashboard idle labels stay identical", () => assert.deepEqual(CONSOLE_LABELS, DASHBOARD_LABELS));
 
+test("console keeps the current idle reason visible alongside launch history", () => {
+  assert.match(render(learning({ launches: [{ objectiveId: "obj-1", findingId: "L-1", at: "now" }] })).text, /founder objective active/);
+});
+
+test("every idle reason emitted by the trigger has a human label", () => {
+  const decide = readFileSync(new URL("../lib/idle/decide.mjs", import.meta.url), "utf8");
+  const trigger = readFileSync(new URL("../lib/idle/trigger.mjs", import.meta.url), "utf8");
+  const state = readFileSync(new URL("../lib/idle/state.mjs", import.meta.url), "utf8");
+  const panel = readFileSync(new URL("../lib/idle/panel.mjs", import.meta.url), "utf8");
+  const emitted = new Set([
+    ...[...decide.matchAll(/skip\("([^"]+)"/g)].map((match) => match[1]),
+    ...[trigger, state, panel].flatMap((source) => [...source.matchAll(/idleReason:\s*"([^"]+)"/g)].map((match) => match[1])),
+    "launch-recheck-failed",
+  ]);
+  for (const code of emitted) {
+    assert.ok(CONSOLE_LABELS[code], `missing human label for emitted idle reason: ${code}`);
+  }
+});
+
 test("published learning state is bounded before mirroring", () => {
   const out = boundLearning({ findings: Array.from({ length: 30 }, (_, i) => ({ id: i, evidence: Array.from({ length: 15 }, (_, j) => `${i}/${j}`) })), launches: Array(30), wouldHaveLaunched: Array(30), proposals: Array(30) });
   assert.equal(out.findings.length, 20); assert.equal(out.findings[0].evidence.length, 10);
