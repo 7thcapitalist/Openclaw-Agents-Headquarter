@@ -152,6 +152,7 @@ import { buildBlastRadiusReport } from "../../factory/lib/hq/blast-radius.mjs";
 import { buildGoalsSnapshot } from "../../factory/lib/hq/goals.mjs";
 import { buildFactoryReportSnapshot } from "../../factory/lib/hq/factory-report.mjs";
 import { buildWorkProposals } from "../../factory/lib/hq/proposer.mjs";
+import { buildIdleTriggerState } from "../../factory/lib/idle/panel.mjs";
 import { parseLayers, searchHq } from "../../factory/lib/hq/search.mjs";
 import { buildBudgetSnapshot } from "../../factory/lib/hq/budget-snapshot.mjs";
 
@@ -1279,6 +1280,11 @@ app.get("/api/hq/factory-report", (_req, res) => {
 app.get("/api/hq/proposals", (_req, res) => {
   try { res.json(buildWorkProposals({ hqRoot: ROOT })); }
   catch (e) { res.status(500).json({ version: 1, available: false, reportOnly: true, proposals: [], error: String(e.message || e) }); }
+});
+
+app.get("/api/hq/idle-trigger", (_req, res) => {
+  try { res.json(buildIdleTriggerState({ hqRoot: ROOT })); }
+  catch (e) { res.status(500).json({ contract: "hq.idle-trigger/1", available: false, error: String(e.message || e) }); }
 });
 
 app.get("/api/hq/budgets", (_req, res) => {

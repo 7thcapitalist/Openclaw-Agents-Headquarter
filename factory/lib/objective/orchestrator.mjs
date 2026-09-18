@@ -762,7 +762,7 @@ export async function runObjective(args) {
   }
 }
 
-async function driveObjective({ hqRoot, objectivePath, maxConcurrent = 3, execute = executeOpenClaw, agentIds = {}, maxAttemptsPerStage = 3, concurrentGroups, publish, stateRoot, learningTrigger = triggerObjectiveLearningRun }) {
+async function driveObjective({ hqRoot, objectivePath, maxConcurrent = 3, execute = executeOpenClaw, agentIds = {}, maxAttemptsPerStage = 3, concurrentGroups, publish, stateRoot, learningTrigger = triggerObjectiveLearningRun, shouldYield = null }) {
   // Scheduling an objective's nodes is checked before anything is read or
   // written, because everything below it — publishing a stalled node, resuming
   // descendants, dispatching stages — follows from this one decision.
@@ -814,6 +814,7 @@ async function driveObjective({ hqRoot, objectivePath, maxConcurrent = 3, execut
         s.events.push({ at: new Date().toISOString(), node: node.id, type: "node-unblocked" });
       }
     }
+    if (s.status === "yielded") s.events.push({ at: new Date().toISOString(), type: "objective-resumed", detail: "founder work cleared" });
     if (s.status !== "active") s.status = "active";
   });
 
@@ -856,8 +857,16 @@ async function driveObjective({ hqRoot, objectivePath, maxConcurrent = 3, execut
     if (obj.status === CANCELLED) break;
     if (buildNodesComplete(obj)) break;
     if (isDeadlocked(obj) && inFlight.size === 0) break;
+    const yielding = Boolean(shouldYield && await shouldYield({ objective: obj, objectivePath, hqRoot, stateRoot: nodeStateRoot }));
+    if (yielding && inFlight.size === 0) {
+      const yielded = mutate(objectivePath, (s) => {
+        s.status = "yielded";
+        if (s.events.at(-1)?.type !== "objective-yielded") s.events.push({ at: new Date().toISOString(), type: "objective-yielded", detail: "founder work has priority" });
+      });
+      return { status: "yielded", objective: yielded, metrics: null, integrationResp: null, observation: null };
+    }
     const ready = readyNodes(obj).filter((id) => !inFlight.has(id));
-    while (ready.length && inFlight.size < maxConcurrent) launch(ready.shift());
+    while (!yielding && ready.length && inFlight.size < maxConcurrent) launch(ready.shift());
     if (inFlight.size === 0) break; // nothing running, nothing ready
     await Promise.race(inFlight.values());
   }

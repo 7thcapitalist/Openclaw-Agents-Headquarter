@@ -69,6 +69,15 @@
     "injectIntoHandoff": true,
     "evidenceRetentionDays": 90,
     "patternThreshold": 2,
+    "idleTrigger": {
+      "mode": "on",
+      "maxLaunchesPerDay": 4,
+      "heartbeatMinutes": 15,
+      "shortWindowReservePct": 40,
+      "weeklyReservePct": 20,
+      "expiringHorizonHours": 24,
+      "maxOpenPrs": 3
+    },
     "autonomy": {
       "_doc": "Governs `factory-learn.mjs cycle`, the scheduled 3-day retrospective + mastery pass. Autonomous merge is PROPOSED, not accepted: see DECISIONS.md SFD-2026-011 and decision-cards/DC-2026-002. `enabled` ships false; turning it on is a founder decision that supersedes SFD-2026-003 and SFD-2026-008 for the whitelisted class.",
       "enabled": false,
