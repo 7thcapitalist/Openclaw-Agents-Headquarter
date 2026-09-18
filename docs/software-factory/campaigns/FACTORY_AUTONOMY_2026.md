@@ -25,8 +25,8 @@ state, picks the lowest unfinished wave, ships 2–4 nodes of it, and stops.
 
 ## The honest starting position
 
-Measured from the run history on 2026-09-17, across 14 objectives and 234 agent
-dispatches:
+Measured from the run history on 2026-09-17, across 21 objectives and 286 agent
+dispatches (both state roots):
 
 | Measure | Today | Target |
 | --- | ---: | ---: |
