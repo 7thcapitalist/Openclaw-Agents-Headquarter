@@ -5,13 +5,13 @@
 // it never invents an answer it could not get, and it merges nothing itself.
 
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
 import { recoverExistingPrUrl } from "../lib/hq/github-publish.mjs";
-import { deliveredWithoutPullRequest, pullRequestRef, reconcileMergedTasks } from "../lib/hq/merge-reconciler.mjs";
+import { deliveredByIntegration, deliveredWithoutPullRequest, pullRequestRef, reconcileMergedTasks } from "../lib/hq/merge-reconciler.mjs";
 import { createState, writeState } from "../lib/task-workflow.mjs";
 
 const MERGED = { merged: true, state: "MERGED", mergedAt: "2026-09-12T06:40:00.000Z", mergeCommitSha: "abc123" };
@@ -328,4 +328,79 @@ test("settling is idempotent and never touches live work", async () => {
   assert.equal(afterSecond.updatedAt, afterFirst.updatedAt);
   // Live work is untouched whatever its publish record says.
   assert.equal(read(active).status, "active");
+});
+
+// ── A build node carried by its objective's integration pull request ────────
+// Each node publishes its own PR; the integration branch merges them and
+// opens the PR that lands. Once that merges the node PRs are closed as
+// redundant, which used to leave every node "Ready to merge" forever.
+
+const CLOSED = { merged: false, state: "CLOSED", mergedAt: null, mergeCommitSha: null };
+const NODE_PR = (n) => ({ published: true, pushed: true, prUrl: `https://github.com/acme/widget/pull/${n}`, ownerRepo: "acme/widget", remote: "origin" });
+
+function writeObjective(stateRoot, id, { mergeLog, integrationStatus }) {
+  const dir = join(stateRoot, "objectives", id);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "objective-state.json"), JSON.stringify({
+    version: 1, objectiveId: id, status: "complete", events: [],
+    nodes: {},
+    integration: { id: `${id}-integration`, status: "gate-satisfied", branch: `factory/integration-${id}`, mergeLog },
+  }));
+}
+
+function objectiveWithNodes({ stateRoot, repo, integrationStatus = "merged", mergedBranches }) {
+  const engine = writeTask({ stateRoot, repo, id: "obj-a1b2c3d4-engine", githubPublish: NODE_PR(7) });
+  const panel = writeTask({ stateRoot, repo, id: "obj-a1b2c3d4-panel", githubPublish: NODE_PR(5) });
+  writeTask({ stateRoot, repo, id: "obj-a1b2c3d4-integration", status: integrationStatus, githubPublish: NODE_PR(8) });
+  writeObjective(stateRoot, "obj-a1b2c3d4", {
+    mergeLog: mergedBranches.map((branch) => ({ branch, ok: true, out: "Merge made by the 'ort' strategy." })),
+  });
+  return { engine, panel };
+}
+
+test("a node whose own PR was closed settles when the integration that carried it merged", async () => {
+  const { repo, stateRoot } = fixture();
+  const { engine, panel } = objectiveWithNodes({
+    stateRoot, repo, mergedBranches: ["factory/obj-a1b2c3d4-engine", "factory/obj-a1b2c3d4-panel"],
+  });
+
+  const out = await reconcileMergedTasks({ stateRoot, lookup: async () => CLOSED });
+
+  assert.equal(out.settled.length, 2);
+  for (const path of [engine, panel]) {
+    const state = read(path);
+    assert.equal(state.status, "complete");
+    assert.match(state.events.at(-1).detail, /integration pull request #8/);
+  }
+});
+
+test("a node the integration never merged is not settled by it", async () => {
+  const { repo, stateRoot } = fixture();
+  // Only the engine entered the integration branch; the panel did not.
+  const { engine, panel } = objectiveWithNodes({ stateRoot, repo, mergedBranches: ["factory/obj-a1b2c3d4-engine"] });
+
+  const out = await reconcileMergedTasks({ stateRoot, lookup: async () => CLOSED });
+
+  assert.equal(read(engine).status, "complete");
+  assert.equal(read(panel).status, "merge-ready");
+  assert.ok(out.pending.some((p) => p.taskId === "obj-a1b2c3d4-panel"));
+});
+
+test("nothing settles while the integration itself has not merged", async () => {
+  const { repo, stateRoot } = fixture();
+  const { engine, panel } = objectiveWithNodes({
+    stateRoot, repo, integrationStatus: "merge-ready",
+    mergedBranches: ["factory/obj-a1b2c3d4-engine", "factory/obj-a1b2c3d4-panel"],
+  });
+
+  const out = await reconcileMergedTasks({ stateRoot, lookup: async () => CLOSED });
+
+  assert.equal(out.settled.length, 0);
+  assert.equal(read(engine).status, "merge-ready");
+  assert.equal(read(panel).status, "merge-ready");
+});
+
+test("deliveredByIntegration never vouches for a task outside an objective", () => {
+  assert.equal(deliveredByIntegration("/nowhere/tasks/task-1/state.json", { task: { id: "task-1" } }), null);
+  assert.equal(deliveredByIntegration("/nowhere/tasks/obj-a1b2c3d4-integration/state.json", { task: { id: "obj-a1b2c3d4-integration" } }), null);
 });
