@@ -13,6 +13,7 @@ import { existsSync, readFileSync, readdirSync } from "fs";
 import { homedir } from "os";
 import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
+import { parseUsageWindow } from "../factory/lib/model-usage-window.mjs";
 
 const HQ_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const OPENCLAW_CONFIG = process.env.OPENCLAW_CONFIG || join(homedir(), ".openclaw", "openclaw.json");
@@ -29,12 +30,11 @@ function realRun(args) {
 
 export function checkOpenAiSeat(modelsOut) {
   const cooldown = /openai[^\n]*cooldown/i.test(modelsOut);
-  const window5h = modelsOut.match(/5h\s+(\d+)%\s+left(?:\s+⏱\s*([^\n·]+))?/i);
-  const week = modelsOut.match(/Week\s+(\d+)%\s+left/i);
-  const pct = window5h ? Number(window5h[1]) : null;
+  const { shortWindow, weekWindow } = parseUsageWindow(modelsOut);
+  const pct = shortWindow?.percentLeft ?? null;
   const detail = [
-    window5h ? `5h window ${window5h[1]}% left${window5h[2] ? ` (resets ${window5h[2].trim()})` : ""}` : "5h window: unknown",
-    week ? `week ${week[1]}% left` : null,
+    shortWindow ? `5h window ${shortWindow.percentLeft}% left${shortWindow.resetIn ? ` (resets ${shortWindow.resetIn})` : ""}` : "5h window: unknown",
+    weekWindow ? `week ${weekWindow.percentLeft}% left` : null,
   ].filter(Boolean).join(", ");
   if (cooldown || pct === 0) return { level: "fail", line: "OpenAI seat is rate-limited / in cooldown", detail: `${detail}. Factory runs only on the github-copilot fallback until this clears.` };
   if (pct !== null && pct <= 15) return { level: "warn", line: `OpenAI seat low (${pct}% of the 5h window left)`, detail };

@@ -19,6 +19,17 @@ test("checkOpenAiSeat flags cooldown and 0% as failure, low as warning, headroom
   assert.equal(checkOpenAiSeat("openai usage: 5h 73% left ⏱1h · Week 80% left").level, "ok");
 });
 
+test("checkOpenAiSeat keeps its existing output while using the shared parser", () => {
+  assert.deepEqual(
+    checkOpenAiSeat("openai usage: 5h 73% left ⏱1h · Week 80% left ⏱4d"),
+    {
+      level: "ok",
+      line: "OpenAI seat has headroom",
+      detail: "5h window 73% left (resets 1h), week 80% left",
+    },
+  );
+});
+
 test("checkCopilotFallback warns on the [indeterminate] readiness line", () => {
   assert.equal(checkCopilotFallback("- github-copilot/gpt-4.1 [indeterminate] Auth readiness could not be confirmed").level, "warn");
   assert.equal(checkCopilotFallback("Providers w/ OAuth/tokens (2): github-copilot (1), openai (1)").level, "ok");
