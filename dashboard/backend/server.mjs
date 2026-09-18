@@ -1888,6 +1888,10 @@ app.get("/lib/stage-vocabulary.mjs", (req, res) => {
   res.type("text/javascript").sendFile(join(ROOT, "control-plane", "public", "stage-vocabulary.mjs"));
 });
 
+app.get("/lib/founder-vocabulary.mjs", (req, res) => {
+  res.type("text/javascript").sendFile(join(ROOT, "control-plane", "public", "founder-vocabulary.mjs"));
+});
+
 app.use(express.static(join(__dirname, "public")));
 
 app.get("/", (_req, res) => {
