@@ -4,7 +4,8 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeHandoff } from "../lib/handoff.mjs";
-import { buildKnowledgeBlock, KNOWLEDGE_BLOCK_BUDGET } from "../lib/learning/handoff-inject.mjs";
+import { clampSection, SECTION_BUDGETS } from "../lib/intel/assemble.mjs";
+import { buildKnowledgeBlock } from "../lib/learning/handoff-inject.mjs";
 
 // Mirrors the routing convention factory/lib/openclaw-runner.mjs's
 // selectAgentId() applies at dispatch time: bare stage keys for the 1:1
@@ -115,14 +116,14 @@ test("buildKnowledgeBlock clamps a huge dossier to the configured budget on a co
   const block = buildKnowledgeBlock({ hqRoot: root, role: "architect", env: { FACTORY_LEARNING_IN_HANDOFF: "1" } });
 
   assert.ok(block.length > 0, "a 50,000-character dossier should still produce a block to clamp");
-  assert.ok(block.length <= KNOWLEDGE_BLOCK_BUDGET, `block (${block.length} chars) must fit the ${KNOWLEDGE_BLOCK_BUDGET}-char budget`);
-  assert.match(block, /\(truncated —/, "a block this large must show the truncation marker");
+  assert.ok(block.length <= SECTION_BUDGETS.knowledge, `block (${block.length} chars) must fit the ${SECTION_BUDGETS.knowledge}-char budget`);
+  assert.match(block, /\(section truncated —/, "a block this large must show the shared clamp's truncation marker");
 
   // Every retained line, other than the trailing truncation marker, must be
   // one of the fixed header lines or a complete, unmodified bullet from the
   // source dossier -- never a prefix of one. That is what proves the clamp
   // boundary landed on a complete bullet instead of splitting one in half.
-  const withoutMarker = block.replace(/\n… \(truncated —[^\n]*\)$/, "");
+  const withoutMarker = block.replace(/\n… \(section truncated —[^\n]*\)$/, "");
   const allowedLines = new Set([
     "## Company knowledge",
     "",
@@ -133,4 +134,21 @@ test("buildKnowledgeBlock clamps a huge dossier to the configured budget on a co
   for (const line of withoutMarker.split("\n")) {
     assert.ok(allowedLines.has(line), `retained line is not a known complete line (clamp split mid-bullet): ${JSON.stringify(line.slice(0, 60))}`);
   }
+
+  const unclamped = [
+    "## Company knowledge",
+    "",
+    "Accepted lessons from prior tasks across the company. Apply them; if one is wrong for this task, say so in your summary.",
+    "",
+    "### For the architect role",
+    "",
+    ...bullets.slice(0, 6),
+    "",
+  ].join("\n");
+  assert.equal(block, clampSection(
+    unclamped,
+    SECTION_BUDGETS.knowledge,
+    "factory/knowledge/agents/",
+    { boundary: "line" },
+  ), "buildKnowledgeBlock must use the shared SECTION_BUDGETS clamp");
 });
