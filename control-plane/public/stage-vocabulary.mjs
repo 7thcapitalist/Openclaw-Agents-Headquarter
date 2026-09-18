@@ -71,11 +71,13 @@ export function eventLine(event) {
     return "The change was locked in for review. Nothing needed from you.";
   }
   if (type === "stage-fail") {
+    // The destination (builder vs. retry-in-place) is decided AFTER this event
+    // fires, by routeStageFailure, based on whether the failure classifies as
+    // infrastructural. Asserting a destination here can contradict the
+    // failure-routed event immediately following it, which already states the
+    // real destination — this one only reports what happened.
     const stage = stageLabel(event?.stage);
-    const route = ["reviewer", "qa", "security", "release"].includes(String(event?.stage || ""))
-      ? "sending it back to the builder"
-      : "the factory is routing it for another attempt";
-    return `${stage} found a problem — ${route}. Nothing needed from you.`;
+    return `${stage} found a problem. Nothing needed from you.`;
   }
   if (type === "failure-routed") {
     const destination = event?.stage === "builder"
