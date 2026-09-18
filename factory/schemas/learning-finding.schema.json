@@ -11,6 +11,7 @@
     "kind": { "enum": ["failure", "success", "pattern", "agent-improvement", "research"] },
     "scope": { "enum": ["global", "project", "agent"] },
     "project": { "type": ["string", "null"] },
+    "objectiveId": { "type": ["string", "null"] },
     "targetRole": {
       "type": ["string", "null"],
       "enum": ["product", "architect", "builder", "reviewer", "qa", "security", "release", null]

@@ -112,3 +112,60 @@ test("clusterFindings ignores singletons below the threshold", () => {
   const { patterns } = clusterFindings(findings, { patternThreshold: 2, now: NOW });
   assert.equal(patterns.length, 0);
 });
+
+test("post-run inefficiency classifiers retain objective, task, and result-path evidence", () => {
+  const repeated = record({
+    id: "obj-deadbeef-a", objectiveId: "obj-deadbeef",
+    dispatches: [
+      { stage: "reviewer", attempt: 1, outcome: "pass", completedAt: "2026-09-01T00:00:00Z", resultPath: "/state/reviewer-1.json", summary: "approved" },
+      { stage: "reviewer", attempt: 2, outcome: "pass", completedAt: "2026-09-01T02:00:00Z", resultPath: "/state/reviewer-2.json", summary: "approved again" },
+    ],
+    retryByStage: { reviewer: 1 },
+    events: [{ at: "2026-09-01T01:00:00Z", type: "founder-approval-recorded", stages: [] }],
+  });
+  const noVerdict = record({
+    id: "obj-deadbeef-b", objectiveId: "obj-deadbeef",
+    dispatches: [{ stage: "builder", attempt: 1, outcome: "fail", resultPath: "/state/builder.json", summary: "could not start the CLI" }],
+  });
+  const upstream = record({
+    id: "obj-deadbeef-c", objectiveId: "obj-deadbeef",
+    dispatches: [
+      { stage: "architect", attempt: 1, outcome: "fail", resultPath: "/state/architect.json", summary: "missing context in handoff" },
+      { stage: "builder", attempt: 2, outcome: "pass", resultPath: "/state/builder-2.json", summary: "reworked" },
+    ],
+    retryByStage: { builder: 1 },
+  });
+  const infra = record({
+    id: "obj-deadbeef-d", objectiveId: "obj-deadbeef",
+    dispatches: [{ stage: "builder", attempt: 1, outcome: "fail", status: "failed", resultPath: "/state/infra.json", summary: "could not run" }],
+    objectiveNodeBlocker: {
+      objectiveId: "obj-deadbeef", objectivePath: "/state/objective-state.json",
+      blocker: { stage: "builder", outcome: "decision-required", infra: true, summary: "could not run; retry the objective later" },
+    },
+  });
+  const slowGroup = [1, 2, 3, 10].map((hours, index) => record({
+    id: `obj-feedface-${index}`, objectiveId: "obj-feedface", cycleMs: hours * 3600000,
+    dispatches: [{ stage: "release", attempt: 1, resultPath: `/state/slow-${index}.json`, summary: "done" }],
+  }));
+
+  const out = analyzeTasks([repeated, noVerdict, upstream, infra, ...slowGroup], { now: NOW });
+  for (const prefix of ["no-verdict-dispatch", "repeated-stage-run", "unchanged-gate-rerun", "builder-rework-upstream-gap", "founder-interruption-infrastructure", "slow-cycle-outlier"]) {
+    const finding = out.failures.find((item) => item.fingerprint.startsWith(prefix));
+    assert.ok(finding, `missing ${prefix}`);
+    assert.ok(finding.objectiveId);
+    assert.equal(finding.taskIds.length, 1);
+    assert.ok(finding.evidence.some((item) => item.path.endsWith(".json")), `${prefix} lacks result-file evidence`);
+  }
+});
+
+test("recurring post-run inefficiency is marked as a pattern at the configured threshold", () => {
+  const records = ["obj-aaaaaaaa-a", "obj-bbbbbbbb-b"].map((id, index) => record({
+    id, objectiveId: id.slice(0, 12),
+    dispatches: [{ stage: "qa", attempt: 1, resultPath: `/state/qa-${index}.json`, summary: "wrote no result file" }],
+  }));
+  const out = analyzeTasks(records, { now: NOW, patternThreshold: 2 });
+  const pattern = out.patterns.find((item) => item.fingerprint === "no-verdict-dispatch:qa");
+  assert.ok(pattern);
+  assert.equal(pattern.occurrences, 2);
+  assert.equal(pattern.objectiveId, null, "cross-objective patterns are systemic rather than attributed to one objective");
+});

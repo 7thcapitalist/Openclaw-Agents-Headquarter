@@ -17,6 +17,7 @@ import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 import { collectTaskRecords, defaultFactoryStateRoot } from "../factory/lib/learning/evidence.mjs";
 import { analyzeTasks } from "../factory/lib/learning/analyze.mjs";
+import { runLearningAnalysisPass } from "../factory/lib/learning/run-analysis.mjs";
 import {
   learningRootFor, readQueue, writeQueue, reconcile, setStatus, selectFindings, findById, pruneEvidence,
 } from "../factory/lib/learning/queue.mjs";
@@ -79,41 +80,17 @@ export async function handleRequest(request, deps = {}) {
 }
 
 function analyze(request) {
-  const stateRoot = stateRootFor(request);
-  const learningRoot = learningRootFor(stateRoot);
-  const now = nowFor(request);
-  const maxAttemptsPerStage = config().openclawIntegration?.maxAttemptsPerStage || 3;
-  const { records, skipped } = collectTaskRecords({
-    factoryStateRoot: stateRoot,
+  const cfg = config();
+  return runLearningAnalysisPass({
+    factoryStateRoot: stateRootFor(request),
     project: request.project || null,
     since: request.since || null,
+    task: request.task || null,
     includeActive: request.includeActive === true,
+    now: nowFor(request),
+    maxAttemptsPerStage: cfg.openclawIntegration?.maxAttemptsPerStage || 3,
+    patternThreshold: cfg.learning?.patternThreshold || 2,
   });
-  const filtered = request.task ? records.filter((r) => r.id === request.task) : records;
-  const analysis = analyzeTasks(filtered, { now, maxAttemptsPerStage });
-  const incoming = [...analysis.failures, ...analysis.successes, ...analysis.patterns, ...analysis.agentImprovements];
-  const { store, added, updated, recurred } = reconcile(readQueue(learningRoot), incoming, { now });
-  writeQueue(learningRoot, store);
-
-  const runsDir = join(learningRoot, "runs");
-  mkdirSync(runsDir, { recursive: true });
-  const runPath = join(runsDir, `${now.replace(/[:.]/g, "-")}.json`);
-  writeFileSync(runPath, `${JSON.stringify({ version: 1, generatedAt: now, analysis, skipped, added, updated, recurred }, null, 2)}\n`, "utf8");
-
-  return {
-    version: 1,
-    status: "ok",
-    analyzedTasks: analysis.analyzedTasks,
-    skipped,
-    findings: {
-      failures: analysis.failures.length,
-      successes: analysis.successes.length,
-      patterns: analysis.patterns.length,
-      agentImprovements: analysis.agentImprovements.length,
-    },
-    queue: { added, updated, recurred, open: selectFindings(store, { status: "open" }).length },
-    runPath,
-  };
 }
 
 function list(request) {

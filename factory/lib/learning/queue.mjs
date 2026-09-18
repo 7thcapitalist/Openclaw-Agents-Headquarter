@@ -67,6 +67,7 @@ export function reconcile(store, incoming, { now = new Date().toISOString() } = 
         kind: item.kind,
         scope: item.scope || "global",
         project: item.project ?? null,
+        objectiveId: item.objectiveId ?? null,
         targetRole: item.targetRole ?? null,
         fingerprint: item.fingerprint,
         title: item.title,
@@ -92,6 +93,7 @@ export function reconcile(store, incoming, { now = new Date().toISOString() } = 
     existing.taskIds = mergedTaskIds;
     existing.occurrences = Math.max(existing.occurrences || 0, item.occurrences || 0, mergedTaskIds.length);
     existing.observation = item.observation;
+    existing.objectiveId = existing.objectiveId === (item.objectiveId ?? null) ? existing.objectiveId : null;
     existing.recommendation = item.recommendation || existing.recommendation;
     existing.confidence = item.confidence || existing.confidence;
     existing.evidence = (item.evidence || existing.evidence || []).slice(0, 6);
