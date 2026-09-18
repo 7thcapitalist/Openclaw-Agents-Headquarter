@@ -42,3 +42,42 @@ test("objective graph health is dropped once the founder cancels the objective",
   assert.equal(value.summary.unhealthyObjectives, 0);
   assert.equal(value.summary.strandedNodes, 0);
 });
+
+// Cancelling writes the objective only; its nodes keep the status they stopped
+// with. The Board is built from this task list, so on 2026-09-18 it showed
+// twenty nodes of cancelled objectives as active, blocked and ready to merge,
+// days after the founder had ended them.
+test("the task list drops work whose objective the founder cancelled, and keeps its history", () => {
+  const hqRoot = mkdtempSync(join(tmpdir(), "hq-ops-board-"));
+  const stateRoot = join(hqRoot, "state");
+  const project = join(stateRoot, "hq");
+  const node = (id, status) => {
+    const dir = join(project, "tasks", id);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "state.json"), JSON.stringify({ task: { id, project: "hq" }, status, currentStage: "builder", updatedAt: "2026-09-15T10:00:00.000Z" }));
+    appendFileSync(join(dir, "audit.ndjson"), `${JSON.stringify({ version: 1, eventId: `e-${id}`, occurredAt: "2026-09-15T10:00:00.000Z", actor: { type: "agent", id: "codex" }, action: "dispatch.running", subject: { type: "task", id }, correlation: { taskId: id }, data: {} })}\n`);
+  };
+  const objective = (id, status, nodeIds) => {
+    const dir = join(project, "objectives", id);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "objective-state.json"), JSON.stringify({
+      objectiveId: id, status,
+      nodes: Object.fromEntries(nodeIds.map((n) => [n, { id: n, status: "running" }])),
+      integration: { id: `${id}-integration`, status: "pending" },
+    }));
+  };
+  objective("obj-dead0001", "cancelled", ["obj-dead0001-a"]);
+  objective("obj-live0001", "active", ["obj-live0001-a"]);
+  node("obj-dead0001-a", "active");
+  node("obj-dead0001-integration", "blocked");
+  node("obj-live0001-a", "active");
+  node("task-standalone", "blocked");
+
+  const value = buildOperationsSnapshot({ hqRoot, stateRoot });
+
+  assert.deepEqual(value.tasks.map((t) => t.taskId).sort(), ["obj-live0001-a", "task-standalone"]);
+  assert.equal(value.summary.tasks, 2);
+  assert.equal(value.summary.cancelledTasks, 2);
+  // The audit feed is a record, not a to-do list: cancelled work stays in it.
+  assert.ok(value.audit.some((e) => e.subject?.id === "obj-dead0001-a" || e.correlation?.taskId === "obj-dead0001-a"));
+});
