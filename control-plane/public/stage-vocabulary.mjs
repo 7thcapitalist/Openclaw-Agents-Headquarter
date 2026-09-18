@@ -72,7 +72,7 @@ export function eventLine(event) {
   }
   if (type === "stage-fail") {
     const stage = stageLabel(event?.stage);
-    const route = ["reviewer", "qa", "security"].includes(String(event?.stage || ""))
+    const route = ["reviewer", "qa", "security", "release"].includes(String(event?.stage || ""))
       ? "sending it back to the builder"
       : "the factory is routing it for another attempt";
     return `${stage} found a problem — ${route}. Nothing needed from you.`;

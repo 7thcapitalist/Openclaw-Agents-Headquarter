@@ -15,6 +15,7 @@ test("routine routing events are plain sentences that need no founder action", (
   const cases = [
     [{ type: "commit-frozen", stage: "reviewer" }, "The change was locked in for review. Nothing needed from you."],
     [{ type: "stage-fail", stage: "reviewer" }, "Independent review found a problem — sending it back to the builder. Nothing needed from you."],
+    [{ type: "stage-fail", stage: "release" }, "Preparing delivery found a problem — sending it back to the builder. Nothing needed from you."],
     [{ type: "failure-routed", fromStage: "reviewer", stage: "builder" }, "Sent back to the builder to fix. Nothing needed from you."],
   ];
   for (const [event, expected] of cases) {
