@@ -357,7 +357,7 @@ export function renderLearning(root, snapshot, { onMode = null, intentStateFor =
     ...list(source.wouldHaveLaunched).map((item) => ({ item, label: "would have launched" })),
     ...list(source.proposals).map((item) => ({ item, label: "awaiting founder" })),
   ].sort((a, b) => String(b.item?.at || "").localeCompare(String(a.item?.at || "")));
-  const idle = launches.length ? null : idleReasonLabel(source.idleReason, source);
+  const idle = idleReasonLabel(source.idleReason, source);
   if (idle) root.append(el("p", "learning-idle", `Idle: ${idle}`));
 
   const credit = el("section", "learning-credit");

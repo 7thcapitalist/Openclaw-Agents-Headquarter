@@ -9,6 +9,8 @@ const REASONS = Object.freeze({
   "self-improvement-running": "self-improvement objective already running",
   "daily-cap": "daily self-improvement limit reached",
   "no-eligible-finding": "no eligible finding",
+  "open-prs-unknown": "open PR status unknown",
+  "launch-recheck-failed": "launch conditions changed before start",
   "not-evaluated": "not evaluated yet",
   "state-unavailable": "learning state unavailable",
 });
@@ -62,7 +64,7 @@ export function learningPanel(source, { esc = defaultEsc, fmtTime = (value) => v
     ...shadows.map((item) => [item, "shadow"]),
     ...proposals.map((item) => [item, "proposal"]),
   ].sort((a, b) => String(b[0]?.at || "").localeCompare(String(a[0]?.at || "")));
-  const idle = launches.length ? null : idleReasonLabel(source.idleReason, source);
+  const idle = idleReasonLabel(source.idleReason, source);
   const credit = source.credit || {};
   const empty = findings.length === 0 && allActivity.length === 0;
   return `<section class="learning-panel" aria-labelledby="learning-title">
