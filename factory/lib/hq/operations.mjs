@@ -7,11 +7,21 @@ import { readWakeupQueue, wakeupQueueHealth } from "../wakeups/queue.mjs";
 import { readLease } from "../leases/task-lease.mjs";
 import { defaultStateRoot } from "./tasks.mjs";
 import { buildRewakeReport } from "./rewake-throttle.mjs";
+import { cancelledObjectiveTaskIds } from "../objective/cancelled.mjs";
 
 export function buildOperationsSnapshot({ hqRoot, stateRoot = null, now = new Date().toISOString(), eventLimit = 30 } = {}) {
   const root = resolve(stateRoot || defaultStateRoot(hqRoot));
   const warnings = [];
-  const tasks = stateFiles(root).map((statePath) => taskOperations(statePath, warnings));
+  const allTasks = stateFiles(root).map((statePath) => taskOperations(statePath, warnings));
+  // Work whose objective the founder cancelled is over. Cancelling writes the
+  // objective only, so its nodes keep the status they stopped with — `active`,
+  // `blocked`, `merge-ready` — and the Board, which reads this list, kept
+  // showing twenty of them as live work days after the founder ended it. The
+  // inbox and company state already drop them (cancelled.mjs); this is the
+  // list both consoles build the Board from. The audit feed below still reads
+  // every task: it is a record of what happened, not a list of what is open.
+  const cancelled = cancelledObjectiveTaskIds(root);
+  const tasks = allTasks.filter((task) => !cancelled.has(task.taskId));
   const queuePath = join(root, "wakeups.json");
   let queue = emptyQueue();
   try { queue = { ...wakeupQueueHealth(queuePath, now), recent: readWakeupQueue(queuePath).items.slice(-20).reverse().map(sanitizeWakeup) }; }
@@ -28,9 +38,9 @@ export function buildOperationsSnapshot({ hqRoot, stateRoot = null, now = new Da
   let rewake = { version: 1, mode: "off", summary: { stallingTasks: 0, overThreshold: 0, wastedRuns: 0 }, tasks: [] };
   try { rewake = buildRewakeReport({ hqRoot, states: taskStates(root), now }); }
   catch (error) { warnings.push(`re-wake report unavailable: ${error.message}`); }
-  const audit = tasks.flatMap((task) => task.audit).sort((a, b) => b.occurredAt.localeCompare(a.occurredAt)).slice(0, bounded(eventLimit, 1, 100));
+  const audit = allTasks.flatMap((task) => task.audit).sort((a, b) => b.occurredAt.localeCompare(a.occurredAt)).slice(0, bounded(eventLimit, 1, 100));
   return { version: 1, asOf: now, available: warnings.length === 0, warnings, summary: {
-    tasks: tasks.length, activeRuns: tasks.filter((task) => ["needs-followup", "advanced"].includes(task.liveness?.state)).length,
+    tasks: tasks.length, cancelledTasks: allTasks.length - tasks.length, activeRuns: tasks.filter((task) => ["needs-followup", "advanced"].includes(task.liveness?.state)).length,
     blockedRuns: tasks.filter((task) => ["blocked", "failed"].includes(task.liveness?.state)).length,
     leasedTasks: tasks.filter((task) => task.lease).length, queuedWakeups: queue.counts.queued, deadLetters: queue.counts["dead-letter"],
     inputTokens: costs.totals.inputTokens, outputTokens: costs.totals.outputTokens, costMicros: costs.totals.costMicros, unpricedEvents: costs.totals.unpricedEvents,
