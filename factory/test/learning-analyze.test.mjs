@@ -148,7 +148,17 @@ test("post-run inefficiency classifiers retain objective, task, and result-path 
     dispatches: [{ stage: "release", attempt: 1, resultPath: `/state/slow-${index}.json`, summary: "done" }],
   }));
 
-  const out = analyzeTasks([repeated, noVerdict, upstream, infra, ...slowGroup], { now: NOW });
+  const pausedCredits = record({
+    id: "obj-deadbeef-e", objectiveId: "obj-deadbeef",
+    objectiveNodeBlocker: {
+      objectiveId: "obj-deadbeef", objectivePath: "/state/paused-objective-state.json",
+      blocker: { stage: "builder", outcome: "paused-credits", infra: true, summary: "credits reset later" },
+    },
+  });
+  const secret = "ghp_abcdefghijklmnopqrstuvwxyz123456";
+  infra.objectiveNodeBlocker.blocker.summary = `could not run with ${secret}`;
+
+  const out = analyzeTasks([repeated, noVerdict, upstream, infra, pausedCredits, ...slowGroup], { now: NOW });
   for (const prefix of ["no-verdict-dispatch", "repeated-stage-run", "unchanged-gate-rerun", "builder-rework-upstream-gap", "founder-interruption-infrastructure", "slow-cycle-outlier"]) {
     const finding = out.failures.find((item) => item.fingerprint.startsWith(prefix));
     assert.ok(finding, `missing ${prefix}`);
@@ -156,6 +166,11 @@ test("post-run inefficiency classifiers retain objective, task, and result-path 
     assert.equal(finding.taskIds.length, 1);
     assert.ok(finding.evidence.some((item) => item.path.endsWith(".json")), `${prefix} lacks result-file evidence`);
   }
+  const interruption = out.failures.find((item) => item.fingerprint.startsWith("founder-interruption-infrastructure"));
+  assert.doesNotMatch(interruption.evidence[0].excerpt, /ghp_/);
+  assert.match(interruption.evidence[0].excerpt, /\[redacted: gh-token\]/);
+  assert.equal(out.failures.filter((item) => item.fingerprint.startsWith("founder-interruption-infrastructure")).length, 1,
+    "paused-credit recovery never interrupted the founder");
 });
 
 test("recurring post-run inefficiency is marked as a pattern at the configured threshold", () => {

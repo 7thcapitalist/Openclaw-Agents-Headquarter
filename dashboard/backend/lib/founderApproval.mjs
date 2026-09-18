@@ -310,7 +310,7 @@ async function resumeAfterApproval(root, hqRoot, statePath, state, { runObjectiv
     const objectivePath = findObjectiveStatePath(root, objectiveId);
     if (objectivePath) {
       try {
-        await runObjective({ objectivePath, stateRoot: dirname(dirname(dirname(objectivePath))) });
+        await runObjective({ objectivePath, stateRoot: dirname(dirname(dirname(objectivePath))), hqRoot });
         return { kind: "objective", objectiveId, started: true };
       } catch (error) {
         return { kind: "objective", objectiveId, started: false, error: String(error.message || error) };

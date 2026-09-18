@@ -1,29 +1,18 @@
-import { appendFileSync, mkdirSync, readFileSync } from "fs";
-import { dirname, join } from "path";
-import { defaultFactoryStateRoot } from "./evidence.mjs";
-import { learningRootFor } from "./queue.mjs";
-import { runLearningAnalysisPass } from "./run-analysis.mjs";
-import { sanitizeExcerpt } from "../common/redact.mjs";
+import { Worker } from "node:worker_threads";
 
 export async function triggerObjectiveLearningRun({ hqRoot, now = new Date().toISOString() } = {}) {
   if (!hqRoot) return { ok: false, skipped: true, error: "hqRoot is required" };
-  const factoryStateRoot = defaultFactoryStateRoot(hqRoot);
-  try {
-    let config = {};
-    try { config = JSON.parse(readFileSync(join(hqRoot, "factory", "factory.config.json"), "utf8")); } catch { /* defaults below */ }
-    const result = runLearningAnalysisPass({
-      factoryStateRoot,
-      now,
-      maxAttemptsPerStage: config.openclawIntegration?.maxAttemptsPerStage || 3,
-      patternThreshold: config.learning?.patternThreshold || 2,
+  return new Promise((resolve) => {
+    const worker = new Worker(new URL("./objective-trigger-worker.mjs", import.meta.url), {
+      workerData: { hqRoot, now },
     });
-    return { ok: true, result };
-  } catch (error) {
-    try {
-      const path = join(learningRootFor(factoryStateRoot), "trigger-errors.jsonl");
-      mkdirSync(dirname(path), { recursive: true });
-      appendFileSync(path, `${JSON.stringify({ at: now, error: sanitizeExcerpt(error?.message || error, { maxLength: 500 }).text })}\n`, "utf8");
-    } catch { /* learning telemetry must never affect objective completion */ }
-    return { ok: false, error: String(error?.message || error) };
-  }
+    // The objective path never awaits this promise. Do not keep the dashboard
+    // process alive solely for best-effort learning work during shutdown.
+    worker.unref();
+    worker.once("message", resolve);
+    worker.once("error", (error) => resolve({ ok: false, error: String(error?.message || error) }));
+    worker.once("exit", (code) => {
+      if (code !== 0) resolve({ ok: false, error: `learning worker exited with code ${code}` });
+    });
+  });
 }

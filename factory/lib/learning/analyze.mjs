@@ -8,6 +8,7 @@
 // never replaces this layer.
 
 import { fingerprint, slugify } from "../common/fingerprint.mjs";
+import { sanitizeExcerpt } from "../common/redact.mjs";
 import { classifyObjectiveNodeBlocker } from "../hq/blocker-class.mjs";
 import { isNoVerdictContent } from "../hq/report/no-verdict.mjs";
 
@@ -322,7 +323,7 @@ export function classifyInfrastructureFounderInterruptions(records, now) {
   const findings = [];
   for (const record of records) {
     const joined = record.objectiveNodeBlocker;
-    if (!joined || classifyObjectiveNodeBlocker(joined.blocker) !== "infra") continue;
+    if (!joined || joined.blocker?.outcome !== "decision-required" || classifyObjectiveNodeBlocker(joined.blocker) !== "infra") continue;
     const dispatches = record.dispatches.filter((dispatch) => dispatch.outcome === "fail" || dispatch.status === "failed");
     findings.push(makeFinding({
       project: record.project,
@@ -332,7 +333,7 @@ export function classifyInfrastructureFounderInterruptions(records, now) {
       title: "Founder interruption was caused by infrastructure",
       observation: `Objective ${joined.objectiveId || record.objectiveId || "unknown"}, task ${record.id}: infrastructure was surfaced as a decision-required interruption rather than a product decision.`,
       evidence: [
-        { path: joined.objectivePath, excerpt: joined.blocker.summary || joined.blocker.why || "infrastructure blocker" },
+        { path: joined.objectivePath, excerpt: sanitizeExcerpt(joined.blocker.summary || joined.blocker.why || "infrastructure blocker").text },
         ...dispatchEvidence(record, dispatches, "infrastructure dispatch failure"),
       ].slice(0, 4),
       recommendation: "Route this blocker through infrastructure recovery and keep it out of the founder decision queue unless a genuine product or authority choice remains.",

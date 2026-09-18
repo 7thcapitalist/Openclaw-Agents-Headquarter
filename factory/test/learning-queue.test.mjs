@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { emptyStore, reconcile, setStatus, selectFindings, findById, pruneEvidence } from "../lib/learning/queue.mjs";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Worker } from "node:worker_threads";
+import { emptyStore, reconcile, setStatus, selectFindings, findById, pruneEvidence, readQueue } from "../lib/learning/queue.mjs";
 import {
   readEntries, nextEntryId, entryFromFinding, appendEntryToBody, renderDigest, targetFileForFinding,
 } from "../lib/learning/knowledge.mjs";
@@ -60,6 +64,34 @@ test("selectFindings filters by status/kind and pruneEvidence respects the windo
   assert.equal(selectFindings(store, { status: "open", kind: "failure" }).length, 1);
   ({ store } = pruneEvidence(store, { days: 1, now: "2027-01-01T00:00:00Z" }));
   assert.ok(store.findings.every((f) => f.evidence.length === 0));
+});
+
+test("concurrent learning workers preserve every finding", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "learning-queue-concurrency-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const moduleUrl = new URL("../lib/learning/queue.mjs", import.meta.url).href;
+  const source = `
+    import { parentPort, workerData } from "node:worker_threads";
+    const queue = await import(workerData.moduleUrl);
+    queue.updateQueue(workerData.root, (current) => queue.reconcile(current, [{
+      kind: "failure", scope: "global", project: "demo", targetRole: "builder",
+      fingerprint: workerData.fingerprint, title: workerData.fingerprint,
+      observation: "observed", recommendation: "fix", confidence: "high",
+      occurrences: 1, taskIds: [workerData.fingerprint], evidence: [],
+    }], { now: "2026-09-18T00:00:00.000Z" }));
+    parentPort.postMessage("done");
+  `;
+  await Promise.all(Array.from({ length: 8 }, (_, index) => new Promise((resolve, reject) => {
+    const worker = new Worker(source, {
+      eval: true,
+      type: "module",
+      workerData: { root, moduleUrl, fingerprint: `concurrent-${index}` },
+    });
+    worker.once("message", resolve);
+    worker.once("error", reject);
+    worker.once("exit", (code) => { if (code !== 0) reject(new Error(`worker exited ${code}`)); });
+  })));
+  assert.equal(readQueue(root).findings.length, 8);
 });
 
 test("knowledge entries render and parse round-trip with stable ids", () => {

@@ -2,7 +2,7 @@ import { mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import { analyzeTasks } from "./analyze.mjs";
 import { collectObjectiveNodeBlockers, collectTaskRecords } from "./evidence.mjs";
-import { learningRootFor, readQueue, reconcile, selectFindings, writeQueue } from "./queue.mjs";
+import { learningRootFor, reconcile, selectFindings, updateQueue } from "./queue.mjs";
 
 export function runLearningAnalysisPass({
   factoryStateRoot,
@@ -24,8 +24,7 @@ export function runLearningAnalysisPass({
   const filtered = task ? enriched.filter((record) => record.id === task) : enriched;
   const analysis = analyzeTasks(filtered, { now, maxAttemptsPerStage, patternThreshold });
   const incoming = [...analysis.failures, ...analysis.successes, ...analysis.patterns, ...analysis.agentImprovements];
-  const { store, added, updated, recurred } = reconcile(readQueue(learningRoot), incoming, { now });
-  writeQueue(learningRoot, store);
+  const { store, added, updated, recurred } = updateQueue(learningRoot, (current) => reconcile(current, incoming, { now }));
 
   const runsDir = join(learningRoot, "runs");
   mkdirSync(runsDir, { recursive: true });

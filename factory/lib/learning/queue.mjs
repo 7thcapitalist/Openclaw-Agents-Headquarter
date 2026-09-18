@@ -10,8 +10,10 @@
 //
 // Pure over its store object; fs only in read/write helpers. Node builtins only.
 
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "fs";
-import { dirname, join, resolve } from "path";
+import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { mutateTransactionalState, readTransactionalState } from "../store/transactional-json.mjs";
 
 const STORE_FILE = "findings.json";
 export const STATUSES = new Set(["open", "promoted", "dismissed", "resolved"]);
@@ -27,16 +29,36 @@ export function emptyStore() {
 export function readQueue(learningRoot) {
   const path = join(resolve(learningRoot), STORE_FILE);
   if (!existsSync(path)) return emptyStore();
-  const value = JSON.parse(readFileSync(path, "utf8"));
+  const value = readTransactionalState(path);
   return { ...emptyStore(), ...value };
 }
 
 export function writeQueue(learningRoot, store) {
   const path = join(resolve(learningRoot), STORE_FILE);
-  mkdirSync(dirname(path), { recursive: true });
-  const temp = `${path}.tmp-${process.pid}`;
-  writeFileSync(temp, `${JSON.stringify(store, null, 2)}\n`, "utf8");
-  renameSync(temp, path);
+  mutateTransactionalState(path, {
+    commandId: `learning-write:${randomUUID()}`,
+    replayable: false,
+    mutate: () => store,
+    toResponse: () => null,
+  });
+}
+
+// Atomically derive the next queue from its latest committed value. Objective
+// finishes can overlap, so analysis must not perform a separate read/write pair
+// that lets the last worker silently erase findings from another worker.
+export function updateQueue(learningRoot, update) {
+  const path = join(resolve(learningRoot), STORE_FILE);
+  let result;
+  mutateTransactionalState(path, {
+    commandId: `learning-update:${randomUUID()}`,
+    replayable: false,
+    mutate: (current) => {
+      result = update({ ...emptyStore(), ...(current || {}) });
+      return result.store;
+    },
+    toResponse: () => null,
+  });
+  return result;
 }
 
 function formatId(n) {
