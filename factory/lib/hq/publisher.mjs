@@ -30,6 +30,21 @@ import { buildQuestionsPanel } from "./questions.mjs";
 import { buildWorkProposals } from "./proposer.mjs";
 import { buildMirrorSnapshot, MIRROR_CONTRACT } from "./mirror.mjs";
 import { buildTaskDetail } from "./task-detail.mjs";
+import { buildIdleTriggerState } from "../idle/panel.mjs";
+
+export function boundLearning(source) {
+  if (!source || typeof source !== "object") return source;
+  const bound = (value, limit = 20) => Array.isArray(value) ? value.slice(-limit) : [];
+  return {
+    ...source,
+    findings: bound(source.findings).map((finding) => ({
+      ...finding, evidence: bound(finding?.evidence, 10),
+    })),
+    launches: bound(source.launches),
+    wouldHaveLaunched: bound(source.wouldHaveLaunched),
+    proposals: bound(source.proposals),
+  };
+}
 
 // One slow or broken panel must not cost the whole publish. A mirror missing
 // one section and saying so is worth more than no mirror at all, so each source
@@ -69,6 +84,7 @@ export async function collectSources({ hqRoot, tasks = [], readOvernight = null,
     // console offers a proposal as a suggestion the founder accepts, never as
     // something the factory has already decided.
     gather("proposals", () => buildWorkProposals({ hqRoot })),
+    gather("learning", () => boundLearning(buildIdleTriggerState({ hqRoot }))),
     // Is the machine healthy. Published because the outage that started the
     // 2026-09-14 incident was visible to `/api/system/readiness` and to
     // nothing the founder could actually look at — least of all from a phone.

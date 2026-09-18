@@ -153,6 +153,7 @@ import { buildGoalsSnapshot } from "../../factory/lib/hq/goals.mjs";
 import { buildFactoryReportSnapshot } from "../../factory/lib/hq/factory-report.mjs";
 import { buildWorkProposals } from "../../factory/lib/hq/proposer.mjs";
 import { buildIdleTriggerState } from "../../factory/lib/idle/panel.mjs";
+import { setIdleMode } from "../../factory/lib/idle/mode.mjs";
 import { parseLayers, searchHq } from "../../factory/lib/hq/search.mjs";
 import { buildBudgetSnapshot } from "../../factory/lib/hq/budget-snapshot.mjs";
 
@@ -1285,6 +1286,22 @@ app.get("/api/hq/proposals", (_req, res) => {
 app.get("/api/hq/idle-trigger", (_req, res) => {
   try { res.json(buildIdleTriggerState({ hqRoot: ROOT })); }
   catch (e) { res.status(500).json({ contract: "hq.idle-trigger/1", available: false, error: String(e.message || e) }); }
+});
+
+app.post("/api/hq/idle-trigger/mode", (req, res) => {
+  const stateRoot = join(ROOT, "dashboard", "backend", "data", "factory", "hq-runtime");
+  try {
+    const saved = setIdleMode(stateRoot, req.body?.mode, { by: "founder" });
+    auditFromRequest(ROOT, req, {
+      action: "learning.mode-updated", outcome: "ok", details: { mode: saved.mode },
+    });
+    res.json(buildIdleTriggerState({ hqRoot: ROOT, stateRoot }));
+  } catch (e) {
+    auditFromRequest(ROOT, req, {
+      action: "learning.mode-updated", outcome: "denied", reason: String(e.message || e),
+    });
+    res.status(e?.statusCode || 400).json({ error: String(e.message || e) });
+  }
 });
 
 app.get("/api/hq/budgets", (_req, res) => {
