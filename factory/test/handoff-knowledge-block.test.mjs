@@ -113,7 +113,7 @@ test("buildKnowledgeBlock clamps a huge dossier to the configured budget on a co
   const root = fakeHq({ injectIntoHandoff: true });
   writeFileSync(join(root, "factory", "knowledge", "agents", "architect.md"), dossier, "utf8");
 
-  const block = buildKnowledgeBlock({ hqRoot: root, role: "architect", env: { FACTORY_LEARNING_IN_HANDOFF: "1" } });
+  const { text: block } = buildKnowledgeBlock({ hqRoot: root, role: "architect", env: { FACTORY_LEARNING_IN_HANDOFF: "1" } });
 
   assert.ok(block.length > 0, "a 50,000-character dossier should still produce a block to clamp");
   assert.ok(block.length <= SECTION_BUDGETS.knowledge, `block (${block.length} chars) must fit the ${SECTION_BUDGETS.knowledge}-char budget`);
