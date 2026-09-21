@@ -45,6 +45,49 @@ export function stageStatusLabel(status) {
   return STAGE_STATUS[status] || deslug(status || "pending");
 }
 
+/** Event type -> what happened, in words shared by both founder consoles. */
+export const EVENT_VERB = Object.freeze({
+  "stage-pass": "finished",
+  "stage-decision-required": "asked you",
+  "task-resumed": "resumed",
+  "task-created": "started",
+  "handoff-ready": "handed over",
+  "merge-ready": "ready to merge",
+  "recovery-diagnosing": "started recovery",
+  "recovery-escalated": "escalated",
+  "dispatch-blocked": "blocked",
+  "task-closed-unsigned": "closed",
+  "founder-decision-applied": "you decided",
+});
+
+/**
+ * A founder-readable event line. Routine failure routing is explicit about
+ * requiring no founder action; a separate decision/escalation event is the
+ * signal when the workflow genuinely needs the founder.
+ */
+export function eventLine(event) {
+  const type = String(event?.type || "event");
+  if (type === "commit-frozen") {
+    return "The change was locked in for review. Nothing needed from you.";
+  }
+  if (type === "stage-fail") {
+    // The destination (builder vs. retry-in-place) is decided AFTER this event
+    // fires, by routeStageFailure, based on whether the failure classifies as
+    // infrastructural. Asserting a destination here can contradict the
+    // failure-routed event immediately following it, which already states the
+    // real destination — this one only reports what happened.
+    const stage = stageLabel(event?.stage);
+    return `${stage} found a problem. Nothing needed from you.`;
+  }
+  if (type === "failure-routed") {
+    const destination = event?.stage === "builder"
+      ? "the builder to fix"
+      : `${stageLabel(event?.stage).toLowerCase()} for another attempt`;
+    return `Sent back to ${destination}. Nothing needed from you.`;
+  }
+  return EVENT_VERB[type] || deslug(type);
+}
+
 /** Task status -> how it reads to a person. */
 export const TASK_STATUS = Object.freeze({
   active: "In progress",

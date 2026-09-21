@@ -1,4 +1,4 @@
-import { STAGE_LABEL } from "/lib/stage-vocabulary.mjs";
+import { eventLine, STAGE_LABEL } from "/lib/stage-vocabulary.mjs";
 import { BOARD_COLUMNS, buildBoard, filterByProject, filterStalled } from "/lib/board.mjs";
 import * as objectiveRecovery from "/lib/objectiveRecovery.mjs";
 import * as founderApproval from "/lib/founderApproval.mjs";
@@ -416,7 +416,7 @@ import { buildLiveFloorRows, buildRunningNow } from "/lib/runningNow.mjs";
           <section class="activity-panel">
             <div class="panel-heading"><div><span class="eyebrow">Activity</span><h2>What the factory has done</h2></div><span class="muted small">most recent ${(state.activityFeed || []).length}, newest first</span></div>
             <div class="company-feed">
-              ${(state.activityFeed || []).map((e) => `<div class="company-event"><span>${esc(String(e.type || "event").replaceAll("-", " "))}</span><strong>${esc(e.taskId)}</strong>${e.actor ? ` <span class="company-actor">${esc(e.actor)}</span>` : ""}${e.stage ? ` <span class="muted small">${esc(STAGE_LABEL[e.stage] || e.stage)}</span>` : ""}<time>${esc(fmtTime(e.at))}</time></div>`).join("") || `<div class="empty-state">No factory task has run in this environment yet.</div>`}
+              ${(state.activityFeed || []).map((e) => `<div class="company-event"><span>${esc(eventLine(e))}</span><strong>${esc(e.taskId)}</strong>${e.actor ? ` <span class="company-actor">${esc(e.actor)}</span>` : ""}${e.stage ? ` <span class="muted small">${esc(STAGE_LABEL[e.stage] || e.stage)}</span>` : ""}<time>${esc(fmtTime(e.at))}</time></div>`).join("") || `<div class="empty-state">No factory task has run in this environment yet.</div>`}
             </div>
           </section>
 
@@ -475,7 +475,7 @@ import { buildLiveFloorRows, buildRunningNow } from "/lib/runningNow.mjs";
       </aside></section>
       <details class="inbox-fold founder-detail-fold"><summary>More from the factory <span class="muted small">${groups.recentlyCompleted.length} finished recently</span></summary>
         <section class="founder-section"><div class="section-heading"><div><span class="eyebrow">Finished recently</span><h2>Finished recently</h2></div></div>${groups.recentlyCompleted.slice(0, 3).map((o) => founderObjectiveCard(o, true, inbox)).join("") || `<div class="quiet-state">No recent completions.</div>`}</section>
-        <section class="activity-panel"><div class="panel-heading"><div><span class="eyebrow">Activity</span><h2>What the factory has done</h2></div><span class="muted small">most recent ${(state.activityFeed || []).length}, newest first</span></div><div class="company-feed">${(state.activityFeed || []).map((e) => `<div class="company-event"><span>${esc(String(e.type || "event").replaceAll("-", " "))}</span><strong>${esc(e.taskId)}</strong>${e.actor ? ` <span class="company-actor">${esc(e.actor)}</span>` : ""}${e.stage ? ` <span class="muted small">${esc(STAGE_LABEL[e.stage] || e.stage)}</span>` : ""}<time>${esc(fmtTime(e.at))}</time></div>`).join("") || `<div class="empty-state">No factory task has run in this environment yet.</div>`}</div></section>
+        <section class="activity-panel"><div class="panel-heading"><div><span class="eyebrow">Activity</span><h2>What the factory has done</h2></div><span class="muted small">most recent ${(state.activityFeed || []).length}, newest first</span></div><div class="company-feed">${(state.activityFeed || []).map((e) => `<div class="company-event"><span>${esc(eventLine(e))}</span><strong>${esc(e.taskId)}</strong>${e.actor ? ` <span class="company-actor">${esc(e.actor)}</span>` : ""}${e.stage ? ` <span class="muted small">${esc(STAGE_LABEL[e.stage] || e.stage)}</span>` : ""}<time>${esc(fmtTime(e.at))}</time></div>`).join("") || `<div class="empty-state">No factory task has run in this environment yet.</div>`}</div></section>
       </details>
     </div>`;
   }
@@ -645,13 +645,12 @@ import { buildLiveFloorRows, buildRunningNow } from "/lib/runningNow.mjs";
   }
 
   function founderObjectiveCard(o, compact = false, inbox = []) {
-    const running = (o.nodeBriefs || []).find((n) => n.status === "RUNNING");
-    const current = running ? `${running.role || "Agent"} · ${running.stage || "working"}` : (o.nextAction?.label || "Waiting for the next safe step");
+    const current = compact ? null : objectiveView.whatIsHappeningNowLine(o, { fmtDuration });
     const title = objectiveView.shortObjectiveTitle(o.title || o.objective || o.objectiveId);
     const item = objectiveCardInput(o, inbox);
     const action = cardActionState(item);
     const approval = action.pattern === "approve-reject" ? ` data-approval-task="${esc(item.taskId)}" data-approval-statepath="${esc(item.statePath)}"` : "";
-    return `<article class="founder-objective ${compact ? "is-compact" : ""}" data-objective-id="${esc(o.objectiveId)}"${approval}><div class="objective-head"><div><span class="eyebrow">${esc(o.project || "Factory")}</span><h3>${esc(title)}</h3></div><span class="objective-status status-${esc(String(o.statusTone || "info"))}">${esc(o.statusLabel || o.status6 || "In progress")}</span></div><p class="objective-headline">${esc(o.headline || "The team is moving this outcome forward.")}</p><div class="objective-progress"><span style="width:${Math.max(0, Math.min(100, Number(o.progress?.percent) || 0))}%"></span></div><div class="objective-now"><span>NOW</span><strong>${esc(current)}</strong></div><div class="objective-foot"><div><span>${esc(o.progress?.label || "Progress updating")}</span><span class="card-moved">${esc(action.moved)}</span></div><div class="card-actions">${cardActions(action, item)}</div></div></article>`;
+    return `<article class="founder-objective ${compact ? "is-compact" : ""}" data-objective-id="${esc(o.objectiveId)}"${approval}><div class="objective-head"><div><span class="eyebrow">${esc(o.project || "Factory")}</span><h3>${esc(title)}</h3></div><span class="objective-status status-${esc(String(o.statusTone || "info"))}">${esc(o.statusLabel || o.status6 || "In progress")}</span></div><p class="objective-headline">${esc(o.headline || "The team is moving this outcome forward.")}</p><div class="objective-progress"><span style="width:${Math.max(0, Math.min(100, Number(o.progress?.percent) || 0))}%"></span></div>${current ? `<div class="objective-now"><span>NOW</span><strong>${esc(current)}</strong></div>` : ""}<div class="objective-foot"><div><span>${esc(o.progress?.label || "Progress updating")}</span><span class="card-moved">${esc(action.moved)}</span></div><div class="card-actions">${cardActions(action, item)}</div></div></article>`;
   }
 
   function runtimeBanner(runtime) {
@@ -887,7 +886,7 @@ import { buildLiveFloorRows, buildRunningNow } from "/lib/runningNow.mjs";
   // dominates. Cards are the compact presenter view; full detail is a click away.
   function renderObjectivePortfolio(objectives) {
     const g = objectiveView.groupObjectives(objectives);
-    const card = (o) => objectiveView.renderObjectiveCard(o, { esc });
+    const card = (o) => objectiveView.renderObjectiveCard(o, { esc, fmtDuration });
     const row = (o) => objectiveView.renderObjectiveHistoryRow(o, { esc });
     const group = (label, list) => list.length
       ? `<div class="obj-group"><div class="obj-group-head">${esc(label)} <span class="muted small">${list.length}</span></div>${list.map(card).join("")}</div>`
@@ -1360,7 +1359,7 @@ import { buildLiveFloorRows, buildRunningNow } from "/lib/runningNow.mjs";
             ${items.map((i) => `<div class="ev-item"><div class="muted small">${esc(i.path)}</div><pre class="report-md">${esc(i.excerpt || "")}</pre></div>`).join("")}
           </details>`).join("")
       : `<p class="muted small">No evidence excerpts recorded (the worktree may have been cleaned up).</p>`;
-    const timeline = (ev.events || []).slice(0, 40).map((e) => `<li><time>${esc(fmtTime(e.at))}</time> <strong>${esc(String(e.type || "").replaceAll("-", " "))}</strong>${e.stage ? ` · ${esc(e.stage)}` : ""}${e.actor ? ` · ${esc(e.actor)}` : ""}${e.outcome ? ` → ${esc(e.outcome)}` : ""}</li>`).join("");
+    const timeline = (ev.events || []).slice(0, 40).map((e) => `<li><time>${esc(fmtTime(e.at))}</time> <strong>${esc(eventLine(e))}</strong> <code class="muted small">${esc(e.type || "event")}</code>${e.stage ? ` · ${esc(STAGE_LABEL[e.stage] || e.stage)}` : ""}${e.actor ? ` · ${esc(e.actor)}` : ""}${e.outcome ? ` → ${esc(e.outcome)}` : ""}</li>`).join("");
     return `
       <hr/>
       <h4>GitHub</h4>${github || `<p class="muted small">not published from this task</p>`}

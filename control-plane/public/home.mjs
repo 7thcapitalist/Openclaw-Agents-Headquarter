@@ -11,7 +11,7 @@
 // DOM-API only — no innerHTML anywhere near snapshot data.
 
 import { freshness, list, money, num, text, unavailable } from "./render.mjs";
-import { stageLabel, taskOutcomeLine, taskTitle } from "./stage-vocabulary.mjs";
+import { eventLine, stageLabel, taskOutcomeLine, taskTitle } from "./stage-vocabulary.mjs";
 
 // ─── model ───────────────────────────────────────────────────────────────────
 
@@ -248,14 +248,6 @@ export function homeFinished(panels, { limit = 6 } = {}) {
     .slice(0, limit);
 }
 
-const EVENT_VERB = {
-  "stage-pass": "finished", "stage-fail": "failed", "stage-decision-required": "asked you",
-  "task-resumed": "resumed", "task-created": "started", "handoff-ready": "handed over",
-  "merge-ready": "ready to merge", "recovery-diagnosing": "started recovery",
-  "recovery-escalated": "escalated", "dispatch-blocked": "blocked",
-  "task-closed-unsigned": "closed", "founder-decision-applied": "you decided",
-};
-
 /**
  * Everything the factory has done, in time order, with which agent and when.
  *
@@ -267,7 +259,7 @@ export function homeActivity(panels, { limit = 60 } = {}) {
   if (unavailable(panels?.company)) return [];
   return list(panels.company.activityFeed).slice(0, limit).map((event) => ({
     at: text(event?.at, ""),
-    verb: EVENT_VERB[event?.type] || String(event?.type || "event").replaceAll("-", " "),
+    verb: eventLine(event),
     actor: text(event?.actor, ""),
     stage: event?.stage ? stageLabel(event.stage) : "",
     taskId: text(event?.taskId, ""),

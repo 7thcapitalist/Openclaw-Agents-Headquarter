@@ -1716,3 +1716,7 @@ ul.timeline time { color: var(--muted); margin-right: 6px; }
 .chat-markdown table { border-collapse: collapse; margin: .4rem 0 .7rem; font-size: .88rem; display: block; overflow-x: auto; }
 .chat-markdown th, .chat-markdown td { border: 1px solid var(--border-soft); padding: .3rem .5rem; text-align: left; }
 .chat-markdown th { background: var(--surface-2); }
+
+/* The live objective sentence is intentionally complete; keep it readable on narrow cards. */
+.objective-now { align-items: flex-start; }
+.objective-now strong { min-width: 0; overflow-wrap: anywhere; line-height: 1.4; }

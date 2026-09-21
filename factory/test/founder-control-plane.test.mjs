@@ -21,7 +21,7 @@ import {
   setObjectiveArchived,
   setProjectPaused,
 } from "../../dashboard/backend/lib/founderControlPlane.mjs";
-import { createState, writeState } from "../lib/task-workflow.mjs";
+import { createState, routeStageFailure, writeState } from "../lib/task-workflow.mjs";
 
 function registerIntelligence(root, { key = "startup-ops", risks, openDecisions } = {}) {
   const repo = join(root, "repo");
@@ -83,6 +83,22 @@ test("discovers factory state and builds founder project status", () => {
   const overview = buildFounderOverview(root, [{ id: "startup-ops", name: "Startup Ops", status: "active" }]);
   assert.equal(overview.projects[0].taskCount, 1);
   assert.equal(overview.projects[0].stage, "product");
+});
+
+test("an auto-routed review failure creates no Founder Inbox item", () => {
+  const { root, statePath } = fixture();
+  const state = JSON.parse(readFileSync(statePath, "utf8"));
+  state.currentStage = "reviewer";
+  state.blocker = { stage: "reviewer", outcome: "fail", summary: "Review found a correctness bug." };
+  state.events.push({ at: "2026-09-18T12:00:00.000Z", type: "stage-fail", stage: "reviewer", actor: "reviewer" });
+  const routed = routeStageFailure(state, { failedStage: "reviewer", now: "2026-09-18T12:01:00.000Z" });
+  writeState(statePath, routed);
+
+  const overview = buildFounderOverview(root, [{ id: "startup-ops", name: "Startup Ops" }]);
+  assert.equal(routed.currentStage, "builder");
+  assert.equal(routed.status, "active");
+  assert.equal(routed.events.at(-1).type, "failure-routed");
+  assert.deepEqual(overview.inbox, []);
 });
 
 test("only the active builder gate is shown as approval; earlier high-risk decisions stay decisions", () => {

@@ -198,3 +198,14 @@ test("roleLabel / stageVerb are human", () => {
   assert.match(stageVerb("reviewer"), /review/i);
   assert.match(stageVerb("builder"), /code/i);
 });
+
+test("presentObjective adds the shared plain stage label to live node briefs", () => {
+  const p = presentObjective({
+    objectiveId: "obj-live", project: "app", objective: "Build the UI", status: "active",
+    nodes: [{ id: "obj-live-builder", role: "frontend-builder", status: "running", stage: "reviewer", elapsedMs: 12_000 }],
+  });
+  assert.equal(p.nodeStatuses[0].stage, "reviewer");
+  assert.equal(p.nodeStatuses[0].stageLabel, "Independent review");
+  assert.equal(p.nodeStatuses[0].role, "Frontend Builder");
+  assert.equal(p.nodeStatuses[0].elapsedMs, 12_000);
+});
