@@ -57,6 +57,7 @@ export const INTENT_KINDS = Object.freeze({
   // name. The text becomes an argv element to `openclaw agent --message`,
   // which spawns no shell — see answerFounderQuestion.
   "question.ask":        { args: ["question"],               maxLen: { question: 2000 } },
+  "learning.mode":       { args: ["mode"],                   maxLen: { mode: 8 } },
 });
 
 export const INTENT_STATUSES = Object.freeze(["pending", "claimed", "done", "failed", "rejected"]);
@@ -114,6 +115,9 @@ export function validateIntent(intent) {
     for (const shape of COMMAND_SHAPES) {
       if (shape.re.test(value)) return { ok: false, reason: `${key} contains ${shape.name}` };
     }
+  }
+  if (kind === "learning.mode" && !["off", "shadow", "on"].includes(args.mode)) {
+    return { ok: false, reason: "mode must be off, shadow, or on" };
   }
   return { ok: true, reason: null };
 }

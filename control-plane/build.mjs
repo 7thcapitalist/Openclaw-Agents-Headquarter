@@ -37,6 +37,7 @@ const REQUIRED = [
   "index.html", "styles.css", "app.js",
   "render.mjs", "home.mjs", "stage-vocabulary.mjs", "founder-vocabulary.mjs", "board.mjs", "views.mjs",
   "task-detail.mjs", "money.mjs", "command-center.mjs",
+  "learning.mjs",
 ];
 
 // An asset can exist, be non-empty, and still be unreachable because nothing

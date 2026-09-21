@@ -5,6 +5,7 @@ import { degraded, list, money, num, text, unavailable } from "./render.mjs";
 import { BOARD_COLUMNS, buildBoard, filterByProject, filterStalled } from "./board.mjs";
 import { stageLabel, taskTitle, taskOutcomeLine } from "./stage-vocabulary.mjs";
 import { intentStatus } from "./home.mjs";
+import { idleReasonLabel } from "./learning.mjs";
 
 function el(tag, className, textContent) {
   const node = document.createElement(tag);
@@ -319,6 +320,81 @@ function extLink(href, label) {
   const a = el("a", "home-link", label);
   a.href = href; a.target = "_blank"; a.rel = "noreferrer";
   return a;
+}
+
+// ─── Learning ───────────────────────────────────────────────────────────────
+
+export function renderLearning(root, snapshot, { onMode = null, intentStateFor = () => null } = {}) {
+  root.replaceChildren();
+  const source = snapshot?.panels?.learning;
+  const reason = unavailable(source);
+  root.append(el("p", "view-lede", "What the factory learned, what it started, and why it is waiting."));
+  if (!source || reason) {
+    root.append(el("p", "home-calm", `Learning state is unavailable${reason ? `: ${reason}` : "."}`));
+    return;
+  }
+
+  const modeCard = el("section", "home-card learning-mode-card");
+  modeCard.append(el("h2", "home-heading", `Mode · ${source.mode || "unknown"}`));
+  const actions = el("div", "home-actions learning-mode-actions");
+  for (const mode of ["off", "shadow", "on"]) {
+    const key = `learning:mode:${mode}`;
+    const button = el("button", `home-option${source.mode === mode ? " is-current" : ""}`, mode);
+    button.type = "button";
+    button.disabled = !onMode || source.mode === mode;
+    button.setAttribute("aria-pressed", String(source.mode === mode));
+    button.addEventListener("click", () => onMode?.(mode, button, key));
+    actions.append(button);
+    const pending = source.mode === mode ? null : intentStateFor(key);
+    if (pending) actions.append(intentStatus(pending));
+  }
+  modeCard.append(actions);
+  root.append(modeCard);
+
+  const launches = list(source.launches);
+  const activity = [
+    ...launches.map((item) => ({ item, label: "launched" })),
+    ...list(source.wouldHaveLaunched).map((item) => ({ item, label: "would have launched" })),
+    ...list(source.proposals).map((item) => ({ item, label: "awaiting founder" })),
+  ].sort((a, b) => String(b.item?.at || "").localeCompare(String(a.item?.at || "")));
+  const idle = idleReasonLabel(source.idleReason, source);
+  if (idle) root.append(el("p", "learning-idle", `Idle: ${idle}`));
+
+  const credit = el("section", "learning-credit");
+  const used = el("div"); used.append(el("strong", null, source.credit?.usedBySelfImprovement ?? 0)); used.append(el("span", null, "used by self-improvement"));
+  const expired = el("div"); expired.append(el("strong", null, source.credit?.wouldHaveExpired ?? 0)); expired.append(el("span", null, "would otherwise have expired"));
+  credit.append(used, expired, el("small", null, source.credit?.basis || "estimate"));
+  root.append(credit);
+
+  const findings = list(source.findings);
+  if (!findings.length && !activity.length) {
+    root.append(el("p", "home-calm", "No findings or launches yet."));
+    return;
+  }
+  const grid = el("div", "learning-grid");
+  grid.append(learningList("Recent findings", findings.map((finding) => {
+    const card = el("article", "home-card");
+    card.append(el("h3", "home-question", finding.title || finding.id || "Untitled finding"));
+    card.append(el("p", "home-meta", finding.eligible ? "eligible" : `ineligible${finding.ineligibleReason ? ` · ${finding.ineligibleReason}` : ""}`));
+    for (const evidence of list(finding.evidence)) card.append(el("div", "home-id", evidence));
+    return card;
+  }), "No findings yet."));
+  grid.append(learningList("Learning activity", activity.map(({ item, label }) => {
+    const card = el("article", "home-card");
+    card.append(el("span", "home-chip", label));
+    card.append(el("h3", "home-question", item?.objective || item?.objectiveId || "Objective not recorded"));
+    card.append(el("p", "home-meta", `${item?.at || "time unknown"} · from finding ${item?.findingId || "unknown"}`));
+    return card;
+  }), "Nothing launched yet."));
+  root.append(grid);
+}
+
+function learningList(title, cards, empty) {
+  const section = el("section");
+  section.append(el("h2", "home-heading", title));
+  if (!cards.length) section.append(el("p", "home-calm home-calm--small", empty));
+  else { const wrap = el("div", "home-cards"); wrap.append(...cards); section.append(wrap); }
+  return section;
 }
 
 // ── Next ─────────────────────────────────────────────────────────────────────
