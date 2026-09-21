@@ -178,6 +178,14 @@ const EVENT_TRANSLATIONS = {
     sentence: nothingNeeded("The objective was cancelled and no new work will start."),
     needsFounderAction: false,
   },
+  "objective-yielded": {
+    sentence: nothingNeeded("This factory-improvement objective paused before starting more work so founder-requested work can go first."),
+    needsFounderAction: false,
+  },
+  "objective-resumed": {
+    sentence: nothingNeeded("Founder-requested work cleared and this factory-improvement objective resumed from its last safe point."),
+    needsFounderAction: false,
+  },
   "node-resumed": {
     sentence: nothingNeeded("This part of the objective resumed from its last safe point."),
     needsFounderAction: false,

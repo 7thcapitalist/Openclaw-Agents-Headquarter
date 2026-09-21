@@ -46,7 +46,7 @@ function emittedEventTypes() {
 
 test("every emitted workflow and objective event has a founder translation", () => {
   const types = emittedEventTypes();
-  assert.equal(types.size, 40, "the source scan must enumerate the current 40 distinct event types");
+  assert.equal(types.size, 42, "the source scan must enumerate the current 42 distinct event types");
 
   for (const type of types) {
     const event = type === "failure-routed"
