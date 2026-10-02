@@ -81,33 +81,23 @@ export function planRequest(argv) {
   throw new UsageError(USAGE);
 }
 
-// The overview is large; the operator's views are the parts it is for.
+// The server already trims the overview for an operator (operatorViews.mjs);
+// each subcommand prints the part it is about.
+const LIVE_OBJECTIVE = new Set(["pending", "active", "running", "recovering", "blocked"]);
+
 export function shapeResponse(plan, body) {
-  if (plan.view === "projects") {
-    return { projects: (body?.projects || []).map((p) => ({ id: p.id, name: p.name || null, status: p.status || p.currentStatus || null, paused: Boolean(p.paused) })) };
-  }
+  if (plan.view === "projects") return { projects: body?.projects || [] };
   if (plan.view === "status") {
-    const jobs = body?.jobs || [];
     return {
-      jobs: jobs.slice(0, 10).map(jobSummary),
-      openDecisions: (body?.decisions || []).length,
-      inbox: (body?.inbox || []).length,
+      jobs: (body?.jobs || []).slice(0, 10),
+      objectives: (body?.objectives || []).filter((objective) => LIVE_OBJECTIVE.has(objective.status)),
     };
   }
   if (plan.view === "job") {
     const job = (body?.jobs || []).find((item) => item.id === plan.jobId);
-    return job ? { job: jobSummary(job) } : { error: `No job ${plan.jobId}.` };
+    return job ? { job } : { error: `No job ${plan.jobId}.` };
   }
   return body;
-}
-
-function jobSummary(job) {
-  return {
-    id: job.id, kind: job.kind || null, projectId: job.projectId || null, status: job.status,
-    objectiveId: job.objectiveId || null, taskId: job.taskId || null, submittedBy: job.submittedBy || null,
-    createdAt: job.createdAt || null, updatedAt: job.updatedAt || null,
-    outcome: job.outcome ? { outcomeClass: job.outcome.outcomeClass || null, detail: job.outcome.detail || null } : null,
-  };
 }
 
 export async function run(argv, { env = process.env, fetchImpl = fetch, baseUrl = BASE_URL } = {}) {
