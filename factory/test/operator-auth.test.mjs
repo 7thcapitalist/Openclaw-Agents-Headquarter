@@ -39,7 +39,10 @@ import {
 import { decideOperatorSubmission, operatorLedgerPath, OPERATOR_DAILY_CAP } from "../../dashboard/backend/lib/operatorSubmission.mjs";
 import { csrfProtection, issueCsrfToken } from "../../dashboard/backend/lib/httpSecurity.mjs";
 import { auditFromRequest, readSecurityEvents, recordSecurityEvent } from "../../dashboard/backend/lib/securityAudit.mjs";
-import { listFounderJobs, saveFounderJob, setProjectPaused } from "../../dashboard/backend/lib/founderControlPlane.mjs";
+import { buildFounderOverview, listFounderJobs, recordQuestion, saveFounderJob, setProjectPaused } from "../../dashboard/backend/lib/founderControlPlane.mjs";
+import { readProjects } from "../../dashboard/backend/lib/hqStore.mjs";
+import { buildOperatorOverview } from "../../dashboard/backend/lib/operatorViews.mjs";
+import { DUPLICATE_JOB_WINDOW_MS } from "../../dashboard/backend/lib/founderControlPlane.mjs";
 import { planRequest, run as runOperatorCli } from "../../scripts/hq-operator.mjs";
 import { run as runTokenCli } from "../../scripts/hq-operator-token.mjs";
 
@@ -66,10 +69,19 @@ function makeRoot() {
   return { root, repo, storePath, token };
 }
 
-function writeObjective(root, objectiveId, status) {
+function writeObjective(root, objectiveId, status, nodes = {}) {
   const dir = join(root, "dashboard", "backend", "data", "factory", "alpha", "objectives", objectiveId);
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, "objective-state.json"), JSON.stringify({ version: 1, objectiveId, status, nodes: {} }));
+  writeFileSync(join(dir, "objective-state.json"), JSON.stringify({
+    version: 1, objectiveId, objective: "Seeded objective", project: "alpha", repo: join(root, "repos", "alpha"), status, nodes,
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), events: [],
+  }));
+}
+
+function writeTask(root, taskId, status) {
+  const dir = join(root, "dashboard", "backend", "data", "factory", "alpha", "tasks", taskId);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "state.json"), JSON.stringify({ version: 1, task: { id: taskId, outcome: "Seeded task" }, status, stages: {}, events: [] }));
 }
 
 // The miniature dashboard: server.mjs's chain, in server.mjs's order.
@@ -84,6 +96,12 @@ function buildApp(fx, { launches = [] } = {}) {
     res.json({ csrfToken: issueCsrfToken(req.session) });
   });
   app.use(unlessOperator((req, res, next) => (req.session?.authenticated ? next() : res.status(401).json({ error: "Unauthorized" }))));
+
+  app.get("/api/founder/overview", (req, res) => {
+    if (req.operator) return res.json(buildOperatorOverview(fx.root));
+    const overview = buildFounderOverview(fx.root, readProjects(fx.root));
+    res.json({ ...overview, jobs: listFounderJobs(fx.root) });
+  });
 
   app.post("/api/founder/tasks", (req, res) => {
     if (req.operator) {
@@ -246,7 +264,9 @@ test("a valid token reaches the nine allowlisted routes", { skip }, async () => 
       const path = route.path.replace(":id", route.path.includes("objectives/") ? "obj-1234abcd" : "task-abc123");
       const response = await fetch(`${base}${path}`, { headers: bearer(fx.token) });
       assert.equal(response.status, 200, path);
-      assert.equal((await response.json()).operator, "dot", path);
+      const body = await response.json();
+      if (path === "/api/founder/overview") assert.deepEqual(Object.keys(body).sort(), ["jobs", "objectives", "projects"]);
+      else assert.equal(body.operator, "dot", path);
     }
   }));
   assert.equal(OPERATOR_ROUTES.length, 9);
@@ -292,7 +312,7 @@ test("a token never rides a founder session cookie", { skip }, async () => {
     assert.equal((await fetch(`${base}/api/founder/tasks/t-1/retry`, { method: "GET", headers: { Cookie: cookie } })).status, 200);
     assert.equal((await fetch(`${base}/api/founder/tasks/t-1/retry`, { method: "GET", headers: bearer(fx.token, { Cookie: cookie }) })).status, 403);
     // On an allowed route the handler sees the operator, and no founder session.
-    const allowed = await (await fetch(`${base}/api/founder/overview`, { headers: bearer(fx.token, { Cookie: cookie }) })).json();
+    const allowed = await (await fetch(`${base}/api/founder/tasks/t-1/report`, { headers: bearer(fx.token, { Cookie: cookie }) })).json();
     assert.deepEqual([allowed.operator, allowed.founderSession], ["dot", false]);
     assert.equal((await fetch(`${base}/api/hq/company`, { headers: bearer("hqop_bogus", { Cookie: cookie }) })).status, 401);
   }));
@@ -600,8 +620,142 @@ test("server.mjs: the task route sends operators through the guard, and the laun
   assert.match(operatorBranch, /if \(req\.operator\) \{[\s\S]*decideOperatorSubmission\(\{[\s\S]*launch: launchFounderTask/);
   assert.match(operatorBranch, /return res\.status\(decision\.status\)/);
   const launch = serverSource.slice(serverSource.indexOf("function launchFounderTask"), serverSource.indexOf('app.post("/api/founder/tasks"'));
-  const call = launch.match(/handleFactoryRequest\(\{([^}]*)\}\)/)[1];
+  const [, call, dependencies] = launch.match(/handleFactoryRequest\(\{([^}]*)\}, \{([^}]*)\}\)/);
+  assert.equal(dependencies.trim(), "onTaskCreated", "the only dependency passed is the task-id hook; nothing overrides intake, init or dispatch");
   const fields = call.split(",").map((part) => part.trim().split(":")[0].trim()).filter(Boolean);
   assert.deepEqual(fields, ["version", "action", "repo", "objective", "project", "issue"], "no approval, stateRoot, answers or contractPath can reach the start request");
   assert.match(call, /action: "start"/);
+});
+
+// ── task jobs are judged by their real task state ────────────────────────────
+
+test("busy: a task job running longer than the window still counts; a stranded one over a terminal task does not", () => {
+  const operator = { id: "dot", actor: "operator:dot" };
+  const old = new Date(Date.now() - DUPLICATE_JOB_WINDOW_MS - 3600_000).toISOString();
+  const attempt = (fx, key) => decideOperatorSubmission({
+    root: fx.root, operator, body: { projectId: "alpha", objective: "New work" }, idempotencyKey: key,
+    launch: (input) => saveFounderJob(fx.root, { id: "founder-new", kind: "task", ...input, status: "starting", createdAt: new Date().toISOString() }),
+  });
+
+  const live = makeRoot();
+  writeTask(live.root, "task-longrun", "active");
+  saveFounderJob(live.root, { id: "founder-longrun", kind: "task", projectId: "beta", objective: "long", status: "running", taskId: "task-longrun", createdAt: old });
+  const refused = attempt(live, "dot-task-0001");
+  assert.equal(refused.status, 409);
+  assert.equal(refused.body.activeJob.id, "founder-longrun");
+  assert.deepEqual(refused.body.activeJob.canonical, { live: true, source: "task", status: "active" });
+
+  const stranded = makeRoot();
+  writeTask(stranded.root, "task-finished", "merge-ready");
+  saveFounderJob(stranded.root, { id: "founder-stranded", kind: "task", projectId: "beta", objective: "done", status: "running", taskId: "task-finished", createdAt: new Date().toISOString() });
+  assert.equal(attempt(stranded, "dot-task-0002").status, 202, "a fresh record over a merge-ready task is not busy");
+
+  // The window applies only while there is no state file yet.
+  const intake = makeRoot();
+  saveFounderJob(intake.root, { id: "founder-intake", kind: "task", projectId: "beta", objective: "intake", status: "starting", createdAt: new Date().toISOString() });
+  assert.equal(attempt(intake, "dot-task-0003").body.activeJob.canonical.source, "window");
+});
+
+test("server.mjs records the task id on the founder job when the task is created", () => {
+  const launch = serverSource.slice(serverSource.indexOf("function launchFounderTask"), serverSource.indexOf('app.post("/api/founder/tasks"'));
+  assert.match(launch, /const onTaskCreated = \(\{ taskId \}\) => saveFounderJob\(ROOT, Object\.assign\(job, \{ taskId/);
+});
+
+// ── the operator's overview ──────────────────────────────────────────────────
+
+function seedOverview(fx) {
+  writeObjective(fx.root, "obj-0000view", "running", {
+    a: { id: "obj-0000view-a", role: "backend-builder", status: "running", dependsOn: [], statePath: "/secret/path/state.json" },
+    b: { id: "obj-0000view-b", role: "frontend-builder", status: "pending", dependsOn: ["a"] },
+  });
+  setProjectPaused(fx.root, "beta", true);
+  saveFounderJob(fx.root, { id: "founder-view", kind: "objective", projectId: "alpha", objective: "Seeded objective", repo: fx.repo, status: "running", objectiveId: "obj-0000view", submittedBy: "operator:dot", createdAt: "2026-10-01T00:00:00.000Z", result: { statePath: "/secret/x" } });
+  recordQuestion(fx.root, { id: "q-1", question: "What is our runway, privately?", status: "answered", createdAt: new Date().toISOString() });
+}
+
+test("an operator's overview is only projects, jobs and objective summaries", { skip }, async () => {
+  const fx = makeRoot();
+  seedOverview(fx);
+  const body = await withEnabled("1", () => withServer(fx, async (base) => (await fetch(`${base}/api/founder/overview`, { headers: bearer(fx.token) })).json()));
+  assert.deepEqual(Object.keys(body).sort(), ["jobs", "objectives", "projects"]);
+  assert.deepEqual(body.projects, [
+    { id: "alpha", name: "Alpha", paused: false },
+    { id: "beta", name: "Beta", paused: true },
+    { id: "frozen", name: "Frozen", paused: true },
+  ]);
+  assert.deepEqual(body.jobs, [{
+    id: "founder-view", status: "running", storedStatus: null, objectiveId: "obj-0000view", taskId: null,
+    projectId: "alpha", createdAt: "2026-10-01T00:00:00.000Z", submittedBy: "operator:dot",
+  }]);
+  assert.deepEqual(body.objectives, [{ id: "obj-0000view", status: "running", nodes: [
+    { id: "obj-0000view-a", status: "running" }, { id: "obj-0000view-b", status: "pending" },
+  ] }]);
+  const text = JSON.stringify(body);
+  for (const leak of [fx.root, "/secret", "statePath", "repo", "runway", "question", "decision", "inbox", "approval", "company", "thread"]) {
+    assert.ok(!text.includes(leak), `operator overview must not contain ${leak}`);
+  }
+});
+
+test("the founder's overview is unchanged: the full view, paths and questions included", { skip }, async () => {
+  const fx = makeRoot();
+  seedOverview(fx);
+  const body = await withEnabled("1", () => withServer(fx, async (base) => {
+    const login = await fetch(`${base}/api/auth/login`, { method: "POST" });
+    const cookie = login.headers.get("set-cookie").split(";")[0];
+    return (await fetch(`${base}/api/founder/overview`, { headers: { Cookie: cookie } })).json();
+  }));
+  const expected = JSON.parse(JSON.stringify({ ...buildFounderOverview(fx.root, readProjects(fx.root)), jobs: listFounderJobs(fx.root) }));
+  assert.deepEqual(body, expected);
+  for (const key of ["projects", "tasks", "decisions", "openDecisions", "inbox", "company", "questions", "activity", "jobs"]) {
+    assert.ok(Object.hasOwn(body, key), `founder overview keeps ${key}`);
+  }
+  assert.equal(body.jobs[0].repo, fx.repo, "the founder still sees the full job record");
+  assert.ok(body.questions.some((q) => q.question.includes("runway")));
+});
+
+test("server.mjs: the overview's founder branch is byte-for-byte what it was; operators return before it", () => {
+  const route = serverSource.slice(serverSource.indexOf('app.get("/api/founder/overview"'));
+  const body = route.slice(0, route.indexOf("\n});") + 4);
+  const operatorAt = body.indexOf("if (req.operator) return res.json(buildOperatorOverview(ROOT));");
+  const founderAt = body.indexOf("const overview = buildFounderOverview(ROOT, readProjects(ROOT));\n    res.json({ ...overview, jobs: listFounderJobs(ROOT) });");
+  assert.ok(operatorAt > 0 && founderAt > operatorAt);
+});
+
+// ── the cap is the operator's, never the founder's ───────────────────────────
+
+test("the 24h operator cap can never block a cookie-authenticated founder submission", { skip }, async () => {
+  const fx = makeRoot();
+  const now = Date.now();
+  const launch = (input) => saveFounderJob(fx.root, { id: `founder-${input.requestId}`, kind: "task", ...input, status: "complete", createdAt: new Date(now).toISOString() });
+  for (let i = 0; i < OPERATOR_DAILY_CAP; i += 1) {
+    decideOperatorSubmission({ root: fx.root, operator: { id: "dot", actor: "operator:dot" }, body: { projectId: "alpha", objective: `w${i}` }, idempotencyKey: `dot-fcap-${i}-xxx`, launch, now });
+  }
+  const ledgerBefore = readFileSync(operatorLedgerPath(fx.root), "utf8");
+  await withEnabled("1", () => withServer(fx, async (base) => {
+    // The operator is capped...
+    assert.equal((await submit(base, fx.token, { projectId: "alpha", objective: "more" }, "dot-fcap-over")).status, 429);
+    // ...and the founder is not, however many times they submit.
+    const login = await fetch(`${base}/api/auth/login`, { method: "POST" });
+    const cookie = login.headers.get("set-cookie").split(";")[0];
+    const { csrfToken } = await login.json();
+    for (let i = 0; i < OPERATOR_DAILY_CAP + 2; i += 1) {
+      const response = await fetch(`${base}/api/founder/tasks`, {
+        method: "POST",
+        headers: { Cookie: cookie, "Content-Type": "application/json", Origin: base, "X-CSRF-Token": csrfToken },
+        body: JSON.stringify({ projectId: "alpha", objective: `founder ${i}` }),
+      });
+      assert.equal(response.status, 202, `founder submission ${i}`);
+    }
+  }));
+  assert.equal(readFileSync(operatorLedgerPath(fx.root), "utf8"), ledgerBefore, "founder submissions never touch the operator ledger");
+  // In server.mjs the cap lives only behind req.operator: the founder branch and
+  // the shared launcher never reach the guard or its ledger.
+  const route = serverSource.slice(serverSource.indexOf('app.post("/api/founder/tasks"'));
+  const founderBranch = route.slice(route.indexOf("let job;"), route.indexOf("\n});"));
+  const launcher = serverSource.slice(serverSource.indexOf("function launchFounderTask"), serverSource.indexOf('app.post("/api/founder/tasks"'));
+  for (const code of [founderBranch, launcher]) {
+    assert.ok(!/decideOperatorSubmission|OPERATOR_DAILY_CAP|operatorLedger|operator-submissions/.test(code));
+  }
+  assert.equal((serverSource.match(/decideOperatorSubmission\(/g) || []).length, 1, "the guard is called from exactly one place");
+  assert.match(route.slice(0, route.indexOf("let job;")), /^app\.post\("\/api\/founder\/tasks", \(req, res\) => \{\n  if \(req\.operator\) \{/);
 });

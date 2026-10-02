@@ -15,6 +15,7 @@ import {
 import { auditFromRequest } from "./lib/securityAudit.mjs";
 import { operatorAuthGate, unlessOperator } from "./lib/operatorAuth.mjs";
 import { decideOperatorSubmission } from "./lib/operatorSubmission.mjs";
+import { buildOperatorOverview } from "./lib/operatorViews.mjs";
 import { requestLog } from "./lib/requestLog.mjs";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import { dirname, join } from "path";
@@ -371,8 +372,11 @@ app.get("/api/auth/me", (req, res) => {
   });
 });
 
-app.get("/api/founder/overview", (_req, res) => {
+app.get("/api/founder/overview", (req, res) => {
   try {
+    // An operator gets a trimmed view (lib/operatorViews.mjs): no paths, no
+    // questions or threads, no decisions, no approval-key status.
+    if (req.operator) return res.json(buildOperatorOverview(ROOT));
     const overview = buildFounderOverview(ROOT, readProjects(ROOT));
     res.json({ ...overview, jobs: listFounderJobs(ROOT) });
   } catch (e) {
@@ -545,7 +549,10 @@ function launchFounderTask({ projectId, objective, repo, issue, submittedBy, req
   // run really ended. Both settlements land in finishFounderJob so the outcome
   // is typed, classified, and reachable from the Founder Inbox — a rejection
   // here used to be recorded as a raw string no view read.
-  handleFactoryRequest({ version: 1, action: "start", repo: job.repo, objective: job.objective, project: job.projectId, issue: issue || undefined })
+  // The task id is recorded the moment the task exists, not when the run ends,
+  // so the job can be judged by its live task state while it runs.
+  const onTaskCreated = ({ taskId }) => saveFounderJob(ROOT, Object.assign(job, { taskId, updatedAt: new Date().toISOString() }));
+  handleFactoryRequest({ version: 1, action: "start", repo: job.repo, objective: job.objective, project: job.projectId, issue: issue || undefined }, { onTaskCreated })
     .then((result) => finishFounderJob(ROOT, Object.assign(job, { result, taskId: result?.taskId || result?.task?.id || job.taskId }), {
       result,
       whatFailed: `Your request "${deriveObjectiveTitle(job.objective)}"`,
