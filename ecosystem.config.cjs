@@ -170,6 +170,8 @@ module.exports = {
         ...common,
         ...pick("HQ_CONTROL_PLANE_URL", "HQ_WRITE_TOKEN"),
         HQ_INTENT_INTERVAL_MS: file.HQ_INTENT_INTERVAL_MS || "30000",
+        // An intent can detach an objective run; one at a time, like hq-dashboard.
+        FACTORY_MAX_CONCURRENT: "1",
       },
     },
     {
