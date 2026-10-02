@@ -908,6 +908,9 @@ function readDecisionCard(state) {
 // Statuses that are the objective's final word about itself. Node evidence can
 // refine a non-terminal objective's status; it cannot overturn one of these.
 const TERMINAL_OBJECTIVE_STATUSES = new Set(["cancelled", "complete"]);
+// Node statuses that are already a node's final word; everything else is
+// unfinished and, inside a cancelled objective, displays as cancelled.
+const FINISHED_NODE_STATUSES = new Set(["gate-satisfied", "failed", "skipped", "cancelled"]);
 
 const OBJ_ACTIVE_STALE_MS = Number(process.env.HQ_OBJECTIVE_ACTIVE_STALE_MS) || 12 * 60 * 60 * 1000;
 const OBJ_RECENT_COMPLETE_MS = Number(process.env.HQ_OBJECTIVE_RECENT_COMPLETE_MS) || 72 * 60 * 60 * 1000;
@@ -991,6 +994,14 @@ export function buildObjectivesView(root, { now = Date.now() } = {}) {
       node.completedStages = task
         ? (task.events || []).filter((e) => e.type === "stage-pass").map((e) => e.stage)
         : [];
+      // Cancelling leaves node statuses untouched on purpose (see below), so a
+      // node that was mid-run still reads "running" in the stored record. In a
+      // cancelled objective nothing will ever run again: an unfinished node is
+      // shown as cancelled, and `storedStatus` keeps what it had reached.
+      if (obj.status === "cancelled" && !FINISHED_NODE_STATUSES.has(node.status)) {
+        node.storedStatus = node.status;
+        node.status = "cancelled";
+      }
     }
     // A live task means the objective is live — EXCEPT when the objective
     // already reached a terminal state the founder declared. Cancelling
@@ -1622,15 +1633,47 @@ export function listPendingQuestions(root) {
   return readControl(root).questions.filter((question) => question.status === "queued" || question.status === "running");
 }
 
+// A job record is the dashboard's note about a request; the objective's own
+// state is the truth about the work. The two drift whenever the process that
+// would have settled the job dies first (a restart mid-run) or the objective is
+// ended from somewhere else (cancel, a recovery job finishing it). Four jobs sat
+// at "running"/"recovering" for weeks over objectives that were cancelled or
+// complete. So the displayed status is derived here, at read time, from the
+// canonical objective state whenever that state is terminal. Nothing is written:
+// control-plane.json keeps exactly what was recorded, and `storedStatus` carries
+// it on the derived copy.
+function canonicalObjectiveStatus(root, objectiveId, cache) {
+  if (cache.has(objectiveId)) return cache.get(objectiveId);
+  let status = null;
+  try {
+    const statePath = findObjectiveStatePath(root, objectiveId);
+    if (statePath) status = String(readObjState(statePath)?.status || "") || null;
+  } catch { /* unreadable state: fall back to the stored job status */ }
+  cache.set(objectiveId, status);
+  return status;
+}
+
+function withCanonicalStatus(root, job, cache) {
+  if (!job?.objectiveId) return job;
+  const canonical = canonicalObjectiveStatus(root, job.objectiveId, cache);
+  if (!TERMINAL_OBJECTIVE_STATUSES.has(canonical) || canonical === job.status) return job;
+  return { ...job, status: canonical, storedStatus: job.status, statusSource: "objective" };
+}
+
 export function listFounderJobs(root) {
-  return readControl(root).jobs.slice().sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+  const cache = new Map();
+  return readControl(root).jobs
+    .map((job) => withCanonicalStatus(root, job, cache))
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
 }
 
 // Work already being planned or run for the same request on the same project.
 // Intake takes 30-40s with nothing visibly happening, and on 2026-09-15 six
 // submissions of one objective started six copies in parallel; together they
 // exhausted every provider seat and all six blocked without a commit. Stale
-// records (a dashboard restart leaves a job at "running") age out of the window.
+// records (a dashboard restart leaves a job at "running") age out of the window,
+// and a job whose objective is already cancelled or complete never counts: it
+// reads through listFounderJobs, which reports the objective's terminal status.
 const IN_FLIGHT_JOB_STATUSES = new Set(["starting", "decomposing", "running", "recovering"]);
 export const DUPLICATE_JOB_WINDOW_MS = 6 * 60 * 60 * 1000;
 

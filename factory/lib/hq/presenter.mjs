@@ -311,6 +311,7 @@ export function normalizeNodeStatus(node) {
   if (s === "running") return STATUS.RUNNING;
   if (s === "pending") return STATUS.PENDING;
   if (s === "blocked-by-dep") return STATUS.PENDING;
+  if (s === "cancelled") return STATUS.CANCELLED;
   if (s === "blocked" || s === "failed") {
     const brief = briefBlocker(node?.blocker);
     if (brief?.autoRecovering) return STATUS.RECOVERING;
