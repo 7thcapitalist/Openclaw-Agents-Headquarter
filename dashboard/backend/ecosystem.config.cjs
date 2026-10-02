@@ -152,6 +152,9 @@ module.exports = {
         HQ_CONTROL_PLANE_URL: env.HQ_CONTROL_PLANE_URL || "",
         HQ_WRITE_TOKEN: env.HQ_WRITE_TOKEN || "",
         HQ_INTENT_INTERVAL_MS: env.HQ_INTENT_INTERVAL_MS || "30000",
+        // One factory run at a time from intents. Takes effect only when this
+        // process is next started from this file (pm2 start/reload --update-env).
+        FACTORY_MAX_CONCURRENT: "1",
       },
       autorestart: true,
       max_restarts: 50,

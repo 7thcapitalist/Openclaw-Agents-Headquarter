@@ -1650,6 +1650,40 @@ export function findInFlightDuplicateJob(root, { projectId, objective, now = Dat
   )) || null;
 }
 
+// Is any founder job actually still running? job.status alone cannot answer
+// that: a dashboard restart strands records at "running" forever. So a job the
+// record calls in-flight is checked against the state it points at — the
+// objective state for an objective, the task state for a task — and only a
+// live one counts. A job with no state yet (intake is still building it) is
+// trusted within the same window the duplicate check uses, then ages out.
+const LIVE_TASK_STATUSES = new Set(["active"]);
+const LIVE_OBJECTIVE_STATUSES = new Set(["pending", "active", "running", "recovering"]);
+
+export function canonicalJobLiveness(root, job, { now = Date.now(), windowMs = DUPLICATE_JOB_WINDOW_MS } = {}) {
+  if (!IN_FLIGHT_JOB_STATUSES.has(job?.status)) return { live: false, source: "job", status: job?.status || null };
+  if (job.objectiveId) {
+    const path = findObjectiveStatePath(root, job.objectiveId);
+    let status = null;
+    if (path) { try { status = readObjState(path)?.status || null; } catch { /* unreadable: use the window */ } }
+    if (status) return { live: LIVE_OBJECTIVE_STATUSES.has(status), source: "objective", status };
+  }
+  if (job.taskId) {
+    const path = findTaskStatePath(root, job.taskId);
+    let status = null;
+    if (path) { try { status = readState(path)?.status || null; } catch { /* unreadable: use the window */ } }
+    if (status) return { live: LIVE_TASK_STATUSES.has(status), source: "task", status };
+  }
+  return { live: now - (Date.parse(job.createdAt) || 0) < windowMs, source: "window", status: job.status };
+}
+
+export function findCanonicallyActiveJob(root, options = {}) {
+  for (const job of listFounderJobs(root)) {
+    const liveness = canonicalJobLiveness(root, job, options);
+    if (liveness.live) return { job, liveness };
+  }
+  return null;
+}
+
 export function duplicateJobError(job) {
   const where = job.objectiveId ? ` (${job.objectiveId})` : "";
   const err = new Error(`This request is already ${job.status}${where}. Follow it in “Running now” instead of starting another copy.`);

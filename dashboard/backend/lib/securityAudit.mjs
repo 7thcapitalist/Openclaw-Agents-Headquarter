@@ -137,15 +137,24 @@ export function sessionHandle(sessionId) {
   return createHash("sha256").update(String(sessionId)).digest("hex").slice(0, 16);
 }
 
+// Who performed an action. Until the operator principal existed every record
+// said "founder" because there was no one else; that literal now has to be a
+// parameter, or an operator's actions would be attributed to the founder.
+export const DEFAULT_ACTOR = "founder";
+
+export function actorFromRequest(req) {
+  return req?.operator?.actor || DEFAULT_ACTOR;
+}
+
 // Append one record. Never throws into a request path: losing the request
 // because the audit file is unwritable would be a worse outcome than the gap,
 // and the failure is reported on stderr where the operator will see it.
-export function recordSecurityEvent(root, event) {
+export function recordSecurityEvent(root, event, { actor = event?.actor || DEFAULT_ACTOR } = {}) {
   const record = {
     id: randomUUID(),
     at: new Date().toISOString(),
     action: String(event?.action || "unknown"),
-    actor: String(event?.actor || "founder"),
+    actor: String(actor),
     outcome: String(event?.outcome || "ok"),
     ...(event?.taskId ? { taskId: String(event.taskId) } : {}),
     ...(event?.objectiveId ? { objectiveId: String(event.objectiveId) } : {}),
@@ -194,12 +203,15 @@ export function readSecurityEvents(root, { limit = 200, action = null } = {}) {
   return rows.reverse().slice(0, limit);
 }
 
-// Convenience wrapper that pulls attribution off an express request.
-export function auditFromRequest(root, req, event) {
+// Convenience wrapper that pulls attribution off an express request: the actor
+// is the authenticated principal (an operator, or the founder's session).
+export function auditFromRequest(root, req, event, { actor = event?.actor || actorFromRequest(req) } = {}) {
   return recordSecurityEvent(root, {
     ...event,
     sessionHandle: sessionHandle(req?.sessionID),
-    ip: req?.ip || req?.socket?.remoteAddress || null,
+    // An operator is loopback-only and judged by its socket; req.ip follows
+    // X-Forwarded-For when a proxy is trusted.
+    ip: (req?.operator ? req?.socket?.remoteAddress : req?.ip || req?.socket?.remoteAddress) || null,
     userAgent: req?.headers?.["user-agent"] || null,
-  });
+  }, { actor });
 }
