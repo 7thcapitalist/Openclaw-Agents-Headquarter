@@ -176,3 +176,39 @@ test("forged high-risk contract fails before creating a branch or worktree", () 
   assert.deepEqual(calls.map((args) => args[0]), ["rev-parse"]);
   assert.equal(existsSync(join(root, "worktree")), false);
 });
+
+test("start reports the task id as soon as the task exists, before any stage dispatches", async () => {
+  const root = mkdtempSync(join(tmpdir(), "factory-task-created-"));
+  const repo = join(root, "project");
+  mkdirSync(repo);
+  const order = [];
+  const originalWarn = console.warn;
+  const warnings = [];
+  console.warn = (message) => warnings.push(String(message));
+  let response;
+  try {
+  response = await handleRequest({ version: 1, action: "start", repo, stateRoot: join(root, "state"), objective: "Add a health endpoint." }, {
+    executeChiefOfStaff: async ({ id }) => JSON.stringify({ id, issue: `local:${id}`, outcome: "A health endpoint reports readiness.", acceptanceCriteria: ["The endpoint returns success"], project: "project", workType: "backend", risk: "low", preferredBuilder: "auto", constraints: [] }),
+    initializeTask: (options) => initializeStartFixture({ options, root, repo }),
+    onTaskCreated: ({ taskId, statePath }) => {
+      order.push(`created:${taskId}`);
+      assert.ok(existsSync(statePath), "the state file exists when the hook fires");
+      throw new Error("a broken callback must not stop the run");
+    },
+    execute: async ({ dispatch, cwd }) => {
+      order.push(`dispatch:${dispatch.stage}`);
+      mkdirSync(join(cwd, "evidence"), { recursive: true });
+      const evidence = `evidence/${dispatch.stage}.md`;
+      writeFileSync(join(cwd, evidence), "verified\n");
+      writeFileSync(dispatch.resultPath, JSON.stringify({ version: 1, dispatchId: dispatch.dispatchId, stage: dispatch.stage, actor: dispatch.actor, outcome: "pass", summary: "passed", evidence: [evidence] }));
+    },
+  });
+  } finally {
+    console.warn = originalWarn;
+  }
+  assert.equal(response.status, "merge-ready");
+  assert.equal(order[0], `created:${response.contract.id}`);
+  assert.match(warnings.join("\n"), /onTaskCreated failed/);
+  assert.equal(order.filter((entry) => entry.startsWith("created:")).length, 1);
+  assert.ok(order.slice(1).every((entry) => entry.startsWith("dispatch:")) && order.length > 1);
+});

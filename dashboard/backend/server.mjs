@@ -13,6 +13,9 @@ import {
   securityHeaders,
 } from "./lib/httpSecurity.mjs";
 import { auditFromRequest } from "./lib/securityAudit.mjs";
+import { operatorAuthGate, unlessOperator } from "./lib/operatorAuth.mjs";
+import { decideOperatorSubmission } from "./lib/operatorSubmission.mjs";
+import { buildOperatorOverview } from "./lib/operatorViews.mjs";
 import { requestLog } from "./lib/requestLog.mjs";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import { dirname, join } from "path";
@@ -217,6 +220,11 @@ app.use(
 app.use(securityHeaders());
 
 app.use(express.json({ limit: "2mb" }));
+// Bearer-token operators (lib/operatorAuth.mjs). Before the session middleware
+// on purpose: a request carrying a Bearer header is judged only here, and its
+// cookie is stripped so it can never fall back to a founder session. Requests
+// without one pass through untouched. Off unless HQ_OPERATOR_ENABLED=1.
+app.use(operatorAuthGate({ root: ROOT }));
 app.use(
   session({
     name: "agentlab.sid",
@@ -236,7 +244,10 @@ app.use(
 // Every mutating request must prove it came from Headquarters itself.
 // `/api/auth/login` is exempt: the browser has no session-bound token yet, and
 // that endpoint is protected by throttling plus the password instead.
-app.use(
+// An authenticated operator skips CSRF: a Bearer header is never attached by a
+// browser on its own, which is the attack CSRF exists to stop. Only
+// req.operator — set after the token, loopback and allowlist checks — opens it.
+app.use(unlessOperator(
   csrfProtection({
     allowedOrigins: (process.env.DASHBOARD_ALLOWED_ORIGINS || "")
       .split(",")
@@ -246,7 +257,7 @@ app.use(
     // Only honour x-forwarded-host when this deployment actually trusts a proxy.
     trustProxy: Boolean(TRUST_PROXY),
   })
-);
+));
 
 const loginThrottle = new LoginThrottle({
   maxAttempts: Number(process.env.DASHBOARD_LOGIN_MAX_ATTEMPTS || 5),
@@ -294,7 +305,7 @@ function loginGate(req, res, next) {
   return requireAuth(req, res, next);
 }
 
-app.use(loginGate);
+app.use(unlessOperator(loginGate));
 
 app.post("/api/auth/login", async (req, res) => {
   const body = req.body || {};
@@ -361,8 +372,11 @@ app.get("/api/auth/me", (req, res) => {
   });
 });
 
-app.get("/api/founder/overview", (_req, res) => {
+app.get("/api/founder/overview", (req, res) => {
   try {
+    // An operator gets a trimmed view (lib/operatorViews.mjs): no paths, no
+    // questions or threads, no decisions, no approval-key status.
+    if (req.operator) return res.json(buildOperatorOverview(ROOT));
     const overview = buildFounderOverview(ROOT, readProjects(ROOT));
     res.json({ ...overview, jobs: listFounderJobs(ROOT) });
   } catch (e) {
@@ -520,7 +534,56 @@ function resolveLaunchRepo(req, projectId) {
   return resolveRepoInput(ROOT, req.body?.repo) || resolveProjectRepo(ROOT, projectId);
 }
 
+// Create the founder job record and start the factory run detached. Shared by
+// the founder's route and the operator guard so both launch the same `start`
+// request — the operator path cannot add fields to it.
+function launchFounderTask({ projectId, objective, repo, issue, submittedBy, requestId }) {
+  const now = new Date().toISOString();
+  const job = {
+    id: `founder-${Date.now().toString(36)}`, kind: "task", projectId, objective, repo, status: "starting",
+    ...(submittedBy ? { submittedBy } : {}), ...(requestId ? { requestId } : {}),
+    createdAt: now, updatedAt: now,
+  };
+  saveFounderJob(ROOT, job);
+  // The 202 is already out; this promise is the only thing that knows how the
+  // run really ended. Both settlements land in finishFounderJob so the outcome
+  // is typed, classified, and reachable from the Founder Inbox — a rejection
+  // here used to be recorded as a raw string no view read.
+  // The task id is recorded the moment the task exists, not when the run ends,
+  // so the job can be judged by its live task state while it runs.
+  const onTaskCreated = ({ taskId }) => saveFounderJob(ROOT, Object.assign(job, { taskId, updatedAt: new Date().toISOString() }));
+  handleFactoryRequest({ version: 1, action: "start", repo: job.repo, objective: job.objective, project: job.projectId, issue: issue || undefined }, { onTaskCreated })
+    .then((result) => finishFounderJob(ROOT, Object.assign(job, { result, taskId: result?.taskId || result?.task?.id || job.taskId }), {
+      result,
+      whatFailed: `Your request "${deriveObjectiveTitle(job.objective)}"`,
+      whatTheFactoryTried: "Chief of Staff intake, then the seven-stage pipeline",
+    }))
+    .catch((error) => finishFounderJob(ROOT, job, {
+      error,
+      whatFailed: `Your request "${deriveObjectiveTitle(job.objective)}"`,
+      whatTheFactoryTried: "Chief of Staff intake",
+    }));
+  return job;
+}
+
 app.post("/api/founder/tasks", (req, res) => {
+  if (req.operator) {
+    try {
+      const decision = decideOperatorSubmission({
+        root: ROOT,
+        operator: req.operator,
+        body: req.body,
+        idempotencyKey: req.get("idempotency-key"),
+        launch: launchFounderTask,
+      });
+      for (const [name, value] of Object.entries(decision.headers || {})) res.setHeader(name, value);
+      res.locals.operatorReason = decision.body?.reason || null;
+      return res.status(decision.status).json(decision.body);
+    } catch (e) {
+      res.locals.operatorReason = "internal_error";
+      return res.status(500).json({ error: String(e.message || e) });
+    }
+  }
   let job;
   try {
     const objective = String(req.body?.objective || "").trim();
@@ -534,27 +597,10 @@ app.post("/api/founder/tasks", (req, res) => {
       const err = duplicateJobError(duplicate);
       return res.status(409).json({ error: err.message, duplicateOf: err.duplicateOf });
     }
-    const jobId = `founder-${Date.now().toString(36)}`;
-    job = { id: jobId, kind: "task", projectId, objective, repo, status: "starting", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
-    saveFounderJob(ROOT, job);
+    job = launchFounderTask({ projectId, objective, repo, issue: req.body?.issue });
   } catch (e) {
     return res.status(500).json({ error: String(e.message || e) });
   }
-  // The 202 is already out; this promise is the only thing that knows how the
-  // run really ended. Both settlements land in finishFounderJob so the outcome
-  // is typed, classified, and reachable from the Founder Inbox — a rejection
-  // here used to be recorded as a raw string no view read.
-  handleFactoryRequest({ version: 1, action: "start", repo: job.repo, objective: job.objective, project: job.projectId, issue: req.body?.issue || undefined })
-    .then((result) => finishFounderJob(ROOT, Object.assign(job, { result, taskId: result?.taskId || result?.task?.id || job.taskId }), {
-      result,
-      whatFailed: `Your request "${deriveObjectiveTitle(job.objective)}"`,
-      whatTheFactoryTried: "Chief of Staff intake, then the seven-stage pipeline",
-    }))
-    .catch((error) => finishFounderJob(ROOT, job, {
-      error,
-      whatFailed: `Your request "${deriveObjectiveTitle(job.objective)}"`,
-      whatTheFactoryTried: "Chief of Staff intake",
-    }));
   res.status(202).json({ job });
 });
 
