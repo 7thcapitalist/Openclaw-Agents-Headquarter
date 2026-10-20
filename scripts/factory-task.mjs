@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync } from "child_process";
 import { existsSync, readFileSync } from "fs";
-import { dirname, join, resolve } from "path";
+import { basename, dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 import {
   completeStage,
