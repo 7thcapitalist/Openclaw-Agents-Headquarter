@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, unlinkSync, writeFileSync, readFileSync } from "
 import { basename, dirname, join } from "path";
 import { PROTOCOL_VERSION, blockDispatch, computeDispatchPaths, failDispatch, ingestResult, markDispatchRunning, prepareDispatch, readResultFile, recordDispatchAgentId, recordDispatchRoute, recordRouteFailure } from "./openclaw-protocol.mjs";
 import { describeAgentCompletion, parseAgentMeta } from "./hq/agent-meta.mjs";
+import { withRolloutUsage } from "./hq/codex-rollout-usage.mjs";
 import { rotatedRouteFor } from "./agent-routes.mjs";
 import { DEFAULT_MAX_INFRA_ATTEMPTS, STAGES, readState } from "./task-workflow.mjs";
 import { mutateTransactionalState, peekRevision } from "./store/transactional-json.mjs";
@@ -183,9 +184,9 @@ export async function runOneStage({ hqRoot, statePath, agentIds = {}, maxAttempt
       const ready = await waitForResult({ resultPath: prepared.resultPath, heartbeat: () => touchState(statePath, prepared.dispatchId) });
       if (!ready) return { ...prepared, waiting: true };
     }
-    const agentMeta = parseAgentMeta(executed, { durationMsFallback: Date.now() - startedAt })
+    const agentMeta = withRolloutUsage(parseAgentMeta(executed, { durationMsFallback: Date.now() - startedAt })
       || agentMetaByDispatchId?.get(prepared.dispatchId)
-      || null;
+      || null, { agentId, startedAtMs: startedAt });
     if (!existsSync(prepared.resultPath)) {
       const diagnostic = writeMissingResultDiagnostic({
         worktree: prepared.cwd,
@@ -229,9 +230,9 @@ export async function runOneStage({ hqRoot, statePath, agentIds = {}, maxAttempt
       return { version: PROTOCOL_VERSION, status: current.status, taskId: current.task.id,
         currentStage: current.currentStage, blocker: current.blocker || null };
     }
-    const agentMeta = parseAgentMeta(error, { durationMsFallback: Date.now() - startedAt })
+    const agentMeta = withRolloutUsage(parseAgentMeta(error, { durationMsFallback: Date.now() - startedAt })
       || agentMetaByDispatchId?.get(prepared.dispatchId)
-      || null;
+      || null, { agentId, startedAtMs: startedAt });
     const failure = existsSync(prepared.resultPath)
       ? summarizeError(error)
       : writeMissingResultDiagnostic({

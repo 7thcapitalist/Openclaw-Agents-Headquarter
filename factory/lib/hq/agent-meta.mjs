@@ -7,6 +7,9 @@ const CACHED_INPUT_KEYS = Object.freeze([
   "cacheCreationInputTokens",
   "cachedInputTokens",
   "cached_input_tokens",
+  // OpenClaw's own usage spelling.
+  "cacheRead",
+  "cacheWrite",
 ]);
 
 function pickString(...values) {
