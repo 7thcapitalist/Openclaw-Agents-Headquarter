@@ -70,7 +70,8 @@ export function observeDispatchState({ hqRoot, statePath, phase, dispatchId = nu
         const quote = priceUsage({
           provider: usage.provider,
           model: usage.model,
-          tokensIn: Number(usage.tokensIn || 0) + cachedIn,
+          tokensIn: Number(usage.tokensIn || 0),
+          cachedTokensIn: cachedIn,
           tokensOut: usage.tokensOut,
         }, pricing);
         if (quote && quote.costUsd != null) {
