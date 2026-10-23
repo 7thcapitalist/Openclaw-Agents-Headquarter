@@ -20,3 +20,11 @@ test("ranks the most expensive failure inside the window", () => {
   assert.match(render(r), /roblox\/c/);
 });
 test("0 refacoes is not rework", () => assert.equal(classify({ result: "lote 1 gerado, 0 refacoes" }), null));
+test("markdown highlights the costliest failure and counts attempts", async () => {
+  const { renderMarkdown } = await import("../../scripts/factory-weekly-cost-report.mjs");
+  const r = buildReport([...runs, { ts: "2026-10-21T13:00:00Z", studio: "website", task: "a", result: "deployed", minutes: 3 }], [], { now });
+  const md = renderMarkdown(r);
+  assert.match(md, /## Falha mais cara\n\n> \*\*\[failure\] roblox\/c/);
+  assert.deepEqual(r.retried, [{ task: "website/a", attempts: 2 }]);
+  assert.match(md, /website\/a: 2x/);
+});
