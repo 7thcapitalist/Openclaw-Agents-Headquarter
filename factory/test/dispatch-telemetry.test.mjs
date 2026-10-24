@@ -70,3 +70,23 @@ test("a non-gate call with no usage writes no cost event", () => {
   observeDispatchState({ hqRoot: f.root, statePath: f.statePath, phase: "completed", dispatchId: f.dispatch.id });
   assert.equal(readCostEvents(telemetryPaths({ hqRoot: f.root, statePath: f.statePath }).costs).length, 0);
 });
+
+function withQuota(f, quotaAlert, tokens) {
+  mkdirSync(join(f.root, "factory"), { recursive: true });
+  writeFileSync(join(f.root, "factory", "factory.config.json"), JSON.stringify(quotaAlert ? { quotaAlert } : {}));
+  const usage = { provider: "anthropic", model: "claude-x", tokensIn: tokens, tokensOut: 0 };
+  for (let i = 0; i < 2; i += 1) observeDispatchState({ hqRoot: f.root, statePath: f.statePath, phase: "completed", dispatchId: f.dispatch.id, agentMeta: usage });
+  return readAuditEvents(telemetryPaths({ hqRoot: f.root, statePath: f.statePath }).audit).filter((e) => e.action === "cost.quota-warning");
+}
+
+test("a run over the configured quota share writes exactly one warning", () => {
+  const warnings = withQuota(fixture(), { quotaTokens: 1000, runWarnPct: 20 }, 300);
+  assert.equal(warnings.length, 1);
+  assert.equal(warnings[0].data.pct, 30);
+  assert.equal(warnings[0].data.limitPct, 20);
+});
+
+test("no warning under the limit or without a configured limit", () => {
+  assert.equal(withQuota(fixture(), { quotaTokens: 1000, runWarnPct: 20 }, 100).length, 0);
+  assert.equal(withQuota(fixture(), null, 999999).length, 0);
+});

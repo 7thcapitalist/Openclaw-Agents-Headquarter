@@ -4,7 +4,8 @@
 import { existsSync, mkdirSync, renameSync, writeFileSync } from "fs";
 import { dirname, join, resolve } from "path";
 import { appendAuditEvent, createAuditEvent, readAuditEvents } from "../audit/envelope.mjs";
-import { createCostEvent, appendCostEvent } from "../hq/cost-ledger.mjs";
+import { createCostEvent, appendCostEvent, readCostEvents } from "../hq/cost-ledger.mjs";
+import { loadQuotaAlert, runQuotaShare } from "../hq/quota-alert.mjs";
 import { loadPricing, priceUsage } from "../hq/cost.mjs";
 import { createRunLiveness } from "../liveness/run-liveness.mjs";
 import { GATE_STAGES, readState } from "../task-workflow.mjs";
@@ -125,6 +126,7 @@ export function observeDispatchState({ hqRoot, statePath, phase, dispatchId = nu
         dispatchId: dispatch.id,
       }, { now, id: () => `cost:${dispatch.id}` }));
     }
+    warnIfOverQuota({ hqRoot, paths, state, dispatch, occurredAt, now });
     return { recorded: true, paths, liveness };
   } catch (caught) {
     return { recorded: false, reason: caught?.message || String(caught) };
@@ -171,4 +173,23 @@ function atomicJson(path, value) {
   const temporary = `${path}.${process.pid}.tmp`;
   writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
   renameSync(temporary, path);
+}
+
+// One warning per run, written to the run's audit ledger the first time its
+// token share crosses the configured limit (SOF-82).
+function warnIfOverQuota({ hqRoot, paths, state, dispatch, occurredAt, now }) {
+  const limit = loadQuotaAlert(hqRoot);
+  if (!limit) return;
+  const { tokens, pct } = runQuotaShare(readCostEvents(paths.costs), state.task.id, limit.quotaTokens);
+  if (pct <= limit.runWarnPct) return;
+  const eventId = `quota-warning:${state.task.id}`;
+  if (readAuditEvents(paths.audit).some((e) => e.eventId === eventId)) return;
+  appendAuditEvent(paths.audit, createAuditEvent({
+    eventId, occurredAt,
+    actor: { type: "system", id: "quota-alert" },
+    action: "cost.quota-warning",
+    subject: { type: "task", id: state.task.id },
+    correlation: { taskId: state.task.id, dispatchId: dispatch.id, stage: dispatch.stage },
+    data: { tokens, quotaTokens: limit.quotaTokens, pct: Math.round(pct * 10) / 10, limitPct: limit.runWarnPct },
+  }, { now }));
 }
