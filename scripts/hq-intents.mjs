@@ -198,6 +198,13 @@ export async function handlers() {
       return `answered: ${String(answered.answer || "").slice(0, 400)}`;
     },
 
+    "learning.mode": async ({ mode }) => {
+      const { setIdleMode } = await import("../factory/lib/idle/mode.mjs");
+      const stateRoot = resolve(hqRoot, "dashboard", "backend", "data", "factory", "hq-runtime");
+      const saved = setIdleMode(stateRoot, mode, { by: "hosted-console" });
+      return `learning mode set to ${saved.mode}`;
+    },
+
     "overnight.stop": async () => {
       const state = overnight.stopOvernight(hqRoot);
       if (state.status !== "stopped" && !state.stopRequested) return "nothing to stop — no overnight run is going";

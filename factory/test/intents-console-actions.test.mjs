@@ -28,7 +28,7 @@ const handlers = {
 function argsFor(kind) {
   const filled = { taskId: "task-ca3c3cdf", objectiveId: "obj-c58897c0", decisionId: "task-ca3c3cdf:reviewer",
     choice: "yes", reason: "no", assertion: "sig", itemId: "night-1", body: "text",
-    objective: "do the thing", projectId: "lifemaxing" };
+    objective: "do the thing", projectId: "lifemaxing", mode: "shadow" };
   return Object.fromEntries((INTENT_KINDS[kind]?.args || []).map((name) => [name, filled[name]]));
 }
 
@@ -133,6 +133,7 @@ test("the console's actions are wired, and the rest still reject with a reason",
     "task.retry", "objective.retry", "decision.resolve",
     "objective.start", "overnight.add", "overnight.remove", "overnight.start", "overnight.stop",
     "question.ask", "inbox.dismiss", "task.comment",
+    "learning.mode",
   ]) {
     assert.ok(typeof real[kind] === "function", `${kind} must be wired for the console to offer it`);
   }
