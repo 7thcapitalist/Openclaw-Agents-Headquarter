@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // Weekly cost/failure report from the holding ledger (ledger/runs.jsonl, ledger/quota.jsonl).
-// Usage: node scripts/factory-weekly-cost-report.mjs [--ledger <dir>] [--now <iso>] [--days 7] [--json|--md]
+// Usage: node scripts/factory-weekly-cost-report.mjs [--ledger <dir>] [--cost-events <file>] [--now <iso>] [--days 7] [--json|--md]
 import { readFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { readCostEvents } from "../factory/lib/hq/cost-ledger.mjs";
 
 const FAIL = /\b(fail(ed)?|falh\w*|bloquead\w*|blocked|reprov\w*|conflito|expirou|stop)\b/i;
 const REWORK = /\b(redeploy|rebuild|refeit\w*|refeito|rework|refac\w*|corrigid\w*|fixed)\b/i;
@@ -42,7 +43,26 @@ export function costOf(row) {
 const rankKey = (c) => [c.quotaPct, c.usd, c.credits, c.minutes];
 const cmp = (a, b) => { const x = rankKey(a.cost), y = rankKey(b.cost); for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return y[i] - x[i]; return 0; };
 
-export function buildReport(runs, quota, { now = new Date(), days = 7 } = {}) {
+// Cost per run from cost-events.ndjson: superseded and reversal events are dropped; unpriced events are counted, never summed as zero.
+export function costByRun(events, { now = new Date(), days = 7 } = {}) {
+  const since = new Date(now.getTime() - days * 864e5);
+  const replaced = new Set(events.filter((e) => e.replacesEventId).map((e) => e.replacesEventId));
+  const rows = new Map();
+  for (const e of events) {
+    const t = new Date(e.occurredAt);
+    if (e.eventType === "reversal" || replaced.has(e.eventId) || t < since || t > now) continue;
+    const key = e.runId || e.sourceEventId;
+    const r = rows.get(key) || { run: key, task: e.taskId, stage: e.stage, model: e.model, at: e.occurredAt, tokens: 0, costMicros: 0, unpriced: 0 };
+    r.tokens += e.inputTokens + e.cachedInputTokens + e.outputTokens;
+    if (e.costMicros == null) r.unpriced++; else r.costMicros += e.costMicros;
+    if (e.occurredAt < r.at) r.at = e.occurredAt;
+    rows.set(key, r);
+  }
+  const runs = [...rows.values()].sort((a, b) => a.at.localeCompare(b.at) || String(a.run).localeCompare(String(b.run)));
+  return { runs, total: runs.reduce((t, r) => ({ runs: t.runs + 1, tokens: t.tokens + r.tokens, costMicros: t.costMicros + r.costMicros, unpriced: t.unpriced + r.unpriced }), { runs: 0, tokens: 0, costMicros: 0, unpriced: 0 }) };
+}
+
+export function buildReport(runs, quota, { now = new Date(), days = 7, costEvents = [] } = {}) {
   const since = new Date(now.getTime() - days * 864e5);
   const inWindow = runs.map((r) => ({ ...r, at: r.at || r.ts })).filter((r) => { const t = new Date(r.at); return t >= since && t <= now; });
   const flagged = inWindow.map((r) => ({ row: r, kind: classify(r), cost: costOf(r) })).filter((x) => x.kind);
@@ -56,6 +76,7 @@ export function buildReport(runs, quota, { now = new Date(), days = 7 } = {}) {
   const retried = Object.entries(attempts).filter(([, n]) => n > 1).sort((a, b) => b[1] - a[1]).map(([task, attempts]) => ({ task, attempts }));
   const sum = (k) => inWindow.reduce((s, r) => s + costOf(r)[k], 0);
   return {
+    costByRun: costByRun(costEvents, { now, days }),
     since: since.toISOString(), until: now.toISOString(), rows: inWindow.length,
     failures: flagged.filter((x) => x.kind === "failure").length,
     reworks: flagged.filter((x) => x.kind === "rework").length,
@@ -89,6 +110,12 @@ export function renderMarkdown(r) {
   L.push("## Resumo", "", "| Tempo (min) | Quota (pts) | Tarefas repetidas | Falhas | Retrabalhos |", "|---|---|---|---|---|", `| ${r.total.minutes} | ${r.total.quotaPct} | ${r.retried.length} | ${r.failures} | ${r.reworks} |`, "");
   L.push("## Por estúdio", "", "| Estúdio | Runs | Tempo (min) | Quota (pts) | Falhas | Retrabalhos |", "|---|---|---|---|---|---|", ...Object.entries(r.byStudio).map(([k, v]) => `| ${k} | ${v.runs} | ${v.minutes} | ${v.quotaPct} | ${v.failures} | ${v.reworks} |`), "");
   L.push("## Tentativas (mesma tarefa rodada mais de uma vez)", "", ...(r.retried.length ? r.retried.map((x) => `- ${x.task}: ${x.attempts}x`) : ["Nenhuma."]), "");
+  const usd = (m) => `US$ ${(m / 1e6).toFixed(4)}`;
+  const cr = r.costByRun || { runs: [], total: { runs: 0, tokens: 0, costMicros: 0, unpriced: 0 } };
+  L.push("## Custo por run (cost-events.ndjson)", "");
+  if (cr.runs.length) L.push("| Run | Tarefa | Etapa | Modelo | Tokens | Custo | Sem preço |", "|---|---|---|---|---|---|---|", ...cr.runs.map((x) => `| ${x.run} | ${x.task ?? "-"} | ${x.stage ?? "-"} | ${x.model} | ${x.tokens} | ${usd(x.costMicros)} | ${x.unpriced} |`), "");
+  else L.push("Sem eventos de custo na janela.", "");
+  L.push(`**Total semanal:** ${usd(cr.total.costMicros)} em ${cr.total.runs} runs, ${cr.total.tokens} tokens${cr.total.unpriced ? `, ${cr.total.unpriced} eventos sem preço (não somados)` : ""}`, "");
   const q = Object.entries(r.quota);
   L.push("## Quota (última medição)", "", ...(q.length ? q.map(([p, v]) => `- ${p}: ${v.usedPct}% usado, reseta ${v.resetsAt}`) : ["Sem medição."]), "");
   L.push("_Fonte: ledger/runs.jsonl e quota.jsonl. Linhas sem custo valem 0; ranking: quota_delta > USD > créditos > minutos._");
@@ -99,6 +126,7 @@ function opt(name) { const i = process.argv.indexOf(`--${name}`); return i >= 0 
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const dir = opt("ledger") || "C:/Users/joaov/dev/holding-hq/ledger";
-  const report = buildReport(readJsonl(join(dir, "runs.jsonl")), readJsonl(join(dir, "quota.jsonl")), { now: opt("now") ? new Date(opt("now")) : new Date(), days: Number(opt("days")) || 7 });
+  const events = opt("cost-events") || join(process.env.HQ_ROOT || join(dirname(fileURLToPath(import.meta.url)), ".."), ".openclaw-factory", "telemetry", "cost-events.ndjson");
+  const report = buildReport(readJsonl(join(dir, "runs.jsonl")), readJsonl(join(dir, "quota.jsonl")), { now: opt("now") ? new Date(opt("now")) : new Date(), days: Number(opt("days")) || 7, costEvents: readCostEvents(events) });
   console.log(process.argv.includes("--json") ? JSON.stringify(report, null, 2) : process.argv.includes("--md") ? renderMarkdown(report) : render(report));
 }

@@ -28,3 +28,23 @@ test("markdown highlights the costliest failure and counts attempts", async () =
   assert.deepEqual(r.retried, [{ task: "website/a", attempts: 2 }]);
   assert.match(md, /website\/a: 2x/);
 });
+
+test("markdown snapshot: cost by run table and weekly total from cost-events", async () => {
+  const { renderMarkdown } = await import("../../scripts/factory-weekly-cost-report.mjs");
+  const ev = (o) => ({ version: 1, eventType: "usage", model: "claude-sonnet-5-5", inputTokens: 100, cachedInputTokens: 0, outputTokens: 50, costMicros: 1500000, stage: "gate", ...o });
+  const costEvents = [
+    ev({ eventId: "e1", sourceEventId: "s1", runId: "run-a", taskId: "SOF-1", occurredAt: "2026-10-21T10:00:00Z" }),
+    ev({ eventId: "e2", sourceEventId: "s2", runId: "run-a", taskId: "SOF-1", occurredAt: "2026-10-21T10:05:00Z", costMicros: 500000 }),
+    ev({ eventId: "e3", sourceEventId: "s3", runId: "run-b", taskId: "SOF-2", occurredAt: "2026-10-21T11:00:00Z", costMicros: null }),
+    ev({ eventId: "e4", sourceEventId: "s4", runId: "run-old", taskId: "SOF-3", occurredAt: "2026-09-01T11:00:00Z" }),
+  ];
+  const md = renderMarkdown(buildReport(runs, [], { now, costEvents }));
+  const section = md.slice(md.indexOf("## Custo por run"), md.indexOf("## Quota"));
+  assert.equal(section, [
+    "## Custo por run (cost-events.ndjson)", "",
+    "| Run | Tarefa | Etapa | Modelo | Tokens | Custo | Sem preço |", "|---|---|---|---|---|---|---|",
+    "| run-a | SOF-1 | gate | claude-sonnet-5-5 | 300 | US$ 2.0000 | 0 |",
+    "| run-b | SOF-2 | gate | claude-sonnet-5-5 | 150 | US$ 0.0000 | 1 |", "",
+    "**Total semanal:** US$ 2.0000 em 2 runs, 450 tokens, 1 eventos sem preço (não somados)", "", "",
+  ].join("\n"));
+});
