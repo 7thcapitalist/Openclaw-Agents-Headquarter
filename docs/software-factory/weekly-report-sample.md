@@ -7,6 +7,10 @@
 > **[rework] website/fs-site-wab** (2026-10-22T00:40:00Z) — quota 0% · 8.75 créditos · 0 min · US$0
 > resultado: home refeita: filme Higgsfield de 5 s (kling3_0 pro, movimento real) controlado pela rolagem, com capitulos Previa/Ajustes/No ar; demos movidos para /trabalhos/
 
+## PRs com testes verdes no 1º envio
+
+Sem dados: nenhuma linha `kind=pr` com `green_first` na janela.
+
 ## Resumo
 
 | Tempo (min) | Quota (pts) | Tarefas repetidas | Falhas | Retrabalhos |
