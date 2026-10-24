@@ -50,3 +50,21 @@ test("a different objective is still processed", async () => {
   assert.deepEqual(r.map((x) => x.status), ["processed", "processed"]);
   assert.notEqual(r[0].branch, r[1].branch);
 });
+
+test("interrupted request resumes running only the pending tasks", async () => {
+  const env = setup();
+  const multi = REQ + "tarefas:\n- um\n- dois\n- tres\n";
+  writeFileSync(join(env.inboxDir, "m.md"), multi);
+  const ran = [];
+  const first = await processInbox({ ...env, dispatch: async (_r, { task }) => { if (task === "dois") throw new Error("boom"); ran.push(task); } });
+  assert.equal(first[0].status, "interrupted");
+  assert.deepEqual(ran, ["um"]);
+  assert.ok(existsSync(join(env.inboxDir, "m.md")));
+  const second = await processInbox({ ...env, dispatch: async (_r, { task }) => { ran.push(task); } });
+  assert.equal(second[0].status, "processed");
+  assert.deepEqual(ran, ["um", "dois", "tres"]);
+  assert.ok(existsSync(join(env.doneDir, "m.md")));
+  const lines = readFileSync(env.ledgerPath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  assert.deepEqual(lines.filter((l) => l.task).map((l) => l.task), ["um", "dois", "tres"]);
+  assert.equal(lines.filter((l) => !l.task).length, 1);
+});
