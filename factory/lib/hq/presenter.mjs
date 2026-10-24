@@ -10,6 +10,7 @@
 // Node builtins only.
 
 import { classifyBlocker, isFounderApprovalSetupFailure } from "./blocker-class.mjs";
+import { stageLabel } from "../../../control-plane/public/stage-vocabulary.mjs";
 
 // ── the founder-facing statuses ──────────────────────────────────────────────
 export const STATUS = {
@@ -446,6 +447,7 @@ export function presentObjective(obj) {
       statusLabel: statusMeta(ns).label,
       statusTone: statusMeta(ns).tone,
       stage: node.stage || null,
+      stageLabel: node.stage ? stageLabel(node.stage) : null,
       elapsedMs: node.elapsedMs ?? null,
       retries: node.retries || node.attempts || 0,
       waitingOn: node.status === "blocked-by-dep" ? (node.dependsOn || []).map((d) => String(d).replace(/^obj-[0-9a-f]{8}-/, "")) : [],

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 const APP = readFileSync(new URL("../../dashboard/backend/public/app.js", import.meta.url), "utf8");
+const CSS = readFileSync(new URL("../../dashboard/backend/public/styles.css", import.meta.url), "utf8");
 
 function functionSource(name) {
   const start = APP.indexOf(`function ${name}`);
@@ -45,7 +46,15 @@ function objectiveCardRenderer() {
     "objectiveView",
     "objectiveRecovery",
     `${functionSource("cardActionState")}\n${functionSource("objectiveCardInput")}\n${functionSource("cardActions")}\n${functionSource("founderObjectiveCard")}\nreturn founderObjectiveCard;`,
-  )(esc, (milliseconds) => `${Math.floor(milliseconds / 60_000)}m`, { shortObjectiveTitle: (title) => title }, { isObjectiveRecoverable: (o) => (o?.recovery?.count || 0) > 0 });
+  )(
+    esc,
+    (milliseconds) => `${Math.floor(milliseconds / 60_000)}m`,
+    {
+      shortObjectiveTitle: (title) => title,
+      whatIsHappeningNowLine: () => "Building — Backend Builder is working — 5m so far. Nothing needed from you.",
+    },
+    { isObjectiveRecoverable: (o) => (o?.recovery?.count || 0) > 0 },
+  );
 }
 
 // Every attribute bindObjectiveControls / the Today binders give a plain
@@ -84,6 +93,12 @@ test("an objective card's actions are buttons, never the card itself", () => {
     assert.deepEqual(nonButtonClickTargets(html), [], `${label} card must not make a non-button element a click target`);
     assert.match(html, /<article class="founder-objective[^"]*" data-objective-id="obj-1234abcd"/, `${label} card stays clickable through the guarded listener`);
   }
+});
+
+test("an active objective card states what is happening and whether the founder must act", () => {
+  const html = objectiveCardRenderer()(objective());
+  assert.match(html, /Building — Backend Builder is working — 5m so far\. Nothing needed from you\./);
+  assert.match(CSS, /\.objective-now strong \{[^}]*min-width: 0;[^}]*overflow-wrap: anywhere;/, "the longer live sentence must wrap on narrow cards");
 });
 
 test("an objective with a pending approval offers Approve and Reject, even behind a question", () => {
