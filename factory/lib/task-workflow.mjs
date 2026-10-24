@@ -264,15 +264,6 @@ export function completeStage(state, { stage, actor, outcome, summary, evidence 
     return next;
   }
 
-  // The auto-retry sweep is the only thing that revives a task whose runner
-  // died, and its budget was counted once per task for the task's whole life.
-  // A task that needed reviving three times during a flaky builder phase then
-  // had no supervision left for the five stages after it, so any later stall
-  // was permanent until a human noticed. The budget is meant to stop a task
-  // looping on one stuck point, not to cap how long a task may live: a stage
-  // that actually passed is forward progress, so the allowance starts over.
-  delete next.autoRetries;
-
   if (deferredDecision) {
     const decision = normalizeDeferredDecision(deferredDecision, stage, now);
     next.stages[stage].deferredDecision = decision;
@@ -290,6 +281,20 @@ export function completeStage(state, { stage, actor, outcome, summary, evidence 
       reason: decision.escalationReason,
     });
   }
+
+  return advancePassedStage(next, { stage, actor, now });
+}
+
+function advancePassedStage(state, { stage, actor, now }) {
+  const next = structuredClone(state);
+  // The auto-retry sweep is the only thing that revives a task whose runner
+  // died, and its budget was counted once per task for the task's whole life.
+  // A task that needed reviving three times during a flaky builder phase then
+  // had no supervision left for the five stages after it, so any later stall
+  // was permanent until a human noticed. The budget is meant to stop a task
+  // looping on one stuck point, not to cap how long a task may live: a stage
+  // that actually passed is forward progress, so the allowance starts over.
+  delete next.autoRetries;
 
   const index = STAGES.indexOf(stage);
   if (index === STAGES.length - 1) {
@@ -381,6 +386,31 @@ export function resumeState(state, now = new Date().toISOString(), options = {})
   delete next.blocker;
   next.updatedAt = now;
   next.events.push({ at: now, type: "task-resumed", stage: next.currentStage });
+  // A task blocked at release because HEAD moved past the commit the gates
+  // judged cannot get through release by retrying release: assertReleaseReady
+  // refuses the same moved HEAD every time. Freeze HEAD through the one path
+  // that owns invalidation so review, QA and security re-run against it.
+  if (state.blocker?.stage === "release") {
+    return reverifyAtHead(next, options.headSha ?? currentHeadSha(state.worktree), { now, actor: "system" });
+  }
+  return next;
+}
+
+// Re-open the review gates on a HEAD they have not judged. No-op unless the
+// task uses strong evidence, has a frozen commit, and HEAD differs from it, so a
+// repeat call on an unchanged HEAD never invalidates anything twice.
+// `assertReleaseReady` is deliberately not involved: it keeps requiring HEAD to
+// equal the commit review, QA and security judged.
+function reverifyAtHead(state, headSha, { now, actor }) {
+  const head = String(headSha || "").trim();
+  const frozen = state.verifiedCommit?.sha || null;
+  if (evidencePolicyOf(state) !== EVIDENCE_POLICY_STRONG || !frozen || !head || head === frozen) return state;
+  const next = recordVerifiedCommit(state, { sha: head, actor, now });
+  // Release judged the old tree too, so it re-opens with the proving stages.
+  for (const stage of STAGES.slice(STAGES.indexOf(next.currentStage))) {
+    if (next.stages[stage]?.status !== "pending") next.stages[stage] = { status: "pending" };
+  }
+  next.events.push({ at: now, type: "task-resumed", stage: next.currentStage, actor, reason: "reverify-head", reverifyCommit: head });
   return next;
 }
 
@@ -428,6 +458,8 @@ export function countStageAttempts(state, stage) {
   let verdicts = 0;
   let infra = 0;
   let passes = 0;
+  let repeats = 0;
+  const judgedCommits = new Set();
   for (const item of dispatches) {
     // A dispatch parked on an exhausted seat never reached a model. It is
     // neither a verdict nor a lost run, and the seat's reset is what clears it,
@@ -439,9 +471,79 @@ export function countStageAttempts(state, stage) {
     // nothing judged the work — so it belongs in the infrastructure allowance.
     if (!item.outcome || item.infraFailure) { infra += 1; continue; }
     if (SUCCESS_OUTCOMES.has(item.outcome)) { passes += 1; continue; }
+    if (item.judgedCommit) {
+      if (judgedCommits.has(item.judgedCommit)) { repeats += 1; continue; }
+      judgedCommits.add(item.judgedCommit);
+    }
     verdicts += 1;
   }
-  return { verdicts, infra, passes, total: dispatches.length };
+  return { verdicts, infra, passes, repeats, total: dispatches.length };
+}
+
+// Re-apply a gate verdict already earned on the commit currently under review.
+// This is pure state transformation: callers persist the returned state or
+// dispatch normally when null is returned.
+export function reuseJudgedVerdict(state, { stage = state?.currentStage, maxAttemptsPerStage = 3, maxInfraAttemptsPerStage = DEFAULT_MAX_INFRA_ATTEMPTS, now = new Date().toISOString() } = {}) {
+  if (state?.status !== "active" || state.currentDispatch || state.yieldedGroup || state.recovery?.active) return null;
+  if (stage !== state.currentStage || !stageMustProveCriteria(stage)) return null;
+  if (state.stages?.[stage]?.status !== "pending") return null;
+  const commit = state.verifiedCommit?.sha;
+  const snapshot = commit && state.judgedVerdicts?.[stage]?.[commit];
+  if (!snapshot || !new Set(["pass", "fail"]).has(snapshot.outcome)) return null;
+  try {
+    verifyEvidence((snapshot.stageRecord?.evidence || []).map((item) => item.path || item), state.worktree);
+  } catch {
+    return null;
+  }
+
+  let next = structuredClone(state);
+  next.stages[stage] = structuredClone(snapshot.stageRecord);
+  next.updatedAt = now;
+  next.events.push({
+    at: now,
+    type: "task-resumed",
+    stage,
+    actor: next.assignments[stage],
+    reason: "verdict-reused",
+    commit,
+    sourceDispatchId: snapshot.dispatchId,
+    outcome: snapshot.outcome,
+  });
+
+  if (snapshot.outcome === "pass") {
+    return advancePassedStage(next, { stage, actor: next.assignments[stage], now });
+  }
+
+  next.status = "blocked";
+  next.blocker = {
+    stage,
+    outcome: "fail",
+    summary: String(snapshot.stageRecord.summary),
+    actor: next.assignments[stage],
+    at: now,
+    dispatchId: snapshot.dispatchId,
+  };
+  next.dispatches = [...(next.dispatches || []), {
+    stage,
+    kind: "stage",
+    status: "completed",
+    verdictReused: true,
+    judgedCommit: commit,
+    sourceDispatchId: snapshot.dispatchId,
+    completedAt: now,
+  }];
+  const routed = routeStageFailure(next, { failedStage: stage, maxAttemptsPerStage, maxInfraAttemptsPerStage, now });
+  return routed !== next
+    ? routed
+    : startRecovery(next, {
+      failedStage: stage,
+      actor: next.assignments[stage],
+      error: snapshot.stageRecord.summary,
+      evidence: snapshot.stageRecord.evidence || [],
+      source: "project",
+      maxRecoveryAttempts: state.recovery?.maxAttempts || 3,
+      now,
+    });
 }
 
 // Which budget, if either, this stage has exhausted.
@@ -645,7 +747,7 @@ export function startRecovery(state, { failedStage, actor, error, evidence = [],
   return next;
 }
 
-export function recordRecoveryResult(state, { outcome, actor, summary, evidence = [], diagnosis = null, decision = null, maxAttemptsPerStage = 3, maxInfraAttemptsPerStage = DEFAULT_MAX_INFRA_ATTEMPTS, now = new Date().toISOString() }) {
+export function recordRecoveryResult(state, { outcome, actor, summary, evidence = [], diagnosis = null, decision = null, maxAttemptsPerStage = 3, maxInfraAttemptsPerStage = DEFAULT_MAX_INFRA_ATTEMPTS, headSha = undefined, now = new Date().toISOString() }) {
   const active = state.recovery?.active;
   if (!active) throw new Error("No recovery attempt is active.");
   const next = structuredClone(state);
@@ -676,9 +778,15 @@ export function recordRecoveryResult(state, { outcome, actor, summary, evidence 
     // invalidate everything downstream. A factory repair (the agent could not
     // run) changed no code, so the failed stage retries in place and earlier
     // gates stand.
-    const resumeAt = REVIEW_STAGES.has(active.failedStage) && attempt.repairTarget === "project"
-      ? "builder"
-      : active.failedStage;
+    //
+    // When the repair landed a new commit the builder has nothing left to do:
+    // the repair IS the change. Freeze that commit and re-run the gates on it
+    // rather than re-running the builder on a tree it did not write.
+    const projectRepair = REVIEW_STAGES.has(active.failedStage) && attempt.repairTarget === "project";
+    const repairedHead = projectRepair ? String(headSha ?? currentHeadSha(state.worktree) ?? "").trim() : "";
+    const reverify = projectRepair && evidencePolicyOf(state) === EVIDENCE_POLICY_STRONG
+      && !!state.verifiedCommit?.sha && !!repairedHead && repairedHead !== state.verifiedCommit.sha;
+    const resumeAt = reverify ? "reviewer" : projectRepair ? "builder" : active.failedStage;
     // That re-entry is a stage attempt like any other and must respect the
     // per-stage budget: without this check each recovery cycle silently minted
     // a fresh attempt, so a stage could be dispatched indefinitely while
@@ -701,10 +809,13 @@ export function recordRecoveryResult(state, { outcome, actor, summary, evidence 
     // verified. Retire it so the NEXT failure, whatever it turns out to be,
     // gets its own attempts instead of inheriting a spent budget.
     Object.assign(next, closeRecoveryIncident(next, { reason: "recovery-verified", now }));
+    // Through the existing path, before the reset below, so the invalidation
+    // is recorded against the verdicts it actually replaces.
+    if (reverify) Object.assign(next, recordVerifiedCommit(next, { sha: repairedHead, actor: "system", now }));
     for (const stage of STAGES.slice(STAGES.indexOf(resumeAt))) next.stages[stage] = { status: "pending" };
     next.status = "active";
     next.currentStage = resumeAt;
-    next.events.push({ at: now, type: "task-resumed", stage: resumeAt, actor: "system", reason: "recovery-verified", attempt: attempts + 1, ...(resumeAt !== active.failedStage ? { fromStage: active.failedStage, invalidatedDownstream: true } : {}) });
+    next.events.push({ at: now, type: "task-resumed", stage: resumeAt, actor: "system", reason: "recovery-verified", attempt: attempts + 1, ...(resumeAt !== active.failedStage ? { fromStage: active.failedStage, invalidatedDownstream: true } : {}), ...(reverify ? { reverifyCommit: repairedHead } : {}) });
     return next;
   }
   return finishRecoveryFailure(next, { summary, actor, evidence, outcome, decision, now });

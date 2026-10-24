@@ -26,14 +26,14 @@ const rejected = () => ({
 
 test("a synthesized could-not-run result is not counted as a rejection", () => {
   const state = { dispatches: [cliFailed(), cliFailed(), cliFailed()] };
-  assert.deepEqual(countStageAttempts(state, "reviewer"), { verdicts: 0, infra: 3, passes: 0, total: 3 });
+  assert.deepEqual(countStageAttempts(state, "reviewer"), { verdicts: 0, infra: 3, passes: 0, repeats: 0, total: 3 });
   assert.equal(stageBudgetExceeded(state, "reviewer", { maxAttemptsPerStage: 3 }).exceeded, null);
 });
 
 test("real rejections still spend the rejection budget alongside them", () => {
   const state = { dispatches: [cliFailed(), rejected(), cliFailed(), rejected(), rejected()] };
   const counted = countStageAttempts(state, "reviewer");
-  assert.deepEqual(counted, { verdicts: 3, infra: 2, passes: 0, total: 5 });
+  assert.deepEqual(counted, { verdicts: 3, infra: 2, passes: 0, repeats: 0, total: 5 });
   assert.equal(stageBudgetExceeded(state, "reviewer", { maxAttemptsPerStage: 3 }).exceeded, "verdicts");
 });
 
