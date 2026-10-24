@@ -10,7 +10,13 @@ import { join } from "node:path";
 
 export function parseRequest(text) {
   const out = {};
+  let inTasks = false;
   for (const line of text.split(/\r?\n/)) {
+    // Optional "tarefas:" block: one "- item" (or "1. item") per micro-task.
+    if (/^tarefas:\s*$/i.test(line.trim())) { inTasks = true; out.tarefas = []; continue; }
+    const t = inTasks && /^(?:[-*]|\d+[.)])\s+(.+)$/.exec(line.trim());
+    if (t) { out.tarefas.push(t[1].trim()); continue; }
+    if (line.trim()) inTasks = false;
     const m = /^(repo|base|objetivo|pronto quando):\s*(.*)$/i.exec(line.trim());
     if (m) out[m[1].toLowerCase()] = m[2].trim();
   }
@@ -28,9 +34,20 @@ function ledgerKeys(ledgerPath) {
   if (!existsSync(ledgerPath)) return new Set();
   const keys = new Set();
   for (const line of readFileSync(ledgerPath, "utf8").split("\n")) {
-    try { const e = JSON.parse(line); if (e.key) keys.add(e.key); } catch { /* skip torn line */ }
+    try { const e = JSON.parse(line); if (e.key && !e.task) keys.add(e.key); } catch { /* skip torn line */ }
   }
   return keys;
+}
+
+// Micro-tasks already finished for a request, read back from the ledger so an
+// interrupted request resumes with only the pending ones.
+function doneTasks(ledgerPath, key) {
+  const done = new Set();
+  if (!existsSync(ledgerPath)) return done;
+  for (const line of readFileSync(ledgerPath, "utf8").split("\n")) {
+    try { const e = JSON.parse(line); if (e.key === key && e.task) done.add(e.task); } catch { /* skip torn line */ }
+  }
+  return done;
 }
 
 function doneKeys(doneDir) {
@@ -62,7 +79,24 @@ export async function processInbox({ inboxDir, doneDir, ledgerPath, dispatch, no
       continue;
     }
     const branch = branchFor(key);
-    const outcome = (await dispatch(req, { key, branch })) || {};
+    let outcome = {};
+    if (req.tarefas?.length) {
+      const finished = doneTasks(ledgerPath, key);
+      const pending = req.tarefas.filter((t) => !finished.has(t));
+      try {
+        for (const task of pending) {
+          const o = (await dispatch(req, { key, branch, task })) || {};
+          appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, task, branch, pr: o.pr ?? null }) + "\n");
+          if (o.pr) outcome = o;
+        }
+      } catch (error) {
+        // Interrupted: finished tasks are in the ledger, the file stays in inbox/ to be resumed.
+        results.push({ file, key, branch, status: "interrupted", error: String(error?.message || error) });
+        continue;
+      }
+    } else {
+      outcome = (await dispatch(req, { key, branch })) || {};
+    }
     appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, repo: req.repo, base: req.base || "main", branch, pr: outcome.pr ?? null }) + "\n");
     seen.add(key);
     renameSync(src, join(doneDir, file));
