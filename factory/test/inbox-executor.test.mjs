@@ -65,6 +65,39 @@ test("interrupted request resumes running only the pending tasks", async () => {
   assert.deepEqual(ran, ["um", "dois", "tres"]);
   assert.ok(existsSync(join(env.doneDir, "m.md")));
   const lines = readFileSync(env.ledgerPath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
-  assert.deepEqual(lines.filter((l) => l.task).map((l) => l.task), ["um", "dois", "tres"]);
+  assert.deepEqual(lines.filter((l) => l.task && l.status !== "failed").map((l) => l.task), ["um", "dois", "tres"]);
   assert.equal(lines.filter((l) => !l.task).length, 1);
+});
+
+test("failed task writes failure_reason (1 line) and last_log_tail (20 lines) to the ledger and is retried", async () => {
+  const env = setup();
+  writeFileSync(join(env.inboxDir, "f.md"), REQ + "tarefas:\n- um\n- dois\n");
+  const log = Array.from({ length: 30 }, (_, i) => `linha ${i + 1}`).join("\n");
+  const boom = Object.assign(new Error("npm test saiu com codigo 1\ndetalhe extra"), { log });
+  const r = await processInbox({ ...env, dispatch: async (_r, { task }) => { if (task === "dois") throw boom; } });
+  assert.equal(r[0].status, "interrupted");
+  const fail = readFileSync(env.ledgerPath, "utf8").trim().split("\n").map((l) => JSON.parse(l)).find((l) => l.status === "failed");
+  assert.equal(fail.task, "dois");
+  assert.equal(fail.failure_reason, "npm test saiu com codigo 1");
+  const tail = fail.last_log_tail.split("\n");
+  assert.equal(tail.length, 20);
+  assert.equal(tail[0], "linha 11");
+  assert.equal(tail[19], "linha 30");
+  // failure entry must not count as done: retry runs "dois" again
+  const ran = [];
+  const again = await processInbox({ ...env, dispatch: async (_r, { task }) => { ran.push(task); } });
+  assert.deepEqual(ran, ["dois"]);
+  assert.equal(again[0].status, "processed");
+});
+
+test("failed request without tarefas is recorded as failed and stays in inbox for retry", async () => {
+  const env = setup();
+  writeFileSync(join(env.inboxDir, "g.md"), REQ);
+  const r = await processInbox({ ...env, dispatch: async () => { throw new Error("sem rede"); } });
+  assert.equal(r[0].status, "failed");
+  assert.ok(existsSync(join(env.inboxDir, "g.md")));
+  const e = JSON.parse(readFileSync(env.ledgerPath, "utf8").trim());
+  assert.equal(e.failure_reason, "sem rede");
+  const retry = await processInbox({ ...env, dispatch: async () => {} });
+  assert.equal(retry[0].status, "processed");
 });
