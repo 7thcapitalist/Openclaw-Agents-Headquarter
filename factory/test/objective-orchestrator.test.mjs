@@ -354,7 +354,7 @@ test("resumeObjectiveNodes + integration infra: reuses worktree and completes", 
       writeFileSync(join(args.dispatch.cwd, "evidence", "reviewer.md"), "rl\n");
       writeFileSync(args.dispatch.resultPath, JSON.stringify({
         version: 1, dispatchId: args.dispatch.dispatchId, stage: "reviewer", actor: args.dispatch.actor,
-        outcome: "fail", summary: "[openclaw] Could not start the CLI. Reason: provider unavailable", evidence: ["evidence/reviewer.md"],
+        outcome: "fail", infraFailure: true, summary: "[openclaw] Could not start the CLI. Reason: provider unavailable", evidence: ["evidence/reviewer.md"],
       }));
       return;
     }
