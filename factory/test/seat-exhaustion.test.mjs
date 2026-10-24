@@ -11,7 +11,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { consecutiveSeatPauses, detectSeatExhaustion, parseResetTime } from "../lib/seat-exhaustion.mjs";
+import { consecutiveSeatPauses, detectSeatExhaustion, parseResetTime, seatExhaustionExcerpt } from "../lib/seat-exhaustion.mjs";
 import { countStageAttempts, createState, readState, resumeState, writeState } from "../lib/task-workflow.mjs";
 import { computeDispatchPaths, prepareDispatch } from "../lib/openclaw-protocol.mjs";
 import { runOneStage } from "../lib/openclaw-runner.mjs";
@@ -64,6 +64,61 @@ test("the detector recognises exhausted and throttled seats, and not review pros
     "builder dispatch wrote no result file",
   ]) assert.equal(detectSeatExhaustion(prose, { now }), null, prose);
 });
+
+// 2026-09-18: Codex words it differently from Claude, and prints it only in
+// stdout as a JSON "message"; the CLI's own error is a bare "Command failed".
+// The detector missed both, so an exhausted seat read as a broken task and
+// recovery ran three times against a seat that was gone for five hours.
+const CODEX_LIMIT = "You've reached your Codex subscription usage limit. Next reset in 5 hours, Sep 18 at 7:56 PM EDT. Wait until the reset time, use another Codex account if available, or switch to another configured model/provider.";
+const CODEX_STDOUT = JSON.stringify({ type: "error", error: { message: CODEX_LIMIT } }, null, 2);
+
+test("Codex's 'reached your ... usage limit' is an exhausted seat, reset at its own clock", () => {
+  const now = Date.parse("2026-09-18T15:00:00Z"); // 11:00 EDT
+  const exhausted = detectSeatExhaustion(CODEX_LIMIT, { now });
+  assert.equal(exhausted.kind, "exhausted");
+  // 7:56 PM EDT is 23:56 UTC: the absolute clock wins over the rounded "in 5 hours".
+  assert.equal(exhausted.resumeAfter, "2026-09-18T23:56:00.000Z");
+  assert.equal(exhausted.fromProvider, true);
+  assert.equal(new Date(parseResetTime("Next reset in 2 hours.", { now })).toISOString(), "2026-09-18T17:00:00.000Z");
+  for (const prose of [
+    "when users reach the usage limit, show a banner",
+    "the reviewer reached a limit of three verdicts",
+  ]) assert.equal(detectSeatExhaustion(prose, { now }), null, prose);
+});
+
+test("the provider's sentence is lifted out of raw executor output", () => {
+  assert.equal(seatExhaustionExcerpt(CODEX_STDOUT), CODEX_LIMIT);
+  assert.equal(seatExhaustionExcerpt("no seat problem here"), null);
+});
+
+for (const [label, execute] of [
+  ["the CLI rejects with a bare 'Command failed'", async () => {
+    const error = new Error("Command failed: openclaw agent --agent frontend-builder");
+    error.stdout = CODEX_STDOUT;
+    error.stderr = "";
+    throw error;
+  }],
+  ["the CLI exits cleanly", async () => ({ stdout: CODEX_STDOUT, stderr: "" })],
+]) {
+  test(`an exhausted Codex seat pauses the stage when ${label} and the message is only in stdout`, async () => {
+    const { statePath } = scaffold(`seat-pause-codex-${label.length}`);
+    const result = await runOneStage({ hqRoot, statePath, execute, maxAttemptsPerStage: 3 });
+
+    const state = readState(statePath);
+    assert.equal(result.status, "blocked");
+    assert.equal(state.blocker.outcome, "paused-credits");
+    assert.match(state.blocker.resumeAfter, /T(23|00):56:00\.000Z$/, "the provider's own reset, not a guessed cooldown");
+    assert.equal(classifyBlocker(state.blocker), "infra", "the system resumes it; the founder is not paged");
+    // Field by field, not deepEqual: the counter gains fields over time (e.g.
+    // `repeats`), and none of them may move for a paused seat.
+    const attempts = countStageAttempts(state, "builder");
+    assert.equal(attempts.verdicts, 0, "no verdict charged");
+    assert.equal(attempts.infra, 0, "no infrastructure attempt charged");
+    assert.equal(attempts.passes, 0);
+    assert.equal(state.recovery.attempts.length, 0, "recovery never runs against an exhausted seat");
+    assert.equal(state.recovery.active, null);
+  });
+}
 
 test("a reset clock already past today resolves to tomorrow", () => {
   const now = Date.parse("2026-09-16T05:00:00Z"); // 01:00 EDT, after 12:40am
