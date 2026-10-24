@@ -34,7 +34,7 @@ function ledgerKeys(ledgerPath) {
   if (!existsSync(ledgerPath)) return new Set();
   const keys = new Set();
   for (const line of readFileSync(ledgerPath, "utf8").split("\n")) {
-    try { const e = JSON.parse(line); if (e.key && !e.task) keys.add(e.key); } catch { /* skip torn line */ }
+    try { const e = JSON.parse(line); if (e.key && !e.task && !e.failure_reason) keys.add(e.key); } catch { /* skip torn line */ }
   }
   return keys;
 }
@@ -45,9 +45,18 @@ function doneTasks(ledgerPath, key) {
   const done = new Set();
   if (!existsSync(ledgerPath)) return done;
   for (const line of readFileSync(ledgerPath, "utf8").split("\n")) {
-    try { const e = JSON.parse(line); if (e.key === key && e.task) done.add(e.task); } catch { /* skip torn line */ }
+    try { const e = JSON.parse(line); if (e.key === key && e.task && !e.failure_reason) done.add(e.task); } catch { /* skip torn line */ }
   }
   return done;
+}
+
+// One-line human reason + last 20 log lines, so a failure is readable from the ledger alone.
+export function describeFailure(error) {
+  const msg = String(error?.message || error || "falha desconhecida");
+  const reason = (msg.split(/\r?\n/).find((l) => l.trim()) || "falha desconhecida").trim().slice(0, 300);
+  const log = String(error?.log ?? error?.stderr ?? error?.stack ?? msg).split(/\r?\n/);
+  while (log.length && !log[log.length - 1].trim()) log.pop();
+  return { failure_reason: reason, last_log_tail: log.slice(-20).join("\n") };
 }
 
 function doneKeys(doneDir) {
@@ -83,19 +92,28 @@ export async function processInbox({ inboxDir, doneDir, ledgerPath, dispatch, no
     if (req.tarefas?.length) {
       const finished = doneTasks(ledgerPath, key);
       const pending = req.tarefas.filter((t) => !finished.has(t));
+      let current = null;
       try {
         for (const task of pending) {
+          current = task;
           const o = (await dispatch(req, { key, branch, task })) || {};
           appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, task, branch, pr: o.pr ?? null }) + "\n");
           if (o.pr) outcome = o;
         }
       } catch (error) {
         // Interrupted: finished tasks are in the ledger, the file stays in inbox/ to be resumed.
+        appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, task: current, branch, status: "failed", ...describeFailure(error) }) + "\n");
         results.push({ file, key, branch, status: "interrupted", error: String(error?.message || error) });
         continue;
       }
     } else {
-      outcome = (await dispatch(req, { key, branch })) || {};
+      try {
+        outcome = (await dispatch(req, { key, branch })) || {};
+      } catch (error) {
+        appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, branch, status: "failed", ...describeFailure(error) }) + "\n");
+        results.push({ file, key, branch, status: "failed", error: String(error?.message || error) });
+        continue;
+      }
     }
     appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, repo: req.repo, base: req.base || "main", branch, pr: outcome.pr ?? null }) + "\n");
     seen.add(key);
