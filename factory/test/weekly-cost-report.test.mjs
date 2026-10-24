@@ -28,3 +28,12 @@ test("markdown highlights the costliest failure and counts attempts", async () =
   assert.deepEqual(r.retried, [{ task: "website/a", attempts: 2 }]);
   assert.match(md, /website\/a: 2x/);
 });
+test("green-first rate counts only kind=pr rows with a boolean, inside the window", async () => {
+  const { renderMarkdown } = await import("../../scripts/factory-weekly-cost-report.mjs");
+  const pr = (green_first, ts = "2026-10-21T10:00:00Z") => ({ ts, studio: "software", kind: "pr", task: "t", result: "pr aberto", green_first });
+  const r = buildReport([pr(true), pr(true), pr(false), pr(undefined), pr(false, "2026-09-01T00:00:00Z")], [], { now });
+  assert.deepEqual({ p: r.greenFirst.prs, g: r.greenFirst.green, r: r.greenFirst.ratePct }, { p: 3, g: 2, r: 66.7 });
+  assert.ok(renderMarkdown(r).includes("**66.7%** (2 de 3 PRs) — fonte: ledger/runs.jsonl"));
+  assert.ok(render(r).includes("66.7% (2/3)"));
+  assert.match(render(buildReport([], [], { now })), /sem dados/);
+});

@@ -42,6 +42,14 @@ export function costOf(row) {
 const rankKey = (c) => [c.quotaPct, c.usd, c.credits, c.minutes];
 const cmp = (a, b) => { const x = rankKey(a.cost), y = rankKey(b.cost); for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return y[i] - x[i]; return 0; };
 
+// PR first-submission metric. Source rows: ledger/runs.jsonl with kind:"pr" and boolean green_first
+// (tests/lint green on the first push of the PR). Rows without that boolean are not counted.
+export function greenFirst(rows) {
+  const prs = rows.filter((r) => r.kind === "pr" && typeof r.green_first === "boolean");
+  const green = prs.filter((r) => r.green_first).length;
+  return { prs: prs.length, green, ratePct: prs.length ? Math.round((green / prs.length) * 1000) / 10 : null, source: "ledger/runs.jsonl (kind=pr, green_first)" };
+}
+
 export function buildReport(runs, quota, { now = new Date(), days = 7 } = {}) {
   const since = new Date(now.getTime() - days * 864e5);
   const inWindow = runs.map((r) => ({ ...r, at: r.at || r.ts })).filter((r) => { const t = new Date(r.at); return t >= since && t <= now; });
@@ -62,6 +70,7 @@ export function buildReport(runs, quota, { now = new Date(), days = 7 } = {}) {
     total: { quotaPct: sum("quotaPct"), credits: sum("credits"), minutes: sum("minutes"), usd: sum("usd") },
     quota: Object.fromEntries(Object.entries(latest).map(([p, q]) => [p, { usedPct: q.used_pct, sharePct: q.share_pct, resetsAt: q.resets_at, measuredAt: q.measured_at }])),
     byStudio,
+    greenFirst: greenFirst(inWindow),
     retried,
     top: flagged[0] ? { kind: flagged[0].kind, studio: flagged[0].row.studio, task: flagged[0].row.task, at: flagged[0].row.at, result: String(flagged[0].row.result).slice(0, 160), cost: flagged[0].cost } : null,
     ranked: flagged.slice(0, 5).map((x) => ({ kind: x.kind, studio: x.row.studio, task: x.row.task, at: x.row.at, cost: x.cost })),
@@ -72,6 +81,7 @@ export function render(r) {
   const c = (x) => `quota ${x.quotaPct}% · ${x.credits} créditos · ${x.minutes} min · US$${x.usd}`;
   const L = [`Relatório da fábrica ${r.since.slice(0, 10)} → ${r.until.slice(0, 10)} (${r.rows} runs, ${r.failures} falhas, ${r.reworks} retrabalhos)`];
   L.push(`Custo registrado na semana: ${c(r.total)}`);
+  L.push(r.greenFirst.prs ? `PRs com testes verdes no 1º envio: ${r.greenFirst.ratePct}% (${r.greenFirst.green}/${r.greenFirst.prs}) — fonte: ${r.greenFirst.source}` : "PRs com testes verdes no 1º envio: sem dados (nenhuma linha kind=pr com green_first na janela)");
   L.push(r.top ? `Falha/retrabalho mais caro: [${r.top.kind}] ${r.top.studio}/${r.top.task} (${r.top.at}) — ${c(r.top.cost)}\n  resultado: ${r.top.result}` : "Nenhuma falha/retrabalho na janela.");
   if (r.ranked.length > 1) L.push("Top 5:", ...r.ranked.map((x, i) => `  ${i + 1}. [${x.kind}] ${x.studio}/${x.task} — ${c(x.cost)}`));
   const q = Object.entries(r.quota);
@@ -86,6 +96,7 @@ export function renderMarkdown(r) {
   L.push("## Falha mais cara", "", r.top ? `> **[${r.top.kind}] ${r.top.studio}/${r.top.task}** (${r.top.at}) — ${c(r.top.cost)}` : "Nenhuma falha/retrabalho na janela.");
   if (r.top) L.push(`> resultado: ${r.top.result}`);
   L.push("");
+  L.push("## PRs com testes verdes no 1º envio", "", r.greenFirst.prs ? `**${r.greenFirst.ratePct}%** (${r.greenFirst.green} de ${r.greenFirst.prs} PRs) — fonte: ${r.greenFirst.source}` : "Sem dados: nenhuma linha `kind=pr` com `green_first` na janela.", "");
   L.push("## Resumo", "", "| Tempo (min) | Quota (pts) | Tarefas repetidas | Falhas | Retrabalhos |", "|---|---|---|---|---|", `| ${r.total.minutes} | ${r.total.quotaPct} | ${r.retried.length} | ${r.failures} | ${r.reworks} |`, "");
   L.push("## Por estúdio", "", "| Estúdio | Runs | Tempo (min) | Quota (pts) | Falhas | Retrabalhos |", "|---|---|---|---|---|---|", ...Object.entries(r.byStudio).map(([k, v]) => `| ${k} | ${v.runs} | ${v.minutes} | ${v.quotaPct} | ${v.failures} | ${v.reworks} |`), "");
   L.push("## Tentativas (mesma tarefa rodada mais de uma vez)", "", ...(r.retried.length ? r.retried.map((x) => `- ${x.task}: ${x.attempts}x`) : ["Nenhuma."]), "");
