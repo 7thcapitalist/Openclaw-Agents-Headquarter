@@ -138,3 +138,32 @@ export async function processInbox({ inboxDir, doneDir, ledgerPath, dispatch, no
   }
   return results;
 }
+
+// Per-request state read back from the ledger: ok (final line written), failed
+// (last line is a failure) or pending (only partial task lines). attempts counts
+// failed runs plus the one that succeeded.
+export function summarizeLedger(ledgerPath) {
+  const byKey = new Map();
+  if (!existsSync(ledgerPath)) return [];
+  for (const line of readFileSync(ledgerPath, "utf8").split("\n")) {
+    let e;
+    try { e = JSON.parse(line); } catch { continue; /* skip torn line */ }
+    if (!e?.key) continue;
+    const s = byKey.get(e.key) || { key: e.key, state: "pending", attempts: 0, failure_reason: null, pr: null };
+    if (e.failure_reason || e.status === "failed") {
+      s.state = "failed"; s.attempts += 1; s.failure_reason = e.failure_reason ?? "unknown";
+    } else if (!e.task) {
+      s.state = "ok"; s.attempts += 1; s.failure_reason = null;
+    }
+    if (e.pr) s.pr = e.pr;
+    byKey.set(e.key, s);
+  }
+  return [...byKey.values()];
+}
+
+export function formatStatus(rows) {
+  if (!rows.length) return "ledger vazio: nenhum pedido registrado";
+  const count = (st) => rows.filter((r) => r.state === st).length;
+  const head = `pedidos: ${count("ok")} ok, ${count("failed")} falha, ${count("pending")} pendente`;
+  return [head, ...rows.map((r) => `${r.key}  ${r.state}  tentativas=${r.attempts}  motivo=${r.failure_reason ?? "-"}  pr=${r.pr ?? "-"}`)].join("\n");
+}
