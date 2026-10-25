@@ -78,7 +78,17 @@ export async function processInbox({ inboxDir, doneDir, ledgerPath, dispatch, no
   for (const file of existsSync(inboxDir) ? readdirSync(inboxDir).filter((n) => n.endsWith(".md")).sort() : []) {
     const src = join(inboxDir, file);
     const req = parseRequest(readFileSync(src, "utf8"));
-    if (!req.repo || !req.objetivo) { results.push({ file, status: "invalid" }); continue; }
+    // No valid task (missing repo/objetivo, or an empty "tarefas:" block): never leave it stuck in inbox/.
+    const motivo = !req.repo ? 'campo "repo" ausente' : !req.objetivo ? 'campo "objetivo" ausente' : req.tarefas && !req.tarefas.length ? 'bloco "tarefas:" sem nenhum item' : null;
+    if (motivo) {
+      const reason = `pedido sem tarefa válida: ${motivo}`;
+      appendFileSync(src, `\n\nstatus: rejeitado\nmotivo: ${reason}\n`);
+      appendFileSync(ledgerPath, JSON.stringify({ at: now(), file, status: "rejeitado", motivo: reason }) + "\n");
+      const dest = join(doneDir, file);
+      if (existsSync(dest)) unlinkSync(src); else renameSync(src, dest);
+      results.push({ file, status: "rejeitado", motivo: reason });
+      continue;
+    }
     const key = requestKey(req);
     if (seen.has(key)) {
       // Already handled: drop the duplicate copy instead of reprocessing it.
