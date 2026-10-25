@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { lintInbox, lintPath } from '../../scripts/inbox-lint.mjs';
 
 const OK = `Repo: org/projeto
@@ -38,7 +38,7 @@ test('3 pedidos (ok, malformado, vazio) na pasta: lista campos faltando por arqu
   writeFileSync(join(dir, 'a-ok.md'), OK);
   writeFileSync(join(dir, 'b-malformado.md'), 'Repo: a/b\nfaça alguma coisa aí\n');
   writeFileSync(join(dir, 'c-vazio.md'), '');
-  const res = Object.fromEntries(lintPath(dir).map((r) => [r.file.split(/[\/]/).pop(), r]));
+  const res = Object.fromEntries(lintPath(dir).map((r) => [basename(r.file), r]));
   assert.equal(res['a-ok.md'].ok, true);
   assert.deepEqual(res['b-malformado.md'].errors, [
     'campo obrigatório ausente: "base"',
