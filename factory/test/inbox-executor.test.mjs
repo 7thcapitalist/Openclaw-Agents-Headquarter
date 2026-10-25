@@ -183,3 +183,24 @@ test("a failed request without tarefas is retried, not skipped as duplicate", as
   const r = await processInbox({ ...env, dispatch: async () => ({}) });
   assert.equal(r[0].status, "processed");
 });
+
+test("ledger records review_comments as an integer, 0 when dispatch reports none", async () => {
+  for (const [reported, expected] of [[3, 3], [undefined, 0], [-2, 0], ["x", 0]]) {
+    const env = setup();
+    writeFileSync(join(env.inboxDir, "r.md"), REQ);
+    await processInbox({ ...env, dispatch: async () => ({ pr: 7, review_comments: reported }) });
+    const e = JSON.parse(readFileSync(env.ledgerPath, "utf8").trim());
+    assert.equal(e.review_comments, expected);
+  }
+});
+
+test("with tarefas, review_comments of the run sums every dispatch; failed lines carry it too", async () => {
+  const env = setup();
+  writeFileSync(join(env.inboxDir, "r.md"), REQ + "tarefas:\n- um\n- dois\n- tres\n");
+  const outs = [{ pr: 1, review_comments: 2 }, { pr: 2, review_comments: 4 }];
+  await processInbox({ ...env, dispatch: async () => { const o = outs.shift(); if (!o) throw new Error("caiu"); return o; } });
+  const lines = readFileSync(env.ledgerPath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  assert.equal(lines.at(-1).status, "failed");
+  assert.equal(lines.at(-1).review_comments, 6);
+  assert.equal(lines[0].review_comments, 2);
+});
