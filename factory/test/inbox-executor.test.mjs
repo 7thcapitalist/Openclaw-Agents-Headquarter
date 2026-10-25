@@ -114,13 +114,37 @@ test("ledger records first_pr_tests_passed for green and red first PR", async ()
 
 test("with tarefas, first_pr_tests_passed comes from the first PR, not later ones", async () => {
   const env = setup();
-  writeFileSync(join(env.inboxDir, "t.md"), REQ + "tarefas:
-- um
-- dois
-");
+  writeFileSync(join(env.inboxDir, "t.md"), REQ + "tarefas:\n- um\n- dois\n");
   const results = [{ pr: 1, tests_passed: false }, { pr: 2, tests_passed: true }];
   await processInbox({ ...env, dispatch: async () => results.shift() });
-  const last = readFileSync(env.ledgerPath, "utf8").trim().split("
-").map((l) => JSON.parse(l)).pop();
+  const last = readFileSync(env.ledgerPath, "utf8").trim().split("\n").map((l) => JSON.parse(l)).pop();
   assert.equal(last.first_pr_tests_passed, false);
+});
+
+test("ledger records attempts per task: 1 on first success, 2+ after failed tries", async () => {
+  const env = setup();
+  writeFileSync(join(env.inboxDir, "t.md"), REQ + "tarefas:\n- um\n- dois\n");
+  let boom = 2;
+  const dispatch = async (_r, { task }) => { if (task === "dois" && boom-- > 0) throw new Error("falhou"); };
+  await processInbox({ ...env, dispatch }); // dois fails (try 1)
+  await processInbox({ ...env, dispatch }); // dois fails (try 2)
+  const r = await processInbox({ ...env, dispatch }); // dois succeeds (try 3)
+  assert.equal(r[0].status, "processed");
+  const lines = readFileSync(env.ledgerPath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  assert.equal(lines.find((l) => l.task === "um" && !l.status).attempts, 1);
+  assert.deepEqual(lines.filter((l) => l.task === "dois" && l.status === "failed").map((l) => l.attempts), [1, 2]);
+  assert.equal(lines.find((l) => l.task === "dois" && !l.status).attempts, 3);
+});
+
+test("request without tarefas records attempts on failure and on the final line", async () => {
+  const env = setup();
+  writeFileSync(join(env.inboxDir, "n.md"), REQ);
+  let fail = true;
+  const dispatch = async () => { if (fail) throw new Error("x"); };
+  await processInbox({ ...env, dispatch });
+  fail = false;
+  await processInbox({ ...env, dispatch });
+  const lines = readFileSync(env.ledgerPath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  assert.equal(lines[0].attempts, 1);
+  assert.equal(lines[1].attempts, 2);
 });
