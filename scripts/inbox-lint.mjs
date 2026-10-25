@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Valida um pedido do inbox (repo/base/objetivo/pronto quando) antes do executor,
 // para que pedido malformado não custe quota. Uso: node scripts/inbox-lint.mjs <arquivo>
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 export const REQUIRED_FIELDS = [
@@ -44,23 +45,35 @@ export function lintInbox(text) {
   return { ok: errors.length === 0, errors };
 }
 
+// Lista os arquivos .md de um diretório do inbox (ou o próprio arquivo, se for arquivo).
+export function lintPath(path) {
+  const files = statSync(path).isDirectory()
+    ? readdirSync(path).filter((n) => n.endsWith(".md")).sort().map((n) => join(path, n))
+    : [path];
+  return files.map((file) => ({ file, ...lintInbox(readFileSync(file, "utf8")) }));
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const file = process.argv[2];
-  if (!file) {
-    console.error('uso: node scripts/inbox-lint.mjs <arquivo>');
+  const target = process.argv[2];
+  if (!target) {
+    console.error("uso: node scripts/inbox-lint.mjs <arquivo|pasta-do-inbox>");
     process.exit(2);
   }
-  let text;
+  let results;
   try {
-    text = readFileSync(file, 'utf8');
+    results = lintPath(target);
   } catch (e) {
-    console.error(`não consegui ler ${file}: ${e.message}`);
+    console.error(`não consegui ler ${target}: ${e.message}`);
     process.exit(2);
   }
-  const { ok, errors } = lintInbox(text);
-  if (ok) console.log(`OK: ${file} tem repo, base, objetivo e pronto quando.`);
-  else {
-    for (const e of errors) console.error(`ERRO ${file}: ${e}`);
-    process.exit(1);
+  let bad = 0;
+  for (const r of results) {
+    if (r.ok) console.log(`OK: ${r.file}`);
+    else {
+      bad++;
+      for (const e of r.errors) console.error(`ERRO ${r.file}: ${e}`);
+    }
   }
+  if (!results.length) console.log(`nenhum pedido em ${target}`);
+  process.exit(bad ? 1 : 0);
 }
