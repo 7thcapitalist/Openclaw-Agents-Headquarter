@@ -89,6 +89,7 @@ export async function processInbox({ inboxDir, doneDir, ledgerPath, dispatch, no
     }
     const branch = branchFor(key);
     let outcome = {};
+    let firstPrTests = null; // tests_passed reported by dispatch for the first PR opened
     if (req.tarefas?.length) {
       const finished = doneTasks(ledgerPath, key);
       const pending = req.tarefas.filter((t) => !finished.has(t));
@@ -98,6 +99,7 @@ export async function processInbox({ inboxDir, doneDir, ledgerPath, dispatch, no
           current = task;
           const o = (await dispatch(req, { key, branch, task })) || {};
           appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, task, branch, pr: o.pr ?? null }) + "\n");
+          if (o.pr && !outcome.pr) firstPrTests = typeof o.tests_passed === "boolean" ? o.tests_passed : null;
           if (o.pr) outcome = o;
         }
       } catch (error) {
@@ -109,13 +111,14 @@ export async function processInbox({ inboxDir, doneDir, ledgerPath, dispatch, no
     } else {
       try {
         outcome = (await dispatch(req, { key, branch })) || {};
+        if (outcome.pr && typeof outcome.tests_passed === "boolean") firstPrTests = outcome.tests_passed;
       } catch (error) {
         appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, branch, status: "failed", ...describeFailure(error) }) + "\n");
         results.push({ file, key, branch, status: "failed", error: String(error?.message || error) });
         continue;
       }
     }
-    appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, repo: req.repo, base: req.base || "main", branch, pr: outcome.pr ?? null }) + "\n");
+    appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, repo: req.repo, base: req.base || "main", branch, pr: outcome.pr ?? null, first_pr_tests_passed: firstPrTests }) + "\n");
     seen.add(key);
     renameSync(src, join(doneDir, file));
     results.push({ file, key, branch, status: "processed" });

@@ -101,3 +101,26 @@ test("failed request without tarefas is recorded as failed and stays in inbox fo
   const retry = await processInbox({ ...env, dispatch: async () => {} });
   assert.equal(retry[0].status, "processed");
 });
+
+test("ledger records first_pr_tests_passed for green and red first PR", async () => {
+  for (const [passed, expected] of [[true, true], [false, false], [undefined, null]]) {
+    const env = setup();
+    writeFileSync(join(env.inboxDir, "t.md"), REQ);
+    await processInbox({ ...env, dispatch: async () => ({ pr: 7, tests_passed: passed }) });
+    const e = JSON.parse(readFileSync(env.ledgerPath, "utf8").trim());
+    assert.equal(e.first_pr_tests_passed, expected);
+  }
+});
+
+test("with tarefas, first_pr_tests_passed comes from the first PR, not later ones", async () => {
+  const env = setup();
+  writeFileSync(join(env.inboxDir, "t.md"), REQ + "tarefas:
+- um
+- dois
+");
+  const results = [{ pr: 1, tests_passed: false }, { pr: 2, tests_passed: true }];
+  await processInbox({ ...env, dispatch: async () => results.shift() });
+  const last = readFileSync(env.ledgerPath, "utf8").trim().split("
+").map((l) => JSON.parse(l)).pop();
+  assert.equal(last.first_pr_tests_passed, false);
+});
