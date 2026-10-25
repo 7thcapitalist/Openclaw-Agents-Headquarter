@@ -8,6 +8,9 @@ import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 
+// A request may carry at most this many micro-tasks (the team runs 4 in parallel).
+export const MAX_TAREFAS = 4;
+
 export function parseRequest(text) {
   const out = {};
   let inTasks = false;
@@ -79,9 +82,9 @@ export async function processInbox({ inboxDir, doneDir, ledgerPath, dispatch, no
     const src = join(inboxDir, file);
     const req = parseRequest(readFileSync(src, "utf8"));
     // No valid task (missing repo/objetivo, or an empty "tarefas:" block): never leave it stuck in inbox/.
-    const motivo = !req.repo ? 'campo "repo" ausente' : !req.objetivo ? 'campo "objetivo" ausente' : req.tarefas && !req.tarefas.length ? 'bloco "tarefas:" sem nenhum item' : null;
+    const motivo = !req.repo ? 'campo "repo" ausente' : !req.objetivo ? 'campo "objetivo" ausente' : req.tarefas && !req.tarefas.length ? 'bloco "tarefas:" sem nenhum item' : req.tarefas?.length > MAX_TAREFAS ? `${req.tarefas.length} tarefas, máximo é ${MAX_TAREFAS}` : null;
     if (motivo) {
-      const reason = `pedido sem tarefa válida: ${motivo}`;
+      const reason = req.tarefas?.length > MAX_TAREFAS ? `pedido rejeitado: ${motivo}` : `pedido sem tarefa válida: ${motivo}`;
       appendFileSync(src, `\n\nstatus: rejeitado\nmotivo: ${reason}\n`);
       appendFileSync(ledgerPath, JSON.stringify({ at: now(), file, status: "rejeitado", motivo: reason }) + "\n");
       const dest = join(doneDir, file);

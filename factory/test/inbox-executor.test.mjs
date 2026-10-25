@@ -119,3 +119,20 @@ test("request with no valid task is moved to done/ as rejeitado with a readable 
   assert.match(done, /motivo: pedido sem tarefa válida/);
   assert.equal(readFileSync(env.ledgerPath, "utf8").trim().split("\n").length, 2);
 });
+
+test("request with 4 tasks is processed, with 5 is rejected into done/ with a clear reason", async () => {
+  const env = setup();
+  const calls = [];
+  const dispatch = async (_r, { task }) => { calls.push(task); };
+  const req = (n, obj) => `repo: 7thcapitalist/x\nobjetivo: ${obj}\ntarefas:\n` + Array.from({ length: n }, (_, i) => `- t${i + 1}`).join("\n") + "\n";
+  writeFileSync(join(env.inboxDir, "quatro.md"), req(4, "Quatro"));
+  writeFileSync(join(env.inboxDir, "cinco.md"), req(5, "Cinco"));
+  const r = await processInbox({ ...env, dispatch });
+  assert.deepEqual(r.map((x) => x.status), ["rejeitado", "processed"]);
+  assert.match(r[0].motivo, /5 tarefas, máximo é 4/);
+  assert.deepEqual(calls, ["t1", "t2", "t3", "t4"]);
+  assert.equal(existsSync(join(env.inboxDir, "cinco.md")), false);
+  const done = readFileSync(join(env.doneDir, "cinco.md"), "utf8");
+  assert.match(done, /status: rejeitado/);
+  assert.match(done, /motivo: pedido rejeitado: 5 tarefas, máximo é 4/);
+});
