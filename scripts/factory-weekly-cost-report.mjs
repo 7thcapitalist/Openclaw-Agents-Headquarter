@@ -151,7 +151,7 @@ export function renderMarkdown(r) {
   if (!(r.reviews || []).length) L.push("Nenhum run com tentativas/comentários de revisão no ledger.");
   for (const x of r.reviews || []) {
     L.push(`- **${x.studio}/${x.task}** (${x.at}) — tentativas: ${x.attempts ?? "n/d"}, comentários de revisão: ${x.comments.length}`);
-    for (const c of x.comments) L.push(`  - ${c.replace(/s+/g, " ").slice(0, 200)}`);
+    for (const c of x.comments) L.push(`  - ${c.replace(/\s+/g, " ").slice(0, 200)}`);
   }
   L.push("");
   const q = Object.entries(r.quota);
