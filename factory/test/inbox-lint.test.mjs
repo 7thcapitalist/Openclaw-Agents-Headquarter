@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { lintInbox } from '../../scripts/inbox-lint.mjs';
+import { lintInbox, lintPath } from '../../scripts/inbox-lint.mjs';
 
 const OK = `Repo: org/projeto
 Base: main
@@ -31,4 +31,24 @@ test('campo vazio gera erro e CLI sai com 1', () => {
   const cli = spawnSync(process.execPath, ['scripts/inbox-lint.mjs', f], { encoding: 'utf8' });
   assert.equal(cli.status, 1);
   assert.match(cli.stderr, /vazio: "base"/);
+});
+
+test('3 pedidos (ok, malformado, vazio) na pasta: lista campos faltando por arquivo', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'lint-dir-'));
+  writeFileSync(join(dir, 'a-ok.md'), OK);
+  writeFileSync(join(dir, 'b-malformado.md'), 'Repo: a/b\nfaça alguma coisa aí\n');
+  writeFileSync(join(dir, 'c-vazio.md'), '');
+  const res = Object.fromEntries(lintPath(dir).map((r) => [r.file.split(/[\/]/).pop(), r]));
+  assert.equal(res['a-ok.md'].ok, true);
+  assert.deepEqual(res['b-malformado.md'].errors, [
+    'campo obrigatório ausente: "base"',
+    'campo obrigatório ausente: "objetivo"',
+    'campo obrigatório ausente: "pronto quando"',
+  ]);
+  assert.equal(res['c-vazio.md'].errors.length, 4);
+  const cli = spawnSync(process.execPath, ['scripts/inbox-lint.mjs', dir], { encoding: 'utf8' });
+  assert.equal(cli.status, 1);
+  assert.match(cli.stdout, /OK: .*a-ok\.md/);
+  assert.match(cli.stderr, /ERRO .*b-malformado\.md: campo obrigatório ausente: "base"/);
+  assert.match(cli.stderr, /ERRO .*c-vazio\.md: campo obrigatório ausente: "repo"/);
 });
