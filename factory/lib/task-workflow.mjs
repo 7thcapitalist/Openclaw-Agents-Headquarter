@@ -390,6 +390,15 @@ const REVIEW_STAGES = new Set(["reviewer", "qa", "security", "release"]);
 // retrying more often than a stage that keeps saying no, and neither is free.
 export const DEFAULT_MAX_INFRA_ATTEMPTS = 6;
 
+// The paid gates (reviewer, qa, security) are full-context agent sessions, so a
+// lost dispatch there is not a cheap retry. cost-measurement-2026-09-15.md put
+// gates+architect at 74.4% of spend, and the worst task (nine reviewer runs
+// against one build) was exactly 3 verdicts + 6 infra allowances. Gates get a
+// shorter infra rope; other stages keep the configured allowance. This never
+// raises a stricter configured value.
+export const GATE_STAGES = new Set(["reviewer", "qa", "security"]);
+export const GATE_MAX_INFRA_ATTEMPTS = 4;
+
 
 // A stage attempt only means "this stage rejected the work" when the stage
 // actually returned a verdict. A dispatch that produced none — the agent could
@@ -447,6 +456,7 @@ export function countStageAttempts(state, stage) {
 // Which budget, if either, this stage has exhausted.
 export function stageBudgetExceeded(state, stage, { maxAttemptsPerStage = 3, maxInfraAttemptsPerStage = DEFAULT_MAX_INFRA_ATTEMPTS } = {}) {
   const { verdicts, infra, passes } = countStageAttempts(state, stage);
+  if (GATE_STAGES.has(stage)) maxInfraAttemptsPerStage = Math.min(maxInfraAttemptsPerStage, GATE_MAX_INFRA_ATTEMPTS);
   if (verdicts >= maxAttemptsPerStage) {
     return { exceeded: "verdicts", verdicts, infra, passes, limit: maxAttemptsPerStage };
   }
