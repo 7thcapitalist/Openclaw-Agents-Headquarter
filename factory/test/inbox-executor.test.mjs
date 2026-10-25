@@ -114,13 +114,27 @@ test("ledger records first_pr_tests_passed for green and red first PR", async ()
 
 test("with tarefas, first_pr_tests_passed comes from the first PR, not later ones", async () => {
   const env = setup();
-  writeFileSync(join(env.inboxDir, "t.md"), REQ + "tarefas:
-- um
-- dois
-");
+  writeFileSync(join(env.inboxDir, "t.md"), REQ + "tarefas:\n- um\n- dois\n");
   const results = [{ pr: 1, tests_passed: false }, { pr: 2, tests_passed: true }];
   await processInbox({ ...env, dispatch: async () => results.shift() });
-  const last = readFileSync(env.ledgerPath, "utf8").trim().split("
-").map((l) => JSON.parse(l)).pop();
+  const last = readFileSync(env.ledgerPath, "utf8").trim().split("\n").map((l) => JSON.parse(l)).pop();
   assert.equal(last.first_pr_tests_passed, false);
+});
+
+test("every ledger line carries a numeric duration_ms, for success and failure", async () => {
+  const env = setup();
+  writeFileSync(join(env.inboxDir, "d.md"), REQ + "tarefas:\n- a\n- b\n");
+  let t = 0;
+  const clock = () => (t += 10);
+  const dispatch = async (_r, { task }) => { if (task === "b") throw new Error("boom"); return { pr: "u/1" }; };
+  await processInbox({ ...env, dispatch, clock });
+  const lines = readFileSync(env.ledgerPath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  assert.equal(lines.length, 2);
+  assert.equal(lines[0].task, "a");
+  assert.equal(lines[1].status, "failed");
+  for (const l of lines) { assert.equal(typeof l.duration_ms, "number"); assert.ok(l.duration_ms >= 0); }
+  // Finish the request: the closing line has a duration too.
+  await processInbox({ ...env, dispatch: async () => ({ pr: "u/2" }), clock });
+  const last = readFileSync(env.ledgerPath, "utf8").trim().split("\n").map((l) => JSON.parse(l)).pop();
+  assert.equal(typeof last.duration_ms, "number");
 });
