@@ -126,3 +126,10 @@ the founder must decide, and what approval will do. Recovery never bypasses
 high-risk approval, independent review, QA, security, release, or human merge
 gates. Successful recovery is evidence for the learning queue, not permission
 for the learning system to change factory behavior automatically.
+
+## Quota spent per run (ledger)
+
+Each line `processInbox` appends to `ledger/runs.jsonl` carries `quota_pct`: the % of
+`quotaAlert.quotaTokens` (factory.config.json) spent by that run, summed from its `usage`
+events in `cost-events.ndjson` (`taskId` = the request `key`, or `outcome.taskId` if the dispatcher returns one).
+It is `null`, never 0, when the run has no cost events or no quota/`costEventsPath` is passed (`quota: { costEventsPath, quotaTokens }`).

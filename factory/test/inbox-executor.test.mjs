@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { processInbox } from "../lib/hq/inbox-executor.mjs";
+import { appendCostEvent, createCostEvent } from "../lib/hq/cost-ledger.mjs";
+import { parseRequest, processInbox, requestKey } from "../lib/hq/inbox-executor.mjs";
 
 const REQ = "repo: 7thcapitalist/x\nbase: main\nobjetivo: Fazer   a coisa\npronto quando: testes\n";
 
@@ -100,4 +101,27 @@ test("failed request without tarefas is recorded as failed and stays in inbox fo
   assert.equal(e.failure_reason, "sem rede");
   const retry = await processInbox({ ...env, dispatch: async () => {} });
   assert.equal(retry[0].status, "processed");
+});
+
+test("ledger records quota_pct from cost-events.ndjson; null when the run has none (SOF-93)", async () => {
+  const env = setup();
+  const costEventsPath = join(dirname(env.ledgerPath), "cost-events.ndjson");
+  const quota = { costEventsPath, quotaTokens: 10000 };
+  const withEvents = REQ.replace("Fazer", "Com custo");
+  const key = requestKey(parseRequest(withEvents));
+  appendCostEvent(costEventsPath, createCostEvent({ eventId: "e1", source: "t", sourceEventId: "1", provider: "anthropic", model: "m", inputTokens: 1000, cachedInputTokens: 500, outputTokens: 250, taskId: key }));
+  appendCostEvent(costEventsPath, createCostEvent({ eventId: "e2", source: "t", sourceEventId: "2", provider: "anthropic", model: "m", inputTokens: 9000, taskId: "outra-task" }));
+  writeFileSync(join(env.inboxDir, "a.md"), withEvents);
+  writeFileSync(join(env.inboxDir, "b.md"), REQ.replace("Fazer", "Sem custo"));
+  await processInbox({ ...env, quota, dispatch: async () => {} });
+  const lines = readFileSync(env.ledgerPath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  assert.equal(lines.find((l) => l.key === key).quota_pct, 17.5); // 1750 / 10000
+  assert.equal(lines.find((l) => l.key !== key).quota_pct, null);
+});
+
+test("quota_pct is null when no quota/cost file is configured", async () => {
+  const env = setup();
+  writeFileSync(join(env.inboxDir, "a.md"), REQ);
+  await processInbox({ ...env, dispatch: async () => {} });
+  assert.equal(JSON.parse(readFileSync(env.ledgerPath, "utf8").trim()).quota_pct, null);
 });

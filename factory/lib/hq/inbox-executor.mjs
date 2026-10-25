@@ -7,6 +7,8 @@
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
+import { readCostEvents } from "./cost-ledger.mjs";
+import { runQuotaShare } from "./quota-alert.mjs";
 
 export function parseRequest(text) {
   const out = {};
@@ -59,6 +61,17 @@ export function describeFailure(error) {
   return { failure_reason: reason, last_log_tail: log.slice(-20).join("\n") };
 }
 
+// % of quota spent by one run (SOF-93): usage events of its taskId in cost-events.ndjson.
+// null when quota is not configured or the run has no cost events.
+export function quotaPctFor({ costEventsPath, quotaTokens }, taskId) {
+  if (!costEventsPath || !(quotaTokens > 0) || !taskId) return null;
+  try {
+    const events = readCostEvents(costEventsPath).filter((e) => e.taskId === taskId && e.eventType === "usage");
+    if (!events.length) return null;
+    return Math.round(runQuotaShare(events, taskId, quotaTokens).pct * 10) / 10;
+  } catch { return null; }
+}
+
 function doneKeys(doneDir) {
   const keys = new Set();
   if (!existsSync(doneDir)) return keys;
@@ -71,10 +84,11 @@ function doneKeys(doneDir) {
 
 // dispatch(request, { key, branch }) creates the branch/PR work; it is only
 // called for requests never seen before. Returns [{ file, key, status }].
-export async function processInbox({ inboxDir, doneDir, ledgerPath, dispatch, now = () => new Date().toISOString() }) {
+export async function processInbox({ inboxDir, doneDir, ledgerPath, dispatch, quota = {}, now = () => new Date().toISOString() }) {
   mkdirSync(doneDir, { recursive: true });
   const seen = new Set([...ledgerKeys(ledgerPath), ...doneKeys(doneDir)]);
   const results = [];
+  const pctOf = (taskId) => ({ quota_pct: quotaPctFor(quota, taskId) });
   for (const file of existsSync(inboxDir) ? readdirSync(inboxDir).filter((n) => n.endsWith(".md")).sort() : []) {
     const src = join(inboxDir, file);
     const req = parseRequest(readFileSync(src, "utf8"));
@@ -97,12 +111,12 @@ export async function processInbox({ inboxDir, doneDir, ledgerPath, dispatch, no
         for (const task of pending) {
           current = task;
           const o = (await dispatch(req, { key, branch, task })) || {};
-          appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, task, branch, pr: o.pr ?? null }) + "\n");
+          appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, task, branch, pr: o.pr ?? null, ...pctOf(o.taskId ?? key) }) + "\n");
           if (o.pr) outcome = o;
         }
       } catch (error) {
         // Interrupted: finished tasks are in the ledger, the file stays in inbox/ to be resumed.
-        appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, task: current, branch, status: "failed", ...describeFailure(error) }) + "\n");
+        appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, task: current, branch, status: "failed", ...describeFailure(error), ...pctOf(key) }) + "\n");
         results.push({ file, key, branch, status: "interrupted", error: String(error?.message || error) });
         continue;
       }
@@ -110,12 +124,12 @@ export async function processInbox({ inboxDir, doneDir, ledgerPath, dispatch, no
       try {
         outcome = (await dispatch(req, { key, branch })) || {};
       } catch (error) {
-        appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, branch, status: "failed", ...describeFailure(error) }) + "\n");
+        appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, branch, status: "failed", ...describeFailure(error), ...pctOf(key) }) + "\n");
         results.push({ file, key, branch, status: "failed", error: String(error?.message || error) });
         continue;
       }
     }
-    appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, repo: req.repo, base: req.base || "main", branch, pr: outcome.pr ?? null }) + "\n");
+    appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, repo: req.repo, base: req.base || "main", branch, pr: outcome.pr ?? null, ...pctOf(outcome.taskId ?? key) }) + "\n");
     seen.add(key);
     renameSync(src, join(doneDir, file));
     results.push({ file, key, branch, status: "processed" });
