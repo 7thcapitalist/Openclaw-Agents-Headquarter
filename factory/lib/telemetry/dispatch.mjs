@@ -7,7 +7,7 @@ import { appendAuditEvent, createAuditEvent, readAuditEvents } from "../audit/en
 import { createCostEvent, appendCostEvent } from "../hq/cost-ledger.mjs";
 import { loadPricing, priceUsage } from "../hq/cost.mjs";
 import { createRunLiveness } from "../liveness/run-liveness.mjs";
-import { readState } from "../task-workflow.mjs";
+import { GATE_STAGES, readState } from "../task-workflow.mjs";
 
 export function telemetryPaths({ hqRoot, statePath }) {
   const taskDir = dirname(resolve(statePath));
@@ -94,6 +94,28 @@ export function observeDispatchState({ hqRoot, statePath, phase, dispatchId = nu
         pricingVersion,
         usageConfidence: "provider-reported",
         costConfidence,
+        agentId: dispatch.agentId || dispatch.actor,
+        projectId: state.task.project || state.task.projectId || null,
+        objectiveId: state.task.objectiveId || null,
+        taskId: state.task.id,
+        stage: dispatch.stage,
+        runId: dispatch.id,
+        dispatchId: dispatch.id,
+      }, { now, id: () => `cost:${dispatch.id}` }));
+    }
+    else if (GATE_STAGES.has(dispatch.stage) && (phase === "completed" || phase === "failed")) {
+      // A paid gate call that returned no usable usage still cost a session.
+      // One event per call keeps runs countable (SOF-79); tokens stay 0 and
+      // both confidences say "unavailable", so it is never summed as free.
+      appendCostEvent(paths.costs, createCostEvent({
+        eventId: `cost:${dispatch.id}`,
+        source: "openclaw-factory",
+        sourceEventId: dispatch.id,
+        occurredAt,
+        provider: usage?.provider || "unknown",
+        model: usage?.model || dispatch.route || "unknown",
+        usageConfidence: "unavailable",
+        costConfidence: "unavailable",
         agentId: dispatch.agentId || dispatch.actor,
         projectId: state.task.project || state.task.projectId || null,
         objectiveId: state.task.objectiveId || null,

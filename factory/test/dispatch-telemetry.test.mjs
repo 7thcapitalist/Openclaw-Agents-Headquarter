@@ -54,3 +54,19 @@ test("failed and yielded runs retain distinct liveness", () => {
   assert.equal(result.liveness.state, "needs-followup");
   assert.match(result.liveness.nextAction, /Resume/);
 });
+
+test("a paid gate call with no usage still writes one unavailable cost event", () => {
+  const f = fixture({ stage: "reviewer", id: "task-1-reviewer-1" });
+  for (let i = 0; i < 2; i += 1) observeDispatchState({ hqRoot: f.root, statePath: f.statePath, phase: "completed", dispatchId: f.dispatch.id });
+  const events = readCostEvents(telemetryPaths({ hqRoot: f.root, statePath: f.statePath }).costs);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].stage, "reviewer");
+  assert.equal(events[0].costMicros, null);
+  assert.equal(events[0].costConfidence, "unavailable");
+});
+
+test("a non-gate call with no usage writes no cost event", () => {
+  const f = fixture();
+  observeDispatchState({ hqRoot: f.root, statePath: f.statePath, phase: "completed", dispatchId: f.dispatch.id });
+  assert.equal(readCostEvents(telemetryPaths({ hqRoot: f.root, statePath: f.statePath }).costs).length, 0);
+});
