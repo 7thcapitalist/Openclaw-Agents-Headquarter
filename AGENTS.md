@@ -43,6 +43,10 @@ Full policy: `docs/software-factory/GIT_WORKFLOW.md` (SFD-2026-008).
 - Reversible implementation details should be decided autonomously. Escalate only strategic, costly, privacy-sensitive, destructive, or hard-to-reverse decisions.
 - Every completed task should leave evidence: tests, logs, screenshots, or another verification artifact appropriate to the change.
 
+## Test gate
+Run `npm test` (alias of `npm run test:factory`) from the repo root before every PR: it runs every `factory/test/**/*.test.mjs` and exits non-zero if any test fails or hangs.
+Needs `npm run setup` once (it refuses to run if `dashboard/backend/node_modules` is missing, so security tests never skip silently).
+
 ## Human escalation
 Ask the founder only when a decision changes product direction, scope, privacy posture, meaningful spend, external/public behavior, production data, or another hard-to-reverse choice. Use the Decision Card format in `factory/templates/decision-card.md`.
 

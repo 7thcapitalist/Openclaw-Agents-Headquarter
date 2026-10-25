@@ -7,6 +7,7 @@
     "setup": "npm install --prefix dashboard/backend && npm install --prefix control-plane",
     "dev": "AGENT_LAB_ROOT=$PWD npm --prefix dashboard/backend run dev",
     "start": "AGENT_LAB_ROOT=$PWD npm --prefix dashboard/backend start",
+    "test": "node scripts/run-factory-tests.mjs",
     "test:factory": "node scripts/run-factory-tests.mjs",
     "approve": "node scripts/founder-approve.mjs",
     "factory:openclaw": "node scripts/openclaw-factory.mjs",
