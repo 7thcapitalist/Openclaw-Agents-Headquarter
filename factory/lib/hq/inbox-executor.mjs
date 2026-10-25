@@ -59,6 +59,9 @@ export function describeFailure(error) {
   return { failure_reason: reason, last_log_tail: log.slice(-20).join("\n") };
 }
 
+// Review comments reported by dispatch, as a non-negative integer (0 when absent/invalid).
+export const reviewCount = (v) => (Number.isInteger(v) && v > 0 ? v : 0);
+
 function doneKeys(doneDir) {
   const keys = new Set();
   if (!existsSync(doneDir)) return keys;
@@ -89,6 +92,7 @@ export async function processInbox({ inboxDir, doneDir, ledgerPath, dispatch, no
     }
     const branch = branchFor(key);
     let outcome = {};
+    let reviewComments = 0; // review comments summed over every dispatch of this run
     let firstPrTests = null; // tests_passed reported by dispatch for the first PR opened
     if (req.tarefas?.length) {
       const finished = doneTasks(ledgerPath, key);
@@ -98,27 +102,29 @@ export async function processInbox({ inboxDir, doneDir, ledgerPath, dispatch, no
         for (const task of pending) {
           current = task;
           const o = (await dispatch(req, { key, branch, task })) || {};
-          appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, task, branch, pr: o.pr ?? null }) + "\n");
+          appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, task, branch, pr: o.pr ?? null, review_comments: reviewCount(o.review_comments) }) + "\n");
+          reviewComments += reviewCount(o.review_comments);
           if (o.pr && !outcome.pr) firstPrTests = typeof o.tests_passed === "boolean" ? o.tests_passed : null;
           if (o.pr) outcome = o;
         }
       } catch (error) {
         // Interrupted: finished tasks are in the ledger, the file stays in inbox/ to be resumed.
-        appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, task: current, branch, status: "failed", ...describeFailure(error) }) + "\n");
+        appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, task: current, branch, status: "failed", review_comments: reviewComments, ...describeFailure(error) }) + "\n");
         results.push({ file, key, branch, status: "interrupted", error: String(error?.message || error) });
         continue;
       }
     } else {
       try {
         outcome = (await dispatch(req, { key, branch })) || {};
+        reviewComments = reviewCount(outcome.review_comments);
         if (outcome.pr && typeof outcome.tests_passed === "boolean") firstPrTests = outcome.tests_passed;
       } catch (error) {
-        appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, branch, status: "failed", ...describeFailure(error) }) + "\n");
+        appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, branch, status: "failed", review_comments: reviewComments, ...describeFailure(error) }) + "\n");
         results.push({ file, key, branch, status: "failed", error: String(error?.message || error) });
         continue;
       }
     }
-    appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, repo: req.repo, base: req.base || "main", branch, pr: outcome.pr ?? null, first_pr_tests_passed: firstPrTests }) + "\n");
+    appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, repo: req.repo, base: req.base || "main", branch, pr: outcome.pr ?? null, first_pr_tests_passed: firstPrTests, review_comments: reviewComments }) + "\n");
     seen.add(key);
     renameSync(src, join(doneDir, file));
     results.push({ file, key, branch, status: "processed" });

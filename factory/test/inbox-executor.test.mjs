@@ -114,13 +114,31 @@ test("ledger records first_pr_tests_passed for green and red first PR", async ()
 
 test("with tarefas, first_pr_tests_passed comes from the first PR, not later ones", async () => {
   const env = setup();
-  writeFileSync(join(env.inboxDir, "t.md"), REQ + "tarefas:
-- um
-- dois
-");
+  writeFileSync(join(env.inboxDir, "t.md"), REQ + "tarefas:\n- um\n- dois\n");
   const results = [{ pr: 1, tests_passed: false }, { pr: 2, tests_passed: true }];
   await processInbox({ ...env, dispatch: async () => results.shift() });
-  const last = readFileSync(env.ledgerPath, "utf8").trim().split("
-").map((l) => JSON.parse(l)).pop();
+  const last = readFileSync(env.ledgerPath, "utf8").trim().split("\n").map((l) => JSON.parse(l)).pop();
   assert.equal(last.first_pr_tests_passed, false);
 });
+
+test("ledger records review_comments as an integer, 0 when dispatch reports none", async () => {
+  for (const [reported, expected] of [[3, 3], [undefined, 0], [-2, 0], ["x", 0]]) {
+    const env = setup();
+    writeFileSync(join(env.inboxDir, "r.md"), REQ);
+    await processInbox({ ...env, dispatch: async () => ({ pr: 7, review_comments: reported }) });
+    const e = JSON.parse(readFileSync(env.ledgerPath, "utf8").trim());
+    assert.equal(e.review_comments, expected);
+  }
+});
+
+test("with tarefas, review_comments of the run sums every dispatch; failed lines carry it too", async () => {
+  const env = setup();
+  writeFileSync(join(env.inboxDir, "r.md"), REQ + "tarefas:\n- um\n- dois\n- tres\n");
+  const outs = [{ pr: 1, review_comments: 2 }, { pr: 2, review_comments: 4 }];
+  await processInbox({ ...env, dispatch: async () => { const o = outs.shift(); if (!o) throw new Error("caiu"); return o; } });
+  const lines = readFileSync(env.ledgerPath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  assert.equal(lines.at(-1).status, "failed");
+  assert.equal(lines.at(-1).review_comments, 6);
+  assert.equal(lines[0].review_comments, 2);
+});
+
