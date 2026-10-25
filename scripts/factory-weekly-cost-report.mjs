@@ -62,6 +62,22 @@ export function costByRun(events, { now = new Date(), days = 7 } = {}) {
   return { runs, total: runs.reduce((t, r) => ({ runs: t.runs + 1, tokens: t.tokens + r.tokens, costMicros: t.costMicros + r.costMicros, unpriced: t.unpriced + r.unpriced }), { runs: 0, tokens: 0, costMicros: 0, unpriced: 0 }) };
 }
 
+// Falhas agrupadas por failure_reason (SOF-89); linhas de falha sem o campo caem em "sem causa registrada".
+export function failuresByCause(rows) {
+  const g = new Map();
+  for (const r of rows) {
+    const reason = String(r.failure_reason ?? "").trim().replace(/\s+/g, " ");
+    if (!reason && classify(r) !== "failure") continue;
+    const key = reason || "sem causa registrada";
+    const c = costOf(r);
+    const e = g.get(key) || { cause: key, count: 0, cost: { quotaPct: 0, credits: 0, minutes: 0, usd: 0 } };
+    e.count++;
+    for (const k of Object.keys(e.cost)) e.cost[k] += c[k];
+    g.set(key, e);
+  }
+  return [...g.values()].sort((a, b) => b.count - a.count || cmp(a, b) || a.cause.localeCompare(b.cause));
+}
+
 export function buildReport(runs, quota, { now = new Date(), days = 7, costEvents = [] } = {}) {
   const since = new Date(now.getTime() - days * 864e5);
   const inWindow = runs.map((r) => ({ ...r, at: r.at || r.ts })).filter((r) => { const t = new Date(r.at); return t >= since && t <= now; });
@@ -76,6 +92,7 @@ export function buildReport(runs, quota, { now = new Date(), days = 7, costEvent
   const retried = Object.entries(attempts).filter(([, n]) => n > 1).sort((a, b) => b[1] - a[1]).map(([task, attempts]) => ({ task, attempts }));
   const sum = (k) => inWindow.reduce((s, r) => s + costOf(r)[k], 0);
   return {
+    failuresByCause: failuresByCause(inWindow),
     costByRun: costByRun(costEvents, { now, days }),
     since: since.toISOString(), until: now.toISOString(), rows: inWindow.length,
     failures: flagged.filter((x) => x.kind === "failure").length,
@@ -94,6 +111,7 @@ export function render(r) {
   const L = [`Relatório da fábrica ${r.since.slice(0, 10)} → ${r.until.slice(0, 10)} (${r.rows} runs, ${r.failures} falhas, ${r.reworks} retrabalhos)`];
   L.push(`Custo registrado na semana: ${c(r.total)}`);
   L.push(r.top ? `Falha/retrabalho mais caro: [${r.top.kind}] ${r.top.studio}/${r.top.task} (${r.top.at}) — ${c(r.top.cost)}\n  resultado: ${r.top.result}` : "Nenhuma falha/retrabalho na janela.");
+  if (r.failuresByCause?.length) L.push("Falhas por causa:", ...r.failuresByCause.map((x) => `  ${x.count}x ${x.cause} — ${c(x.cost)}`));
   if (r.ranked.length > 1) L.push("Top 5:", ...r.ranked.map((x, i) => `  ${i + 1}. [${x.kind}] ${x.studio}/${x.task} — ${c(x.cost)}`));
   const q = Object.entries(r.quota);
   L.push(q.length ? "% de quota (última medição): " + q.map(([p, v]) => `${p} ${v.usedPct}% usado (reseta ${v.resetsAt})`).join("; ") : "% de quota: sem medição");
@@ -107,6 +125,9 @@ export function renderMarkdown(r) {
   L.push("## Falha mais cara", "", r.top ? `> **[${r.top.kind}] ${r.top.studio}/${r.top.task}** (${r.top.at}) — ${c(r.top.cost)}` : "Nenhuma falha/retrabalho na janela.");
   if (r.top) L.push(`> resultado: ${r.top.result}`);
   L.push("");
+  L.push("## Falhas por causa (failure_reason)", "");
+  if (r.failuresByCause?.length) L.push("| Causa | Ocorrências | Quota (pts) | Tempo (min) |", "|---|---|---|---|", ...r.failuresByCause.map((x) => `| ${x.cause.replace(/\|/g, "\\|")} | ${x.count} | ${x.cost.quotaPct} | ${x.cost.minutes} |`), "");
+  else L.push("Nenhuma falha na janela.", "");
   L.push("## Resumo", "", "| Tempo (min) | Quota (pts) | Tarefas repetidas | Falhas | Retrabalhos |", "|---|---|---|---|---|", `| ${r.total.minutes} | ${r.total.quotaPct} | ${r.retried.length} | ${r.failures} | ${r.reworks} |`, "");
   L.push("## Por estúdio", "", "| Estúdio | Runs | Tempo (min) | Quota (pts) | Falhas | Retrabalhos |", "|---|---|---|---|---|---|", ...Object.entries(r.byStudio).map(([k, v]) => `| ${k} | ${v.runs} | ${v.minutes} | ${v.quotaPct} | ${v.failures} | ${v.reworks} |`), "");
   L.push("## Tentativas (mesma tarefa rodada mais de uma vez)", "", ...(r.retried.length ? r.retried.map((x) => `- ${x.task}: ${x.attempts}x`) : ["Nenhuma."]), "");
