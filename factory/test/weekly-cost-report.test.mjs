@@ -43,3 +43,22 @@ test("markdown lists attempts and review_comments per run from the ledger", asyn
   assert.ok(md.includes("software/SOF-2** (2026-10-21T11:00:00Z) — tentativas: n/d, comentários de revisão: 1"));
   assert.ok(!md.includes("website/x**"));
 });
+test("prints average and max attempts per request from a ledger fixture", async () => {
+  const { renderMarkdown, readJsonl } = await import("../../scripts/factory-weekly-cost-report.mjs");
+  const { mkdtempSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = mkdtempSync(join(tmpdir(), "attempts-"));
+  const rows = [
+    { ts: "2026-10-21T10:00:00Z", studio: "software", task: "A", result: "pr", attempts: 1 },
+    { ts: "2026-10-21T11:00:00Z", studio: "software", task: "B", result: "pr", attempts: 2 },
+    { ts: "2026-10-21T12:00:00Z", studio: "software", task: "C", result: "pr", attempts: 6 },
+    { ts: "2026-10-21T13:00:00Z", studio: "website", task: "D", result: "deployed" },
+  ];
+  writeFileSync(join(dir, "runs.jsonl"), rows.map((x) => JSON.stringify(x)).join(String.fromCharCode(10)) + String.fromCharCode(10));
+  const r = buildReport(readJsonl(join(dir, "runs.jsonl")), [], { now });
+  assert.deepEqual(r.attemptStats, { runs: 3, avg: 3, max: 6 });
+  assert.ok(renderMarkdown(r).includes("média 3 · máximo 6"));
+  assert.match(render(r), /Tentativas por pedido: média 3 · máximo 6 (3 runs)/);
+  assert.equal(buildReport([], [], { now }).attemptStats.max, null);
+});

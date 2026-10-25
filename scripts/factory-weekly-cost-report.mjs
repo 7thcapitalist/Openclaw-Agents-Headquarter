@@ -63,6 +63,8 @@ export function buildReport(runs, quota, { now = new Date(), days = 7 } = {}) {
   for (const r of inWindow) { const key = `${r.studio || "?"}/${r.task}`; attempts[key] = (attempts[key] || 0) + 1; }
   const retried = Object.entries(attempts).filter(([, n]) => n > 1).sort((a, b) => b[1] - a[1]).map(([task, attempts]) => ({ task, attempts }));
   const reviews = inWindow.map((r) => ({ studio: r.studio || "?", task: r.task, at: r.at, ...reviewOf(r) })).filter((x) => x.attempts != null || x.comments.length);
+  const counted = reviews.map((x) => x.attempts).filter((n) => n != null);
+  const attemptStats = { runs: counted.length, avg: counted.length ? Math.round((counted.reduce((a, b) => a + b, 0) / counted.length) * 100) / 100 : null, max: counted.length ? Math.max(...counted) : null };
   const sum = (k) => inWindow.reduce((s, r) => s + costOf(r)[k], 0);
   return {
     since: since.toISOString(), until: now.toISOString(), rows: inWindow.length,
@@ -73,6 +75,7 @@ export function buildReport(runs, quota, { now = new Date(), days = 7 } = {}) {
     byStudio,
     retried,
     reviews,
+    attemptStats,
     top: flagged[0] ? { kind: flagged[0].kind, studio: flagged[0].row.studio, task: flagged[0].row.task, at: flagged[0].row.at, result: String(flagged[0].row.result).slice(0, 160), cost: flagged[0].cost } : null,
     ranked: flagged.slice(0, 5).map((x) => ({ kind: x.kind, studio: x.row.studio, task: x.row.task, at: x.row.at, cost: x.cost })),
   };
@@ -83,6 +86,8 @@ export function render(r) {
   const L = [`Relatório da fábrica ${r.since.slice(0, 10)} → ${r.until.slice(0, 10)} (${r.rows} runs, ${r.failures} falhas, ${r.reworks} retrabalhos)`];
   L.push(`Custo registrado na semana: ${c(r.total)}`);
   L.push(r.top ? `Falha/retrabalho mais caro: [${r.top.kind}] ${r.top.studio}/${r.top.task} (${r.top.at}) — ${c(r.top.cost)}\n  resultado: ${r.top.result}` : "Nenhuma falha/retrabalho na janela.");
+  const st = r.attemptStats;
+  L.push(st && st.runs ? `Tentativas por pedido: média ${st.avg} · máximo ${st.max} (${st.runs} runs)` : "Tentativas por pedido: sem dados");
   if (r.ranked.length > 1) L.push("Top 5:", ...r.ranked.map((x, i) => `  ${i + 1}. [${x.kind}] ${x.studio}/${x.task} — ${c(x.cost)}`));
   const q = Object.entries(r.quota);
   L.push(q.length ? "% de quota (última medição): " + q.map(([p, v]) => `${p} ${v.usedPct}% usado (reseta ${v.resetsAt})`).join("; ") : "% de quota: sem medição");
@@ -100,6 +105,8 @@ export function renderMarkdown(r) {
   L.push("## Por estúdio", "", "| Estúdio | Runs | Tempo (min) | Quota (pts) | Falhas | Retrabalhos |", "|---|---|---|---|---|---|", ...Object.entries(r.byStudio).map(([k, v]) => `| ${k} | ${v.runs} | ${v.minutes} | ${v.quotaPct} | ${v.failures} | ${v.reworks} |`), "");
   L.push("## Tentativas (mesma tarefa rodada mais de uma vez)", "", ...(r.retried.length ? r.retried.map((x) => `- ${x.task}: ${x.attempts}x`) : ["Nenhuma."]), "");
   L.push("## Tentativas e revisão por run", "");
+  const st2 = r.attemptStats;
+  L.push(st2 && st2.runs ? `Tentativas por pedido (campo attempts, ${st2.runs} runs): média ${st2.avg} · máximo ${st2.max}` : "Tentativas por pedido: sem dados (nenhum run com attempts).", "");
   if (!(r.reviews || []).length) L.push("Nenhum run com tentativas/comentários de revisão no ledger.");
   for (const x of r.reviews || []) {
     L.push(`- **${x.studio}/${x.task}** (${x.at}) — tentativas: ${x.attempts ?? "n/d"}, comentários de revisão: ${x.comments.length}`);
