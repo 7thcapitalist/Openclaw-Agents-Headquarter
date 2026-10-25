@@ -101,3 +101,21 @@ test("failed request without tarefas is recorded as failed and stays in inbox fo
   const retry = await processInbox({ ...env, dispatch: async () => {} });
   assert.equal(retry[0].status, "processed");
 });
+
+test("request with no valid task is moved to done/ as rejeitado with a readable reason", async () => {
+  const env = setup();
+  let calls = 0;
+  const dispatch = async () => { calls++; };
+  writeFileSync(join(env.inboxDir, "vazio.md"), "repo: 7thcapitalist/x\nobjetivo: Algo\ntarefas:\n");
+  writeFileSync(join(env.inboxDir, "semrepo.md"), "objetivo: Algo\n");
+  const r = await processInbox({ ...env, dispatch });
+  assert.deepEqual(r.map((x) => x.status), ["rejeitado", "rejeitado"]);
+  assert.match(r[0].motivo, /repo/);
+  assert.match(r[1].motivo, /sem nenhum item/);
+  assert.equal(calls, 0);
+  assert.equal(existsSync(join(env.inboxDir, "vazio.md")), false);
+  const done = readFileSync(join(env.doneDir, "vazio.md"), "utf8");
+  assert.match(done, /status: rejeitado/);
+  assert.match(done, /motivo: pedido sem tarefa válida/);
+  assert.equal(readFileSync(env.ledgerPath, "utf8").trim().split("\n").length, 2);
+});
