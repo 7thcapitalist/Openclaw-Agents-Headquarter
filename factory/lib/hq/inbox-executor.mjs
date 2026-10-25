@@ -71,7 +71,9 @@ function doneKeys(doneDir) {
 
 // dispatch(request, { key, branch }) creates the branch/PR work; it is only
 // called for requests never seen before. Returns [{ file, key, status }].
-export async function processInbox({ inboxDir, doneDir, ledgerPath, dispatch, now = () => new Date().toISOString() }) {
+// With continueOnFailure, a failing task is recorded (failure_reason) and the
+// remaining tasks still run; the request then closes as "partial" in done/.
+export async function processInbox({ inboxDir, doneDir, ledgerPath, dispatch, continueOnFailure = false, now = () => new Date().toISOString() }) {
   mkdirSync(doneDir, { recursive: true });
   const seen = new Set([...ledgerKeys(ledgerPath), ...doneKeys(doneDir)]);
   const results = [];
@@ -89,6 +91,7 @@ export async function processInbox({ inboxDir, doneDir, ledgerPath, dispatch, no
     }
     const branch = branchFor(key);
     let outcome = {};
+    const failedTasks = [];
     if (req.tarefas?.length) {
       const finished = doneTasks(ledgerPath, key);
       const pending = req.tarefas.filter((t) => !finished.has(t));
@@ -96,9 +99,15 @@ export async function processInbox({ inboxDir, doneDir, ledgerPath, dispatch, no
       try {
         for (const task of pending) {
           current = task;
-          const o = (await dispatch(req, { key, branch, task })) || {};
-          appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, task, branch, pr: o.pr ?? null }) + "\n");
-          if (o.pr) outcome = o;
+          try {
+            const o = (await dispatch(req, { key, branch, task })) || {};
+            appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, task, branch, pr: o.pr ?? null }) + "\n");
+            if (o.pr) outcome = o;
+          } catch (error) {
+            if (!continueOnFailure) throw error;
+            appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, task, branch, status: "failed", ...describeFailure(error) }) + "\n");
+            failedTasks.push(task);
+          }
         }
       } catch (error) {
         // Interrupted: finished tasks are in the ledger, the file stays in inbox/ to be resumed.
@@ -115,10 +124,10 @@ export async function processInbox({ inboxDir, doneDir, ledgerPath, dispatch, no
         continue;
       }
     }
-    appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, repo: req.repo, base: req.base || "main", branch, pr: outcome.pr ?? null }) + "\n");
+    appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, repo: req.repo, base: req.base || "main", branch, pr: outcome.pr ?? null, ...(failedTasks.length ? { status: "partial", failed_tasks: failedTasks } : {}) }) + "\n");
     seen.add(key);
     renameSync(src, join(doneDir, file));
-    results.push({ file, key, branch, status: "processed" });
+    results.push({ file, key, branch, status: failedTasks.length ? "partial" : "processed", ...(failedTasks.length ? { failed_tasks: failedTasks } : {}) });
   }
   return results;
 }

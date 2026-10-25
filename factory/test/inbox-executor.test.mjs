@@ -101,3 +101,33 @@ test("failed request without tarefas is recorded as failed and stays in inbox fo
   const retry = await processInbox({ ...env, dispatch: async () => {} });
   assert.equal(retry[0].status, "processed");
 });
+
+test("integration: 2 tasks, 1 injected failure -> failure_reason in ledger, other task done, request in done/ as partial", async () => {
+  const env = setup();
+  writeFileSync(join(env.inboxDir, "p.md"), REQ + "tarefas:\n- boa\n- ruim\n");
+  const ran = [];
+  const dispatch = async (_r, { task }) => {
+    if (task === "ruim") throw Object.assign(new Error("lint falhou\nmais detalhe"), { log: "a\nb\nlint falhou" });
+    ran.push(task);
+    return { pr: "https://example/pr/1" };
+  };
+  const r = await processInbox({ ...env, dispatch, continueOnFailure: true });
+  assert.equal(r[0].status, "partial");
+  assert.deepEqual(r[0].failed_tasks, ["ruim"]);
+  assert.deepEqual(ran, ["boa"]);
+  assert.ok(existsSync(join(env.doneDir, "p.md")));
+  assert.equal(existsSync(join(env.inboxDir, "p.md")), false);
+  const lines = readFileSync(env.ledgerPath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  const fail = lines.find((l) => l.task === "ruim");
+  assert.equal(fail.status, "failed");
+  assert.equal(fail.failure_reason, "lint falhou");
+  assert.equal(fail.last_log_tail, "a\nb\nlint falhou");
+  const ok = lines.find((l) => l.task === "boa");
+  assert.ok(ok && !ok.failure_reason);
+  const closing = lines.find((l) => !l.task);
+  assert.equal(closing.status, "partial");
+  assert.deepEqual(closing.failed_tasks, ["ruim"]);
+  // finished request is not reprocessed
+  const again = await processInbox({ ...env, dispatch, continueOnFailure: true });
+  assert.deepEqual(again, []);
+});
