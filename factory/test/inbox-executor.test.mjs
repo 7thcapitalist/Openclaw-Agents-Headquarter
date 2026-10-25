@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { processInbox } from "../lib/hq/inbox-executor.mjs";
+import { processInbox, taskTimeoutMs } from "../lib/hq/inbox-executor.mjs";
 
 const REQ = "repo: 7thcapitalist/x\nbase: main\nobjetivo: Fazer   a coisa\npronto quando: testes\n";
 
@@ -100,4 +100,25 @@ test("failed request without tarefas is recorded as failed and stays in inbox fo
   assert.equal(e.failure_reason, "sem rede");
   const retry = await processInbox({ ...env, dispatch: async () => {} });
   assert.equal(retry[0].status, "processed");
+});
+
+test("task slower than the limit is aborted and ledger records failure_reason=timeout", async () => {
+  const env = setup();
+  writeFileSync(join(env.inboxDir, "t.md"), REQ + "tarefas:\n- um\n- lenta\n");
+  let aborted = false;
+  const slow = (_r, { task, signal }) => task === "lenta"
+    ? new Promise((res) => { signal.addEventListener("abort", () => { aborted = true; }); setTimeout(res, 2000).unref(); })
+    : undefined;
+  const r = await processInbox({ ...env, taskTimeoutMs: 50, dispatch: slow });
+  assert.equal(r[0].status, "interrupted");
+  assert.ok(aborted);
+  const fail = readFileSync(env.ledgerPath, "utf8").trim().split("\n").map((l) => JSON.parse(l)).find((l) => l.status === "failed");
+  assert.equal(fail.task, "lenta");
+  assert.equal(fail.failure_reason, "timeout");
+  assert.ok(existsSync(join(env.inboxDir, "t.md")));
+});
+
+test("taskTimeoutMs reads the limit from factory.config", () => {
+  assert.equal(taskTimeoutMs({ inboxExecutor: { taskTimeoutSec: 30 } }), 30000);
+  assert.equal(taskTimeoutMs({}), 0);
 });

@@ -50,6 +50,25 @@ function doneTasks(ledgerPath, key) {
   return done;
 }
 
+// Per-task time limit, configurable in factory.config.json (inboxExecutor.taskTimeoutSec). 0/absent = no limit.
+export function taskTimeoutMs(config) {
+  const sec = Number(config?.inboxExecutor?.taskTimeoutSec);
+  return Number.isFinite(sec) && sec > 0 ? sec * 1000 : 0;
+}
+
+class TaskTimeoutError extends Error {
+  constructor(ms) { super("timeout"); this.code = "timeout"; this.log = `tarefa abortada: excedeu o limite de ${ms} ms`; }
+}
+
+// Runs one dispatch; past the limit it aborts (signal) and rejects with code "timeout".
+async function withTimeout(run, ms) {
+  if (!ms) return run(undefined);
+  const ctl = new AbortController();
+  let timer;
+  const limit = new Promise((_, reject) => { timer = setTimeout(() => { ctl.abort(); reject(new TaskTimeoutError(ms)); }, ms); });
+  try { return await Promise.race([run(ctl.signal), limit]); } finally { clearTimeout(timer); }
+}
+
 // One-line human reason + last 20 log lines, so a failure is readable from the ledger alone.
 export function describeFailure(error) {
   const msg = String(error?.message || error || "falha desconhecida");
@@ -71,7 +90,7 @@ function doneKeys(doneDir) {
 
 // dispatch(request, { key, branch }) creates the branch/PR work; it is only
 // called for requests never seen before. Returns [{ file, key, status }].
-export async function processInbox({ inboxDir, doneDir, ledgerPath, dispatch, now = () => new Date().toISOString() }) {
+export async function processInbox({ inboxDir, doneDir, ledgerPath, dispatch, taskTimeoutMs: limitMs = 0, now = () => new Date().toISOString() }) {
   mkdirSync(doneDir, { recursive: true });
   const seen = new Set([...ledgerKeys(ledgerPath), ...doneKeys(doneDir)]);
   const results = [];
@@ -96,7 +115,7 @@ export async function processInbox({ inboxDir, doneDir, ledgerPath, dispatch, no
       try {
         for (const task of pending) {
           current = task;
-          const o = (await dispatch(req, { key, branch, task })) || {};
+          const o = (await withTimeout((signal) => dispatch(req, { key, branch, task, signal }), limitMs)) || {};
           appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, task, branch, pr: o.pr ?? null }) + "\n");
           if (o.pr) outcome = o;
         }
@@ -108,7 +127,7 @@ export async function processInbox({ inboxDir, doneDir, ledgerPath, dispatch, no
       }
     } else {
       try {
-        outcome = (await dispatch(req, { key, branch })) || {};
+        outcome = (await withTimeout((signal) => dispatch(req, { key, branch, signal }), limitMs)) || {};
       } catch (error) {
         appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, branch, status: "failed", ...describeFailure(error) }) + "\n");
         results.push({ file, key, branch, status: "failed", error: String(error?.message || error) });
