@@ -114,13 +114,41 @@ test("ledger records first_pr_tests_passed for green and red first PR", async ()
 
 test("with tarefas, first_pr_tests_passed comes from the first PR, not later ones", async () => {
   const env = setup();
-  writeFileSync(join(env.inboxDir, "t.md"), REQ + "tarefas:
-- um
-- dois
-");
+  writeFileSync(join(env.inboxDir, "t.md"), REQ + "tarefas:\n- um\n- dois\n");
   const results = [{ pr: 1, tests_passed: false }, { pr: 2, tests_passed: true }];
   await processInbox({ ...env, dispatch: async () => results.shift() });
-  const last = readFileSync(env.ledgerPath, "utf8").trim().split("
-").map((l) => JSON.parse(l)).pop();
+  const last = readFileSync(env.ledgerPath, "utf8").trim().split("\n").map((l) => JSON.parse(l)).pop();
   assert.equal(last.first_pr_tests_passed, false);
+});
+
+const tick = (...steps) => { let t = 0, i = 0; return () => (t += steps[i++ % steps.length]); };
+const ledger = (p) => readFileSync(p, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+
+test("ledger records duration_ms on success (single request)", async () => {
+  const env = setup();
+  writeFileSync(join(env.inboxDir, "d.md"), REQ);
+  // clock reads: runStart=100, final=350
+  await processInbox({ ...env, clock: tick(100, 250), dispatch: async () => ({ pr: 1 }) });
+  assert.equal(ledger(env.ledgerPath)[0].duration_ms, 250);
+});
+
+test("ledger records duration_ms on failure", async () => {
+  const env = setup();
+  writeFileSync(join(env.inboxDir, "d.md"), REQ);
+  await processInbox({ ...env, clock: tick(100, 40), dispatch: async () => { throw new Error("caiu"); } });
+  const [e] = ledger(env.ledgerPath);
+  assert.equal(e.status, "failed");
+  assert.equal(e.duration_ms, 40);
+});
+
+test("with tarefas, each task line has its own duration_ms, and so does the failed one", async () => {
+  const env = setup();
+  writeFileSync(join(env.inboxDir, "d.md"), REQ + "tarefas:\n- um\n- dois\n- tres\n");
+  const outs = [{ pr: 1 }, { pr: 2 }];
+  // reads: runStart=10, um start=20 end=50, dois start=60 end=100, tres start=110 fail=170
+  const reads = [10, 20, 50, 60, 100, 110, 170]; let i = 0;
+  await processInbox({ ...env, clock: () => reads[i++], dispatch: async () => { const o = outs.shift(); if (!o) throw new Error("caiu"); return o; } });
+  const lines = ledger(env.ledgerPath);
+  assert.deepEqual(lines.map((l) => l.duration_ms), [30, 40, 60]);
+  assert.equal(lines[2].status, "failed");
 });

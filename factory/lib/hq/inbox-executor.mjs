@@ -71,7 +71,7 @@ function doneKeys(doneDir) {
 
 // dispatch(request, { key, branch }) creates the branch/PR work; it is only
 // called for requests never seen before. Returns [{ file, key, status }].
-export async function processInbox({ inboxDir, doneDir, ledgerPath, dispatch, now = () => new Date().toISOString() }) {
+export async function processInbox({ inboxDir, doneDir, ledgerPath, dispatch, now = () => new Date().toISOString(), clock = () => Date.now() }) {
   mkdirSync(doneDir, { recursive: true });
   const seen = new Set([...ledgerKeys(ledgerPath), ...doneKeys(doneDir)]);
   const results = [];
@@ -88,23 +88,25 @@ export async function processInbox({ inboxDir, doneDir, ledgerPath, dispatch, no
       continue;
     }
     const branch = branchFor(key);
+    const runStart = clock(); // duration_ms of the final/failed line spans this run
     let outcome = {};
     let firstPrTests = null; // tests_passed reported by dispatch for the first PR opened
     if (req.tarefas?.length) {
       const finished = doneTasks(ledgerPath, key);
       const pending = req.tarefas.filter((t) => !finished.has(t));
-      let current = null;
+      let current = null, taskStart = null;
       try {
         for (const task of pending) {
           current = task;
+          taskStart = clock();
           const o = (await dispatch(req, { key, branch, task })) || {};
-          appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, task, branch, pr: o.pr ?? null }) + "\n");
+          appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, task, branch, pr: o.pr ?? null, duration_ms: clock() - taskStart }) + "\n");
           if (o.pr && !outcome.pr) firstPrTests = typeof o.tests_passed === "boolean" ? o.tests_passed : null;
           if (o.pr) outcome = o;
         }
       } catch (error) {
         // Interrupted: finished tasks are in the ledger, the file stays in inbox/ to be resumed.
-        appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, task: current, branch, status: "failed", ...describeFailure(error) }) + "\n");
+        appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, task: current, branch, status: "failed", duration_ms: clock() - (taskStart ?? runStart), ...describeFailure(error) }) + "\n");
         results.push({ file, key, branch, status: "interrupted", error: String(error?.message || error) });
         continue;
       }
@@ -113,12 +115,12 @@ export async function processInbox({ inboxDir, doneDir, ledgerPath, dispatch, no
         outcome = (await dispatch(req, { key, branch })) || {};
         if (outcome.pr && typeof outcome.tests_passed === "boolean") firstPrTests = outcome.tests_passed;
       } catch (error) {
-        appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, branch, status: "failed", ...describeFailure(error) }) + "\n");
+        appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, branch, status: "failed", duration_ms: clock() - runStart, ...describeFailure(error) }) + "\n");
         results.push({ file, key, branch, status: "failed", error: String(error?.message || error) });
         continue;
       }
     }
-    appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, repo: req.repo, base: req.base || "main", branch, pr: outcome.pr ?? null, first_pr_tests_passed: firstPrTests }) + "\n");
+    appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, repo: req.repo, base: req.base || "main", branch, pr: outcome.pr ?? null, first_pr_tests_passed: firstPrTests, duration_ms: clock() - runStart }) + "\n");
     seen.add(key);
     renameSync(src, join(doneDir, file));
     results.push({ file, key, branch, status: "processed" });
