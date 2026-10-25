@@ -114,13 +114,27 @@ test("ledger records first_pr_tests_passed for green and red first PR", async ()
 
 test("with tarefas, first_pr_tests_passed comes from the first PR, not later ones", async () => {
   const env = setup();
-  writeFileSync(join(env.inboxDir, "t.md"), REQ + "tarefas:
-- um
-- dois
-");
+  writeFileSync(join(env.inboxDir, "t.md"), REQ + "tarefas:\n- um\n- dois\n");
   const results = [{ pr: 1, tests_passed: false }, { pr: 2, tests_passed: true }];
   await processInbox({ ...env, dispatch: async () => results.shift() });
-  const last = readFileSync(env.ledgerPath, "utf8").trim().split("
-").map((l) => JSON.parse(l)).pop();
+  const last = readFileSync(env.ledgerPath, "utf8").trim().split("\n").map((l) => JSON.parse(l)).pop();
   assert.equal(last.first_pr_tests_passed, false);
+});
+
+test("summarizeLedger/formatStatus: 1 ok + 1 falha", async () => {
+  const { summarizeLedger, formatStatus } = await import("../lib/hq/inbox-executor.mjs");
+  const env = setup();
+  writeFileSync(join(env.inboxDir, "a.md"), REQ);
+  writeFileSync(join(env.inboxDir, "b.md"), "repo: 7thcapitalist/y\nobjetivo: Outra\npronto quando: x\n");
+  await processInbox({ ...env, dispatch: async (r) => { if (r.repo.endsWith("/y")) throw new Error("boom"); return { pr: "https://github.com/o/r/pull/7" }; } });
+  const rows = summarizeLedger(env.ledgerPath);
+  const ok = rows.find((r) => r.state === "ok"), bad = rows.find((r) => r.state === "failed");
+  assert.equal(rows.length, 2);
+  assert.equal(ok.pr, "https://github.com/o/r/pull/7");
+  assert.equal(ok.attempts, 1);
+  assert.match(bad.failure_reason, /boom/);
+  assert.equal(bad.attempts, 1);
+  const out = formatStatus(rows);
+  assert.match(out, /1 ok, 1 falha, 0 pendente/);
+  assert.match(out, /pull\/7/);
 });
