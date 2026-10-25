@@ -114,13 +114,9 @@ test("ledger records first_pr_tests_passed for green and red first PR", async ()
 
 test("with tarefas, first_pr_tests_passed comes from the first PR, not later ones", async () => {
   const env = setup();
-  writeFileSync(join(env.inboxDir, "t.md"), REQ + "tarefas:
-- um
-- dois
-");
+  writeFileSync(join(env.inboxDir, "t.md"), REQ + "tarefas:\n- um\n- dois\n");
   const results = [{ pr: 1, tests_passed: false }, { pr: 2, tests_passed: true }];
   await processInbox({ ...env, dispatch: async () => results.shift() });
-  const last = readFileSync(env.ledgerPath, "utf8").trim().split("
-").map((l) => JSON.parse(l)).pop();
+  const last = readFileSync(env.ledgerPath, "utf8").trim().split("\n").map((l) => JSON.parse(l)).pop();
   assert.equal(last.first_pr_tests_passed, false);
 });
