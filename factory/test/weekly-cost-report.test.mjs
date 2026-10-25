@@ -67,3 +67,19 @@ test("failures grouped by failure_reason with count, 3 causes", async () => {
   assert.match(renderMarkdown(r), /\| teste falhou: assert \| 2 \| 4 \| 0 \|/);
   assert.match(render(r), /2x teste falhou: assert/);
 });
+
+test("markdown lists attempts and review_comments per run from the ledger", async () => {
+  const { renderMarkdown } = await import("../../scripts/factory-weekly-cost-report.mjs");
+  const rows = [
+    { ts: "2026-10-21T10:00:00Z", studio: "software", task: "SOF-1", result: "pr", attempts: 3, review_comments: ["falta teste", "renomear campo"] },
+    { ts: "2026-10-21T11:00:00Z", studio: "software", task: "SOF-2", result: "pr", review_comments: "ok" },
+    { ts: "2026-10-21T12:00:00Z", studio: "website", task: "x", result: "deployed" },
+  ];
+  const r = buildReport(rows, [], { now });
+  assert.equal(r.reviews.length, 2);
+  const md = renderMarkdown(r);
+  assert.ok(md.includes("## Tentativas e revisão por run"));
+  assert.ok(md.includes("tentativas: 3, comentários de revisão: 2\n  - falta teste\n  - renomear campo"));
+  assert.ok(md.includes("software/SOF-2** (2026-10-21T11:00:00Z) — tentativas: n/d, comentários de revisão: 1"));
+  assert.ok(!md.includes("website/x**"));
+});
