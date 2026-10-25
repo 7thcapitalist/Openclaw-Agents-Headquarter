@@ -23,6 +23,13 @@ export function parseRequest(text) {
   return out;
 }
 
+export const REQUIRED_FIELDS = ["repo", "objetivo", "pronto quando"];
+
+// Required fields that are absent or blank, in REQUIRED_FIELDS order.
+export function missingFields(req) {
+  return REQUIRED_FIELDS.filter((f) => !String(req[f] || "").trim());
+}
+
 export function requestKey(req) {
   const norm = [req.repo, req.base || "main", req.objetivo].map((s) => String(s || "").trim().toLowerCase().replace(/\s+/g, " ")).join("|");
   return createHash("sha256").update(norm).digest("hex").slice(0, 12);
@@ -81,7 +88,11 @@ export async function processInbox({ inboxDir, doneDir, ledgerPath, dispatch, no
   for (const file of existsSync(inboxDir) ? readdirSync(inboxDir).filter((n) => n.endsWith(".md")).sort() : []) {
     const src = join(inboxDir, file);
     const req = parseRequest(readFileSync(src, "utf8"));
-    if (!req.repo || !req.objetivo) { results.push({ file, status: "invalid" }); continue; }
+    const missing = missingFields(req);
+    if (missing.length) {
+      results.push({ file, status: "invalid", missing, error: `pedido inválido: falta o campo obrigatório ${missing.join(", ")}` });
+      continue;
+    }
     const key = requestKey(req);
     if (seen.has(key)) {
       // Already handled: drop the duplicate copy instead of reprocessing it.

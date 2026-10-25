@@ -142,3 +142,16 @@ test("with tarefas, review_comments of the run sums every dispatch; failed lines
   assert.equal(lines[0].review_comments, 2);
 });
 
+
+test("rejects a malformed request with an error naming each missing field", async () => {
+  const env = setup();
+  writeFileSync(join(env.inboxDir, "bad.md"), "repo: 7thcapitalist/x\nobjetivo:\n");
+  let calls = 0;
+  const r = await processInbox({ ...env, dispatch: async () => { calls++; } });
+  assert.equal(r[0].status, "invalid");
+  assert.deepEqual(r[0].missing, ["objetivo", "pronto quando"]);
+  assert.match(r[0].error, /falta o campo obrigatório objetivo, pronto quando/);
+  assert.equal(calls, 0);
+  assert.ok(existsSync(join(env.inboxDir, "bad.md")));
+  assert.equal(existsSync(env.ledgerPath), false);
+});
