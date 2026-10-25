@@ -120,3 +120,41 @@ test("with tarefas, first_pr_tests_passed comes from the first PR, not later one
   const last = readFileSync(env.ledgerPath, "utf8").trim().split("\n").map((l) => JSON.parse(l)).pop();
   assert.equal(last.first_pr_tests_passed, false);
 });
+
+const readLedger = (p) => readFileSync(p, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+
+test("task failing 1x is retried; failing 2x becomes blocked with failure_reason + exact question and is not retried", async () => {
+  const env = setup();
+  writeFileSync(join(env.inboxDir, "h.md"), REQ + "tarefas:\n- um\n- dois\n");
+  const calls = [];
+  const dispatch = async (_r, { task }) => { calls.push(task); if (task === "dois") throw new Error("npm test saiu com codigo 1"); };
+  // 1st failure: interrupted, no blocked entry, retried next run
+  const r1 = await processInbox({ ...env, dispatch });
+  assert.equal(r1[0].status, "interrupted");
+  assert.ok(!readLedger(env.ledgerPath).some((e) => e.status === "blocked"));
+  // 2nd failure: blocked
+  const r2 = await processInbox({ ...env, dispatch });
+  assert.deepEqual(calls, ["um", "dois", "dois"]);
+  assert.equal(r2[0].status, "blocked");
+  const blocked = readLedger(env.ledgerPath).find((e) => e.status === "blocked");
+  assert.equal(blocked.task, "dois");
+  assert.equal(blocked.failure_reason, "npm test saiu com codigo 1");
+  assert.match(blocked.block_message, /^Bloqueada: dois\nO que tentei:\n1\. .*\n2\. .*\nOnde travou: .*\nPergunta: .*\?$/);
+  assert.equal(r2[0].block_message, blocked.block_message);
+  // 3rd run: not retried
+  const r3 = await processInbox({ ...env, dispatch });
+  assert.equal(r3[0].status, "blocked");
+  assert.deepEqual(calls, ["um", "dois", "dois"]);
+  assert.ok(existsSync(join(env.inboxDir, "h.md")));
+});
+
+test("request without tarefas failing 2x becomes blocked and is not retried", async () => {
+  const env = setup();
+  writeFileSync(join(env.inboxDir, "i.md"), REQ);
+  let n = 0;
+  const dispatch = async () => { n++; throw new Error("sem rede"); };
+  assert.equal((await processInbox({ ...env, dispatch }))[0].status, "failed");
+  assert.equal((await processInbox({ ...env, dispatch }))[0].status, "blocked");
+  assert.equal((await processInbox({ ...env, dispatch }))[0].status, "blocked");
+  assert.equal(n, 2);
+});

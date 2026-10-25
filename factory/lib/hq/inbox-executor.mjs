@@ -7,6 +7,9 @@
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
+import { blockMessage } from "./block-message.mjs";
+
+export const MAX_FAILURES = 2;
 
 export function parseRequest(text) {
   const out = {};
@@ -59,6 +62,39 @@ export function describeFailure(error) {
   return { failure_reason: reason, last_log_tail: log.slice(-20).join("\n") };
 }
 
+// Failure history of one task (task = null for a request without tarefas), read back from the ledger.
+function taskHistory(ledgerPath, key, task) {
+  const h = { failures: [], blocked: false };
+  if (!existsSync(ledgerPath)) return h;
+  for (const line of readFileSync(ledgerPath, "utf8").split("\n")) {
+    try {
+      const e = JSON.parse(line);
+      if (e.key !== key || (e.task ?? null) !== (task ?? null)) continue;
+      if (e.status === "failed") h.failures.push(e);
+      if (e.status === "blocked") h.blocked = true;
+    } catch { /* skip torn line */ }
+  }
+  return h;
+}
+
+// Records the failure; on the MAX_FAILURES-th one also writes a blocked entry carrying the exact question (runbook SOF-219).
+// Returns the block message when the task became blocked, else null.
+function recordFailure({ ledgerPath, now, key, file, branch, task, error }) {
+  const base = { at: now(), key, file, ...(task ? { task } : {}), branch };
+  const fail = { ...base, status: "failed", ...describeFailure(error) };
+  appendFileSync(ledgerPath, JSON.stringify(fail) + "\n");
+  const { failures } = taskHistory(ledgerPath, key, task);
+  if (failures.length < MAX_FAILURES) return null;
+  const message = blockMessage({
+    tarefa: task || file,
+    tentativas: failures.map((f) => f.failure_reason),
+    travouEm: fail.failure_reason,
+    pergunta: `A tarefa falhou ${failures.length}x com "${fail.failure_reason}": corrijo o ambiente, troco a abordagem ou descarto a tarefa?`,
+  });
+  appendFileSync(ledgerPath, JSON.stringify({ ...base, status: "blocked", failure_reason: fail.failure_reason, block_message: message }) + "\n");
+  return message;
+}
+
 function doneKeys(doneDir) {
   const keys = new Set();
   if (!existsSync(doneDir)) return keys;
@@ -94,6 +130,8 @@ export async function processInbox({ inboxDir, doneDir, ledgerPath, dispatch, no
       const finished = doneTasks(ledgerPath, key);
       const pending = req.tarefas.filter((t) => !finished.has(t));
       let current = null;
+      const stuck = pending.find((t) => taskHistory(ledgerPath, key, t).blocked);
+      if (stuck) { results.push({ file, key, branch, status: "blocked", task: stuck }); continue; }
       try {
         for (const task of pending) {
           current = task;
@@ -104,17 +142,18 @@ export async function processInbox({ inboxDir, doneDir, ledgerPath, dispatch, no
         }
       } catch (error) {
         // Interrupted: finished tasks are in the ledger, the file stays in inbox/ to be resumed.
-        appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, task: current, branch, status: "failed", ...describeFailure(error) }) + "\n");
-        results.push({ file, key, branch, status: "interrupted", error: String(error?.message || error) });
+        const block_message = recordFailure({ ledgerPath, now, key, file, branch, task: current, error });
+        results.push({ file, key, branch, status: block_message ? "blocked" : "interrupted", error: String(error?.message || error), ...(block_message ? { task: current, block_message } : {}) });
         continue;
       }
     } else {
+      if (taskHistory(ledgerPath, key, null).blocked) { results.push({ file, key, branch, status: "blocked" }); continue; }
       try {
         outcome = (await dispatch(req, { key, branch })) || {};
         if (outcome.pr && typeof outcome.tests_passed === "boolean") firstPrTests = outcome.tests_passed;
       } catch (error) {
-        appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, branch, status: "failed", ...describeFailure(error) }) + "\n");
-        results.push({ file, key, branch, status: "failed", error: String(error?.message || error) });
+        const block_message = recordFailure({ ledgerPath, now, key, file, branch, task: null, error });
+        results.push({ file, key, branch, status: block_message ? "blocked" : "failed", error: String(error?.message || error), ...(block_message ? { block_message } : {}) });
         continue;
       }
     }

@@ -19,7 +19,7 @@ test("falhou 2x -> mensagem de bloqueio com o que tentou e a pergunta exata", as
 
   for (let i = 0; i < 2; i++) {
     const [r] = await processInbox({ inboxDir, doneDir, ledgerPath, dispatch });
-    assert.equal(r.status, "failed");
+    assert.equal(r.status, i === 0 ? "failed" : "blocked");
   }
   const falhas = failuresFor(readFileSync(ledgerPath, "utf8").split("\n"), (await processInboxKey(inboxDir)));
   assert.equal(falhas.length, 2);

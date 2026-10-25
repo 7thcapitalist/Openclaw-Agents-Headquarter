@@ -6,7 +6,7 @@
 export function failuresFor(ledgerLines, key) {
   const out = [];
   for (const line of ledgerLines) {
-    try { const e = JSON.parse(line); if (e.key === key && e.failure_reason) out.push(e); } catch { /* linha rasgada */ }
+    try { const e = JSON.parse(line); if (e.key === key && e.failure_reason && e.status !== "blocked") out.push(e); } catch { /* linha rasgada */ }
   }
   return out;
 }
