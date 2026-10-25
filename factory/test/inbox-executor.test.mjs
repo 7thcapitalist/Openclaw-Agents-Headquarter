@@ -152,3 +152,34 @@ test("with tarefas, each task line has its own duration_ms, and so does the fail
   assert.deepEqual(lines.map((l) => l.duration_ms), [30, 40, 60]);
   assert.equal(lines[2].status, "failed");
 });
+
+test("final line carries total_duration_ms = sum of task duration_ms", async () => {
+  const env = setup();
+  writeFileSync(join(env.inboxDir, "d.md"), REQ + "tarefas:\n- um\n- dois\n");
+  // reads: runStart=0, um 10..40, dois 50..90, final=100
+  const reads = [0, 10, 40, 50, 90, 100]; let i = 0;
+  await processInbox({ ...env, clock: () => reads[i++], dispatch: async () => ({ pr: 1 }) });
+  const last = ledger(env.ledgerPath).at(-1);
+  assert.equal(last.total_duration_ms, 70);
+  assert.equal(last.duration_ms, 100);
+});
+
+test("total_duration_ms includes tasks finished before an interruption (resume)", async () => {
+  const env = setup();
+  writeFileSync(join(env.inboxDir, "d.md"), REQ + "tarefas:\n- um\n- dois\n");
+  let n = 0;
+  const fail = async () => { if (n++ === 1) throw new Error("caiu"); return { pr: 1 }; };
+  const a = [0, 10, 40, 50, 60]; let i = 0;
+  await processInbox({ ...env, clock: () => a[i++], dispatch: fail }); // um=30, dois failed=10
+  const b = [0, 5, 25, 30]; let j = 0;
+  await processInbox({ ...env, clock: () => b[j++], dispatch: fail }); // dois retried=20
+  assert.equal(ledger(env.ledgerPath).at(-1).total_duration_ms, 60);
+});
+
+test("without tarefas, total_duration_ms equals the run duration", async () => {
+  const env = setup();
+  writeFileSync(join(env.inboxDir, "d.md"), REQ);
+  await processInbox({ ...env, clock: tick(100, 250), dispatch: async () => ({ pr: 1 }) });
+  const [e] = ledger(env.ledgerPath);
+  assert.equal(e.total_duration_ms, 250);
+});

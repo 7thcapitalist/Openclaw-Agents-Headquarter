@@ -50,6 +50,17 @@ function doneTasks(ledgerPath, key) {
   return done;
 }
 
+// Sum of duration_ms over every task line of a request (finished and failed
+// attempts, across resumed runs): the order's total time.
+function taskDurationTotal(ledgerPath, key) {
+  let total = 0, any = false;
+  if (!existsSync(ledgerPath)) return null;
+  for (const line of readFileSync(ledgerPath, "utf8").split("\n")) {
+    try { const e = JSON.parse(line); if (e.key === key && e.task && Number.isFinite(e.duration_ms)) { total += e.duration_ms; any = true; } } catch { /* skip torn line */ }
+  }
+  return any ? total : null;
+}
+
 // One-line human reason + last 20 log lines, so a failure is readable from the ledger alone.
 export function describeFailure(error) {
   const msg = String(error?.message || error || "falha desconhecida");
@@ -120,7 +131,8 @@ export async function processInbox({ inboxDir, doneDir, ledgerPath, dispatch, no
         continue;
       }
     }
-    appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, repo: req.repo, base: req.base || "main", branch, pr: outcome.pr ?? null, first_pr_tests_passed: firstPrTests, duration_ms: clock() - runStart }) + "\n");
+    const runMs = clock() - runStart;
+    appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, repo: req.repo, base: req.base || "main", branch, pr: outcome.pr ?? null, first_pr_tests_passed: firstPrTests, duration_ms: runMs, total_duration_ms: taskDurationTotal(ledgerPath, key) ?? runMs }) + "\n");
     seen.add(key);
     renameSync(src, join(doneDir, file));
     results.push({ file, key, branch, status: "processed" });
