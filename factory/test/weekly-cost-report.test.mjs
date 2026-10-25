@@ -59,6 +59,6 @@ test("prints average and max attempts per request from a ledger fixture", async 
   const r = buildReport(readJsonl(join(dir, "runs.jsonl")), [], { now });
   assert.deepEqual(r.attemptStats, { runs: 3, avg: 3, max: 6 });
   assert.ok(renderMarkdown(r).includes("média 3 · máximo 6"));
-  assert.match(render(r), /Tentativas por pedido: média 3 · máximo 6 (3 runs)/);
+  assert.ok(render(r).includes("Tentativas por pedido: média 3 · máximo 6 (3 runs)"));
   assert.equal(buildReport([], [], { now }).attemptStats.max, null);
 });
