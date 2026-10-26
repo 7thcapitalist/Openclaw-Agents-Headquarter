@@ -30,6 +30,11 @@
     },
     "policyDoc": "docs/software-factory/GIT_WORKFLOW.md"
   },
+  "quotaAlert": {
+    "_doc": "SOF-82: when one run (task) has used more than runWarnPct of quotaTokens, the gate writes a cost.quota-warning audit event. Remove the block to disable.",
+    "quotaTokens": 5000000,
+    "runWarnPct": 25
+  },
   "openclawIntegration": {
     "protocolVersion": 1,
     "maxAttemptsPerStage": 3,
