@@ -6,7 +6,7 @@ import { tmpdir } from "os";
 import { dirname, join } from "path";
 import { RETENTION_CLASSES, buildRetentionSnapshot, classify, inspectBackupHealth, planRetention } from "../lib/hq/retention.mjs";
 
-const NOW = Date.parse("2026-09-10T00:00:00.000Z");
+const NOW = Date.now(); // the CLI reads the real clock, so fixtures must age relative to it
 const CLI = new URL("../../scripts/factory-retention.mjs", import.meta.url).pathname;
 
 function fixture() {
