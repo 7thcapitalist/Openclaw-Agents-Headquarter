@@ -1,10 +1,11 @@
-// Idempotent drain of studios/software/inbox/ with a per-task attempts counter in the ledger.
+// Drain of studios/software/inbox/: validated up front, idempotent, with a per-task
+// attempts counter in the ledger.
 //
-// A request is identified by its content (repo + base + objetivo), not by its
-// file name, so a copy re-dropped into inbox/ after it was already handled never
-// opens a second branch or a second ledger line. Finished micro-tasks and failed
-// dispatches are read back from the ledger, so an interrupted request resumes
-// with only the pending tasks and `attempts` accumulates across runs.
+// A request is identified by its content (repo + base + objetivo), not by its file
+// name. A finished request (closing ledger line, or a copy in done/) is never
+// dispatched again, so re-dropping it opens no second branch. Finished micro-tasks
+// and failed dispatches are read back from the ledger, so an interrupted request
+// resumes with only the pending tasks and `attempts` accumulates across runs.
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
@@ -39,16 +40,47 @@ function ledgerEntries(ledgerPath) {
   return entries;
 }
 
-// Requests already closed: a closing ledger line (key without task, not a failure) or a file in done/.
-function handledKeys(entries, doneDir) {
-  const keys = new Set(entries.filter((e) => !e.task && !e.failure_reason).map((e) => e.key));
-  if (existsSync(doneDir)) {
-    for (const f of readdirSync(doneDir).filter((n) => n.endsWith(".md"))) {
-      const req = parseRequest(readFileSync(join(doneDir, f), "utf8"));
-      if (req.repo && req.objetivo) keys.add(requestKey(req));
-    }
+// Keys of requests already closed: the closing line has no task and no failure.
+function closedKeys(ledgerPath) {
+  return new Set(ledgerEntries(ledgerPath).filter((e) => !e.task && !e.failure_reason).map((e) => e.key));
+}
+
+function doneKeys(doneDir) {
+  const keys = new Set();
+  if (!existsSync(doneDir)) return keys;
+  for (const f of readdirSync(doneDir).filter((n) => n.endsWith(".md"))) {
+    const req = parseRequest(readFileSync(join(doneDir, f), "utf8"));
+    if (req.repo && req.objetivo) keys.add(requestKey(req));
   }
   return keys;
+}
+
+// Why a request cannot run, naming the offending field (null when it is fine).
+// check(req) is optional and may be async: it returns a reason when the repo or
+// base does not exist, so a bad request is refused up front, not mid-run.
+export async function requestProblem(req, check) {
+  for (const f of ["repo", "objetivo"]) {
+    if (!(f in req)) return `campo "${f}" ausente`;
+    if (!req[f]) return `campo "${f}" vazio`;
+  }
+  if ("base" in req && !req.base) return 'campo "base" vazio';
+  if (req.tarefas && !req.tarefas.length) return 'bloco "tarefas:" sem nenhum item';
+  return (check && (await check(req))) || null;
+}
+
+// Real existence check for repo and base on GitHub, injectable for tests.
+// run(args) resolves to { ok, notFound } for a `gh api` call; any failure other
+// than a 404 (network, auth) throws so the request stays in inbox/ for a retry
+// instead of being wrongly rejected.
+export function githubCheck(run) {
+  return async (req) => {
+    const base = req.base || "main";
+    const repo = await run(["api", `repos/${req.repo}`]);
+    if (repo.notFound) return `repo "${req.repo}" inexistente`;
+    const br = await run(["api", `repos/${req.repo}/branches/${encodeURIComponent(base)}`]);
+    if (br.notFound) return `base "${base}" inexistente em ${req.repo}`;
+    return null;
+  };
 }
 
 // One-line human reason + last 20 log lines, so a failure is readable from the ledger alone.
@@ -62,15 +94,26 @@ export function describeFailure(error) {
 
 // dispatch(request, { key, branch, task }) does the work for one micro-task (task is
 // undefined for a request without tarefas). Returns [{ file, key, branch, status }].
-export async function processInbox({ inboxDir, doneDir, ledgerPath, dispatch, now = () => new Date().toISOString() }) {
+export async function processInbox({ inboxDir, doneDir, ledgerPath, dispatch, check, now = () => new Date().toISOString() }) {
   mkdirSync(doneDir, { recursive: true });
-  const seen = handledKeys(ledgerEntries(ledgerPath), doneDir);
+  const seen = new Set([...closedKeys(ledgerPath), ...doneKeys(doneDir)]);
   const results = [];
   for (const file of existsSync(inboxDir) ? readdirSync(inboxDir).filter((n) => n.endsWith(".md")).sort() : []) {
     const src = join(inboxDir, file);
     const req = parseRequest(readFileSync(src, "utf8"));
-    if (!req.repo || !req.objetivo) { results.push({ file, status: "invalid" }); continue; }
+    const motivo = await requestProblem(req, check);
+    if (motivo) {
+      // Refused up front: never leave it stuck in inbox/ and never open a branch.
+      const reason = `pedido rejeitado: ${motivo}`;
+      appendFileSync(src, `\n\nstatus: rejeitado\nmotivo: ${reason}\n`);
+      appendFileSync(ledgerPath, JSON.stringify({ at: now(), file, status: "rejeitado", motivo: reason }) + "\n");
+      const dest = join(doneDir, file);
+      if (existsSync(dest)) unlinkSync(src); else renameSync(src, dest);
+      results.push({ file, status: "rejeitado", motivo: reason });
+      continue;
+    }
     const key = requestKey(req);
+    if (!dispatch && !seen.has(key)) { results.push({ file, key, status: "valid-pending" }); continue; }
     if (seen.has(key)) {
       // Already handled: drop the duplicate copy instead of reprocessing it.
       const dest = join(doneDir, file);
