@@ -195,6 +195,9 @@ function cli(root, args) {
   }
 }
 
+// The CLI plans against the real clock, so its fixtures must age from the real clock too.
+const putLive = (root, relPath, opts = {}) => put(root, relPath, { ...opts, now: Date.now() });
+
 function cliFixture() {
   const root = fixture();
   const scripts = join(root, "scripts");
@@ -207,7 +210,7 @@ function cliFixture() {
 
 test("--apply refuses a class that is never prunable", () => {
   const root = cliFixture();
-  put(root, "proj/tasks/t1/state.json", { ageDays: 900 });
+  putLive(root, "proj/tasks/t1/state.json", { ageDays: 900 });
   const result = cli(root, ["--class", "canonical", "--older-than", "30", "--apply", "--confirm", "1"]);
   assert.equal(result.code, 2);
   assert.match(result.out, /never prunable/);
@@ -216,7 +219,7 @@ test("--apply refuses a class that is never prunable", () => {
 
 test("--apply refuses a count that no longer matches the plan", () => {
   const root = cliFixture();
-  put(root, "proj/tasks/t1/results/r1.json", { ageDays: 90 });
+  putLive(root, "proj/tasks/t1/results/r1.json", { ageDays: 90 });
   const result = cli(root, ["--class", "ephemeral", "--older-than", "30", "--apply", "--confirm", "99"]);
   assert.equal(result.code, 2);
   assert.match(result.out, /you confirmed 99 file\(s\) but the plan now targets 1/);
@@ -225,18 +228,18 @@ test("--apply refuses a count that no longer matches the plan", () => {
 
 test("--apply refuses without an explicit confirmation, and without a single named class", () => {
   const root = cliFixture();
-  put(root, "proj/tasks/t1/results/r1.json", { ageDays: 90 });
+  putLive(root, "proj/tasks/t1/results/r1.json", { ageDays: 90 });
   assert.match(cli(root, ["--class", "ephemeral", "--older-than", "30", "--apply"]).out, /requires --confirm/);
   assert.match(cli(root, ["--class", "ephemeral", "--class", "derived", "--older-than", "30", "--apply", "--confirm", "1"]).out, /exactly one --class/);
   assert.equal(existsSync(join(stateRoot(root), "proj/tasks/t1/results/r1.json")), true);
 });
 
 test("--apply removes exactly the confirmed targets and nothing else", () => {
-  const root = cliFixture(); // the CLI reads the wall clock, so age the files against it too
-  put(root, "proj/tasks/t1/results/r1.json", { ageDays: 90, now: Date.now() });
-  put(root, "proj/tasks/t1/results/r2.json", { ageDays: 90, now: Date.now() });
-  put(root, "proj/tasks/t1/results/recent.json", { ageDays: 1, now: Date.now() });
-  put(root, "proj/tasks/t1/state.json", { ageDays: 900, now: Date.now() });
+  const root = cliFixture();
+  putLive(root, "proj/tasks/t1/results/r1.json", { ageDays: 90 });
+  putLive(root, "proj/tasks/t1/results/r2.json", { ageDays: 90 });
+  putLive(root, "proj/tasks/t1/results/recent.json", { ageDays: 1 });
+  putLive(root, "proj/tasks/t1/state.json", { ageDays: 900 });
 
   const result = cli(root, ["--class", "ephemeral", "--older-than", "30", "--apply", "--confirm", "2"]);
   assert.equal(result.code, 0);
@@ -248,7 +251,7 @@ test("--apply removes exactly the confirmed targets and nothing else", () => {
 
 test("the default invocation reports and removes nothing", () => {
   const root = cliFixture();
-  put(root, "proj/tasks/t1/results/r1.json", { ageDays: 900 });
+  putLive(root, "proj/tasks/t1/results/r1.json", { ageDays: 900 });
   const result = cli(root, []);
   assert.equal(result.code, 0);
   assert.match(result.out, /"applied": false/);

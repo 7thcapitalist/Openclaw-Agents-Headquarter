@@ -1,9 +1,11 @@
-// Idempotent drain of studios/software/inbox/.
+// Drain of studios/software/inbox/: validated up front, idempotent, with a per-task
+// attempts counter in the ledger.
 //
-// A request is identified by its content (repo + base + objetivo), not by its
-// file name, so re-running over the same request — or a copy of it re-dropped
-// into inbox/ after it was already moved to done/ — never opens a second
-// branch or a second ledger line.
+// A request is identified by its content (repo + base + objetivo), not by its file
+// name. A finished request (closing ledger line, or a copy in done/) is never
+// dispatched again, so re-dropping it opens no second branch. Finished micro-tasks
+// and failed dispatches are read back from the ledger, so an interrupted request
+// resumes with only the pending tasks and `attempts` accumulates across runs.
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
@@ -15,7 +17,6 @@ export function parseRequest(text) {
   const out = {};
   let inTasks = false;
   for (const line of text.split(/\r?\n/)) {
-    // Optional "tarefas:" block: one "- item" (or "1. item") per micro-task.
     if (/^tarefas:\s*$/i.test(line.trim())) { inTasks = true; out.tarefas = []; continue; }
     const t = inTasks && /^(?:[-*]|\d+[.)])\s+(.+)$/.exec(line.trim());
     if (t) { out.tarefas.push(t[1].trim()); continue; }
@@ -33,41 +34,18 @@ export function requestKey(req) {
 
 export const branchFor = (key) => `hq/inbox-${key}`;
 
-function ledgerKeys(ledgerPath) {
-  if (!existsSync(ledgerPath)) return new Set();
-  const keys = new Set();
+function ledgerEntries(ledgerPath) {
+  if (!existsSync(ledgerPath)) return [];
+  const entries = [];
   for (const line of readFileSync(ledgerPath, "utf8").split("\n")) {
-    try { const e = JSON.parse(line); if (e.key && !e.task && !e.failure_reason) keys.add(e.key); } catch { /* skip torn line */ }
+    try { const e = JSON.parse(line); if (e?.key) entries.push(e); } catch { /* skip torn line */ }
   }
-  return keys;
+  return entries;
 }
 
-// Micro-tasks already finished for a request, read back from the ledger so an
-// interrupted request resumes with only the pending ones.
-// `firstPr` is the tests_passed of the first PR a task of this request ever
-// opened (undefined: none yet), so a resume keeps the first real PR's result.
-function doneTasks(ledgerPath, key) {
-  const done = new Set();
-  let firstPr;
-  if (!existsSync(ledgerPath)) return { done, firstPr };
-  for (const line of readFileSync(ledgerPath, "utf8").split("\n")) {
-    try {
-      const e = JSON.parse(line);
-      if (e.key !== key || !e.task || e.failure_reason) continue;
-      done.add(e.task);
-      if (e.pr && firstPr === undefined) firstPr = typeof e.tests_passed === "boolean" ? e.tests_passed : null;
-    } catch { /* skip torn line */ }
-  }
-  return { done, firstPr };
-}
-
-// One-line human reason + last 20 log lines, so a failure is readable from the ledger alone.
-export function describeFailure(error) {
-  const msg = String(error?.message || error || "falha desconhecida");
-  const reason = (msg.split(/\r?\n/).find((l) => l.trim()) || "falha desconhecida").trim().slice(0, 300);
-  const log = String(error?.log ?? error?.stderr ?? error?.stack ?? msg).split(/\r?\n/);
-  while (log.length && !log[log.length - 1].trim()) log.pop();
-  return { failure_reason: reason, last_log_tail: log.slice(-20).join("\n") };
+// Keys of requests already closed: the closing line has no task and no failure.
+function closedKeys(ledgerPath) {
+  return new Set(ledgerEntries(ledgerPath).filter((e) => !e.task && !e.failure_reason).map((e) => e.key));
 }
 
 function doneKeys(doneDir) {
@@ -80,19 +58,57 @@ function doneKeys(doneDir) {
   return keys;
 }
 
-// dispatch(request, { key, branch }) creates the branch/PR work; it is only
-// called for requests never seen before. Returns [{ file, key, status }].
-export async function processInbox({ inboxDir, doneDir, ledgerPath, dispatch, now = () => new Date().toISOString() }) {
+// Why a request cannot run, naming the offending field (null when it is fine).
+// check(req) is optional and may be async: it returns a reason when the repo or
+// base does not exist, so a bad request is refused up front, not mid-run.
+export async function requestProblem(req, check) {
+  for (const f of ["repo", "objetivo"]) {
+    if (!(f in req)) return `campo "${f}" ausente`;
+    if (!req[f]) return `campo "${f}" vazio`;
+  }
+  if ("base" in req && !req.base) return 'campo "base" vazio';
+  if (req.tarefas && !req.tarefas.length) return 'bloco "tarefas:" sem nenhum item';
+  if (req.tarefas?.length > MAX_TAREFAS) return `${req.tarefas.length} tarefas, máximo é ${MAX_TAREFAS}`;
+  return (check && (await check(req))) || null;
+}
+
+// Real existence check for repo and base on GitHub, injectable for tests.
+// run(args) resolves to { ok, notFound } for a `gh api` call; any failure other
+// than a 404 (network, auth) throws so the request stays in inbox/ for a retry
+// instead of being wrongly rejected.
+export function githubCheck(run) {
+  return async (req) => {
+    const base = req.base || "main";
+    const repo = await run(["api", `repos/${req.repo}`]);
+    if (repo.notFound) return `repo "${req.repo}" inexistente`;
+    const br = await run(["api", `repos/${req.repo}/branches/${encodeURIComponent(base)}`]);
+    if (br.notFound) return `base "${base}" inexistente em ${req.repo}`;
+    return null;
+  };
+}
+
+// One-line human reason + last 20 log lines, so a failure is readable from the ledger alone.
+export function describeFailure(error) {
+  const msg = String(error?.message || error || "falha desconhecida");
+  const reason = (msg.split(/\r?\n/).find((l) => l.trim()) || "falha desconhecida").trim().slice(0, 300);
+  const log = String(error?.log ?? error?.stderr ?? error?.stack ?? msg).split(/\r?\n/);
+  while (log.length && !log[log.length - 1].trim()) log.pop();
+  return { failure_reason: reason, last_log_tail: log.slice(-20).join("\n") };
+}
+
+// dispatch(request, { key, branch, task }) does the work for one micro-task (task is
+// undefined for a request without tarefas). Returns [{ file, key, branch, status }].
+export async function processInbox({ inboxDir, doneDir, ledgerPath, dispatch, check, now = () => new Date().toISOString() }) {
   mkdirSync(doneDir, { recursive: true });
-  const seen = new Set([...ledgerKeys(ledgerPath), ...doneKeys(doneDir)]);
+  const seen = new Set([...closedKeys(ledgerPath), ...doneKeys(doneDir)]);
   const results = [];
   for (const file of existsSync(inboxDir) ? readdirSync(inboxDir).filter((n) => n.endsWith(".md")).sort() : []) {
     const src = join(inboxDir, file);
     const req = parseRequest(readFileSync(src, "utf8"));
-    // No valid task (missing repo/objetivo, or an empty "tarefas:" block): never leave it stuck in inbox/.
-    const motivo = !req.repo ? 'campo "repo" ausente' : !req.objetivo ? 'campo "objetivo" ausente' : req.tarefas && !req.tarefas.length ? 'bloco "tarefas:" sem nenhum item' : req.tarefas?.length > MAX_TAREFAS ? `${req.tarefas.length} tarefas, máximo é ${MAX_TAREFAS}` : null;
+    const motivo = await requestProblem(req, check);
     if (motivo) {
-      const reason = req.tarefas?.length > MAX_TAREFAS ? `pedido rejeitado: ${motivo}` : `pedido sem tarefa válida: ${motivo}`;
+      // Refused up front: never leave it stuck in inbox/ and never open a branch.
+      const reason = `pedido rejeitado: ${motivo}`;
       appendFileSync(src, `\n\nstatus: rejeitado\nmotivo: ${reason}\n`);
       appendFileSync(ledgerPath, JSON.stringify({ at: now(), file, status: "rejeitado", motivo: reason }) + "\n");
       const dest = join(doneDir, file);
@@ -101,6 +117,7 @@ export async function processInbox({ inboxDir, doneDir, ledgerPath, dispatch, no
       continue;
     }
     const key = requestKey(req);
+    if (!dispatch && !seen.has(key)) { results.push({ file, key, status: "valid-pending" }); continue; }
     if (seen.has(key)) {
       // Already handled: drop the duplicate copy instead of reprocessing it.
       const dest = join(doneDir, file);
@@ -109,44 +126,54 @@ export async function processInbox({ inboxDir, doneDir, ledgerPath, dispatch, no
       continue;
     }
     const branch = branchFor(key);
-    let outcome = {};
-    let firstPrTests = null; // tests_passed reported by dispatch for the first PR opened
-    if (req.tarefas?.length) {
-      const { done: finished, firstPr } = doneTasks(ledgerPath, key);
-      let hasPr = firstPr !== undefined;
-      if (hasPr) firstPrTests = firstPr;
-      const pending = req.tarefas.filter((t) => !finished.has(t));
-      let current = null;
-      try {
-        for (const task of pending) {
-          current = task;
-          const o = (await dispatch(req, { key, branch, task })) || {};
-          appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, task, branch, pr: o.pr ?? null, ...(o.pr && typeof o.tests_passed === "boolean" ? { tests_passed: o.tests_passed } : {}) }) + "\n");
-          if (o.pr && !hasPr) { hasPr = true; firstPrTests = typeof o.tests_passed === "boolean" ? o.tests_passed : null; }
-          if (o.pr) outcome = o;
-        }
-      } catch (error) {
-        // Interrupted: finished tasks are in the ledger, the file stays in inbox/ to be resumed.
-        appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, task: current, branch, status: "failed", ...describeFailure(error) }) + "\n");
-        results.push({ file, key, branch, status: "interrupted", error: String(error?.message || error) });
-        continue;
+    const entries = ledgerEntries(ledgerPath).filter((e) => e.key === key);
+    const finished = new Set(entries.filter((e) => e.task && !e.failure_reason).map((e) => e.task));
+    const failures = new Map(); // task ("" = request without tarefas) -> failed dispatches so far
+    for (const e of entries) if (e.failure_reason) failures.set(e.task ?? "", (failures.get(e.task ?? "") || 0) + 1);
+    const attemptsFor = (task) => (failures.get(task ?? "") || 0) + 1;
+    const units = req.tarefas?.length ? req.tarefas.filter((t) => !finished.has(t)) : [undefined];
+    let pr = null;
+    // tests_passed of the first PR this request ever opened (undefined: none yet), kept across resumes.
+    let firstPrTests;
+    for (const e of entries) if (e.task && !e.failure_reason && e.pr && firstPrTests === undefined) firstPrTests = typeof e.tests_passed === "boolean" ? e.tests_passed : null;
+    let current;
+    try {
+      for (const task of units) {
+        current = task;
+        const o = (await dispatch(req, { key, branch, ...(task === undefined ? {} : { task }) })) || {};
+        if (o.pr && !pr) pr = o.pr;
+        if (o.pr && firstPrTests === undefined) firstPrTests = typeof o.tests_passed === "boolean" ? o.tests_passed : null;
+        if (task !== undefined) appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, task, branch, pr: o.pr ?? null, ...(o.pr && typeof o.tests_passed === "boolean" ? { tests_passed: o.tests_passed } : {}), attempts: attemptsFor(task) }) + "\n");
       }
-    } else {
-      try {
-        outcome = (await dispatch(req, { key, branch })) || {};
-        if (outcome.pr && typeof outcome.tests_passed === "boolean") firstPrTests = outcome.tests_passed;
-      } catch (error) {
-        appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, branch, status: "failed", ...describeFailure(error) }) + "\n");
-        results.push({ file, key, branch, status: "failed", error: String(error?.message || error) });
-        continue;
-      }
+    } catch (error) {
+      // Interrupted: finished tasks are in the ledger, the file stays in inbox/ to be resumed.
+      appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, ...(current === undefined ? {} : { task: current }), branch, status: "failed", attempts: attemptsFor(current), ...describeFailure(error) }) + "\n");
+      results.push({ file, key, branch, status: "interrupted", error: String(error?.message || error) });
+      continue;
     }
-    appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, repo: req.repo, base: req.base || "main", branch, pr: outcome.pr ?? null, first_pr_tests_passed: firstPrTests }) + "\n");
-    seen.add(key);
+    const closing = { at: now(), key, file, repo: req.repo, base: req.base || "main", branch, pr, first_pr_tests_passed: firstPrTests ?? null };
+    if (!req.tarefas?.length) closing.attempts = attemptsFor(undefined);
+    appendFileSync(ledgerPath, JSON.stringify(closing) + "\n");
     renameSync(src, join(doneDir, file));
     results.push({ file, key, branch, status: "processed" });
   }
   return results;
+}
+
+// Per-key summary of the ledger for --status: attempts (max over the request's lines) and last state.
+export function ledgerStatus(ledgerPath) {
+  const rows = new Map();
+  for (const e of ledgerEntries(ledgerPath)) {
+    const r = rows.get(e.key) || { key: e.key, branch: e.branch ?? "", attempts: 0, state: "" };
+    r.attempts = Math.max(r.attempts, Number.isInteger(e.attempts) ? e.attempts : 0);
+    r.state = e.failure_reason ? "failed" : e.task ? "running" : "done";
+    rows.set(e.key, r);
+  }
+  return [...rows.values()];
+}
+
+export function formatStatus(rows) {
+  return ["key\tstate\tattempts\tbranch", ...rows.map((r) => `${r.key}\t${r.state}\t${r.attempts}\t${r.branch}`)].join("\n");
 }
 
 // Per-request state read back from the ledger: ok (final line written), failed
@@ -154,11 +181,7 @@ export async function processInbox({ inboxDir, doneDir, ledgerPath, dispatch, no
 // failed runs plus the one that succeeded.
 export function summarizeLedger(ledgerPath) {
   const byKey = new Map();
-  if (!existsSync(ledgerPath)) return [];
-  for (const line of readFileSync(ledgerPath, "utf8").split("\n")) {
-    let e;
-    try { e = JSON.parse(line); } catch { continue; /* skip torn line */ }
-    if (!e?.key) continue;
+  for (const e of ledgerEntries(ledgerPath)) {
     const s = byKey.get(e.key) || { key: e.key, state: "pending", attempts: 0, failure_reason: null, pr: null };
     if (e.failure_reason || e.status === "failed") {
       s.state = "failed"; s.attempts += 1; s.failure_reason = e.failure_reason ?? "unknown";
@@ -171,7 +194,7 @@ export function summarizeLedger(ledgerPath) {
   return [...byKey.values()];
 }
 
-export function formatStatus(rows) {
+export function formatSummary(rows) {
   if (!rows.length) return "ledger vazio: nenhum pedido registrado";
   const count = (st) => rows.filter((r) => r.state === st).length;
   const head = `pedidos: ${count("ok")} ok, ${count("failed")} falha, ${count("pending")} pendente`;

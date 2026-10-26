@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { processInbox } from "../lib/hq/inbox-executor.mjs";
+import { processInbox, ledgerStatus, formatStatus } from "../lib/hq/inbox-executor.mjs";
 
 const REQ = "repo: 7thcapitalist/x\nbase: main\nobjetivo: Fazer   a coisa\npronto quando: testes\n";
 
@@ -50,74 +50,93 @@ test("a different objective is still processed", async () => {
   assert.deepEqual(r.map((x) => x.status), ["processed", "processed"]);
   assert.notEqual(r[0].branch, r[1].branch);
 });
-
-test("interrupted request resumes running only the pending tasks", async () => {
-  const env = setup();
-  const multi = REQ + "tarefas:\n- um\n- dois\n- tres\n";
-  writeFileSync(join(env.inboxDir, "m.md"), multi);
-  const ran = [];
-  const first = await processInbox({ ...env, dispatch: async (_r, { task }) => { if (task === "dois") throw new Error("boom"); ran.push(task); } });
-  assert.equal(first[0].status, "interrupted");
-  assert.deepEqual(ran, ["um"]);
-  assert.ok(existsSync(join(env.inboxDir, "m.md")));
-  const second = await processInbox({ ...env, dispatch: async (_r, { task }) => { ran.push(task); } });
-  assert.equal(second[0].status, "processed");
-  assert.deepEqual(ran, ["um", "dois", "tres"]);
-  assert.ok(existsSync(join(env.doneDir, "m.md")));
-  const lines = readFileSync(env.ledgerPath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
-  assert.deepEqual(lines.filter((l) => l.task && l.status !== "failed").map((l) => l.task), ["um", "dois", "tres"]);
-  assert.equal(lines.filter((l) => !l.task).length, 1);
-});
-
-test("failed task writes failure_reason (1 line) and last_log_tail (20 lines) to the ledger and is retried", async () => {
-  const env = setup();
-  writeFileSync(join(env.inboxDir, "f.md"), REQ + "tarefas:\n- um\n- dois\n");
-  const log = Array.from({ length: 30 }, (_, i) => `linha ${i + 1}`).join("\n");
-  const boom = Object.assign(new Error("npm test saiu com codigo 1\ndetalhe extra"), { log });
-  const r = await processInbox({ ...env, dispatch: async (_r, { task }) => { if (task === "dois") throw boom; } });
-  assert.equal(r[0].status, "interrupted");
-  const fail = readFileSync(env.ledgerPath, "utf8").trim().split("\n").map((l) => JSON.parse(l)).find((l) => l.status === "failed");
-  assert.equal(fail.task, "dois");
-  assert.equal(fail.failure_reason, "npm test saiu com codigo 1");
-  const tail = fail.last_log_tail.split("\n");
-  assert.equal(tail.length, 20);
-  assert.equal(tail[0], "linha 11");
-  assert.equal(tail[19], "linha 30");
-  // failure entry must not count as done: retry runs "dois" again
-  const ran = [];
-  const again = await processInbox({ ...env, dispatch: async (_r, { task }) => { ran.push(task); } });
-  assert.deepEqual(ran, ["dois"]);
-  assert.equal(again[0].status, "processed");
-});
-
-test("failed request without tarefas is recorded as failed and stays in inbox for retry", async () => {
-  const env = setup();
-  writeFileSync(join(env.inboxDir, "g.md"), REQ);
-  const r = await processInbox({ ...env, dispatch: async () => { throw new Error("sem rede"); } });
-  assert.equal(r[0].status, "failed");
-  assert.ok(existsSync(join(env.inboxDir, "g.md")));
-  const e = JSON.parse(readFileSync(env.ledgerPath, "utf8").trim());
-  assert.equal(e.failure_reason, "sem rede");
-  const retry = await processInbox({ ...env, dispatch: async () => {} });
-  assert.equal(retry[0].status, "processed");
-});
-
-test("request with no valid task is moved to done/ as rejeitado with a readable reason", async () => {
+test("request with empty repo, missing field or nonexistent base is rejected up front, naming the field", async () => {
   const env = setup();
   let calls = 0;
   const dispatch = async () => { calls++; };
-  writeFileSync(join(env.inboxDir, "vazio.md"), "repo: 7thcapitalist/x\nobjetivo: Algo\ntarefas:\n");
-  writeFileSync(join(env.inboxDir, "semrepo.md"), "objetivo: Algo\n");
-  const r = await processInbox({ ...env, dispatch });
-  assert.deepEqual(r.map((x) => x.status), ["rejeitado", "rejeitado"]);
-  assert.match(r[0].motivo, /repo/);
-  assert.match(r[1].motivo, /sem nenhum item/);
+  const check = async (r) => (r.base === "nao-existe" ? `base "${r.base}" inexistente em ${r.repo}` : null);
+  const files = {
+    "repo-vazio.md": "repo:\nobjetivo: A\n",
+    "sem-objetivo.md": "repo: 7thcapitalist/x\n",
+    "base-vazia.md": "repo: 7thcapitalist/x\nbase:\nobjetivo: C\n",
+    "base-ruim.md": "repo: 7thcapitalist/x\nbase: nao-existe\nobjetivo: D\n",
+  };
+  for (const [f, body] of Object.entries(files)) writeFileSync(join(env.inboxDir, f), body);
+  const r = await processInbox({ ...env, dispatch, check });
+  assert.deepEqual(r.map((x) => x.status), ["rejeitado", "rejeitado", "rejeitado", "rejeitado"]);
   assert.equal(calls, 0);
-  assert.equal(existsSync(join(env.inboxDir, "vazio.md")), false);
-  const done = readFileSync(join(env.doneDir, "vazio.md"), "utf8");
-  assert.match(done, /status: rejeitado/);
-  assert.match(done, /motivo: pedido sem tarefa válida/);
-  assert.equal(readFileSync(env.ledgerPath, "utf8").trim().split("\n").length, 2);
+  const motivo = (f) => r.find((x) => x.file === f).motivo;
+  assert.match(motivo("base-ruim.md"), /base "nao-existe" inexistente/);
+  assert.match(motivo("repo-vazio.md"), /campo "repo" vazio/);
+  assert.match(motivo("sem-objetivo.md"), /campo "objetivo" ausente/);
+  assert.match(motivo("base-vazia.md"), /campo "base" vazio/);
+  for (const f of Object.keys(files)) {
+    assert.equal(existsSync(join(env.inboxDir, f)), false);
+    assert.match(readFileSync(join(env.doneDir, f), "utf8"), /status: rejeitado\nmotivo: pedido rejeitado: /);
+  }
+  assert.equal(readFileSync(env.ledgerPath, "utf8").trim().split("\n").length, 4);
+});
+
+test("production CLI path: real check rejects nonexistent repo/base with no dispatch; valid passes", async () => {
+  const { main } = await import("../../scripts/factory-inbox.mjs");
+  const env = setup();
+  writeFileSync(join(env.inboxDir, "ok.md"), "repo: o/ok\nbase: main\nobjetivo: A\n");
+  writeFileSync(join(env.inboxDir, "sem-repo.md"), "repo: o/nada\nobjetivo: B\n");
+  writeFileSync(join(env.inboxDir, "sem-base.md"), "repo: o/ok\nbase: fantasma\nobjetivo: C\n");
+  const calls = [];
+  const run = async (args) => { calls.push(args[1]); return { notFound: args[1] === "repos/o/nada" || args[1].endsWith("/fantasma") }; };
+  const r = await main(["--inbox", env.inboxDir, "--done", env.doneDir, "--ledger", env.ledgerPath], { run });
+  const st = Object.fromEntries(r.map((x) => [x.file, x]));
+  assert.equal(st["ok.md"].status, "valid-pending");
+  assert.match(st["sem-repo.md"].motivo, /repo "o\/nada" inexistente/);
+  assert.match(st["sem-base.md"].motivo, /base "fantasma" inexistente em o\/ok/);
+  assert.ok(existsSync(join(env.inboxDir, "ok.md")));
+  assert.ok(existsSync(join(env.doneDir, "sem-repo.md")) && existsSync(join(env.doneDir, "sem-base.md")));
+});
+
+test("production CLI path: a transient gh failure leaves the request in inbox/", async () => {
+  const { main } = await import("../../scripts/factory-inbox.mjs");
+  const env = setup();
+  writeFileSync(join(env.inboxDir, "a.md"), REQ);
+  await assert.rejects(main(["--inbox", env.inboxDir, "--done", env.doneDir, "--ledger", env.ledgerPath], { run: async () => { throw new Error("rede"); } }), /rede/);
+  assert.ok(existsSync(join(env.inboxDir, "a.md")));
+});
+
+const ledger = (p) => readFileSync(p, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+
+test("task that fails once then passes records attempts=2 and --status shows it", async () => {
+  const env = setup();
+  writeFileSync(join(env.inboxDir, "a.md"), REQ + "tarefas:\n- um\n");
+  await processInbox({ ...env, dispatch: async () => { throw new Error("x"); } });
+  await processInbox({ ...env, dispatch: async () => ({}) });
+  const lines = ledger(env.ledgerPath);
+  assert.equal(lines.find((l) => l.task === "um" && l.failure_reason).attempts, 1);
+  assert.equal(lines.find((l) => l.task === "um" && !l.failure_reason).attempts, 2);
+  const out = formatStatus(ledgerStatus(env.ledgerPath));
+  assert.match(out, /attempts/);
+  assert.match(out, /\tdone\t2\t/);
+});
+
+test("a resumed request runs only pending tasks; each task counts its own attempts", async () => {
+  const env = setup();
+  writeFileSync(join(env.inboxDir, "a.md"), REQ + "tarefas:\n- um\n- dois\n");
+  const calls = [];
+  await processInbox({ ...env, dispatch: async (_r, { task }) => { calls.push(task); if (task === "dois") throw new Error("boom"); return {}; } });
+  await processInbox({ ...env, dispatch: async (_r, { task }) => { calls.push(task); return {}; } });
+  assert.deepEqual(calls, ["um", "dois", "dois"]);
+  const lines = ledger(env.ledgerPath);
+  assert.equal(lines.find((l) => l.task === "um").attempts, 1);
+  assert.equal(lines.filter((l) => l.task === "dois").at(-1).attempts, 2);
+});
+
+test("request without tarefas records attempts on its closing line", async () => {
+  const env = setup();
+  writeFileSync(join(env.inboxDir, "a.md"), REQ);
+  await processInbox({ ...env, dispatch: async () => { throw new Error("x"); } });
+  await processInbox({ ...env, dispatch: async () => ({ pr: "https://x/pull/1" }) });
+  const last = ledger(env.ledgerPath).at(-1);
+  assert.equal(last.attempts, 2);
+  assert.equal(last.pr, "https://x/pull/1");
 });
 
 test("request with 4 tasks is processed, with 5 is rejected into done/ with a clear reason", async () => {
@@ -156,8 +175,8 @@ test("with tarefas, first_pr_tests_passed comes from the first PR, not later one
   assert.equal(last.first_pr_tests_passed, false);
 });
 
-test("summarizeLedger/formatStatus: 1 ok + 1 falha", async () => {
-  const { summarizeLedger, formatStatus } = await import("../lib/hq/inbox-executor.mjs");
+test("summarizeLedger/formatSummary: 1 ok + 1 falha", async () => {
+  const { summarizeLedger, formatSummary } = await import("../lib/hq/inbox-executor.mjs");
   const env = setup();
   writeFileSync(join(env.inboxDir, "a.md"), REQ);
   writeFileSync(join(env.inboxDir, "b.md"), "repo: 7thcapitalist/y\nobjetivo: Outra\npronto quando: x\n");
@@ -169,7 +188,7 @@ test("summarizeLedger/formatStatus: 1 ok + 1 falha", async () => {
   assert.equal(ok.attempts, 1);
   assert.match(bad.failure_reason, /boom/);
   assert.equal(bad.attempts, 1);
-  const out = formatStatus(rows);
+  const out = formatSummary(rows);
   assert.match(out, /1 ok, 1 falha, 0 pendente/);
   assert.match(out, /pull\/7/);
 });
