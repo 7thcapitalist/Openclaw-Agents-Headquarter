@@ -42,6 +42,10 @@ function listRollouts(dir, out = []) {
 // result path: the handoff prompt names `results/<dispatchId>.json`, and dispatch
 // ids are unique for the life of the task. mtime alone cannot tell two
 // overlapping runs of the same agent apart, so it is only a cheap pre-filter.
+// Filesystem mtimes can trail the process clock; the dispatch match is what
+// decides ownership, so the pre-filter only needs to drop clearly older files.
+const MTIME_SLACK_MS = 2000;
+
 function rolloutBelongsTo(file, dispatchId) {
   return readFileSync(file, "utf8").includes(`results/${dispatchId}.json`);
 }
@@ -56,7 +60,7 @@ export function withRolloutUsage(meta, { agentId, dispatchId, startedAtMs, sessi
     const sum = { tokensIn: 0, cachedInputTokens: 0, tokensOut: 0 };
     let found = 0;
     for (const file of listRollouts(sessionsDir)) {
-      if (statSync(file).mtimeMs < startedAtMs) continue;
+      if (statSync(file).mtimeMs < startedAtMs - MTIME_SLACK_MS) continue;
       if (!rolloutBelongsTo(file, dispatchId)) continue;
       const usage = readRolloutUsage(file);
       if (!usage) continue;
