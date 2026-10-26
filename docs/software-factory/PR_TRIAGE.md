@@ -1,6 +1,6 @@
 # Triagem de PRs abertos (SOF-275)
 
-Data: 2026-10-25 · Base: `main` @ `b295d7c` · 40 PRs abertos (`gh pr list`).
+Data: 2026-10-25 (medição) · atualizado 2026-10-26 sobre `main` @ `7b3bad8` · 40 PRs abertos na medição (`gh pr list`). Mudanças posteriores: #370 (correção do retention) entrou na `main`; #371 (SOF-259) entrou; desde a medição foram abertos #362 #364 #365 #366 #367 #368 #369 #372 (não triados aqui).
 
 ## Como foi medido
 - **Mergeável?**: campo `mergeable` do GitHub contra `main`. Todos os 40 = `MERGEABLE`.
@@ -12,7 +12,7 @@ Data: 2026-10-25 · Base: `main` @ `b295d7c` · 40 PRs abertos (`gh pr list`).
 - Os demais ~2040 testes passam em todos.
 
 ## Bloqueio comum
-Antes de mergear qualquer coisa: corrigir `retention.test.mjs` na `main` (tarefa separada). Sem isso nenhum PR fica verde.
+**Resolvido em 2026-10-26:** o PR #370 (SOF-471) corrigiu `retention.test.mjs` (o teste passou a usar o relógio real) e já está na `main`. Os PRs listados abaixo precisam de rebase/atualização sobre a `main` para herdar a correção e ficar verdes; os números da medição acima são anteriores a ela.
 
 ## Tabela PR → decisão
 
@@ -64,7 +64,7 @@ Legenda: **PRONTO** = sem conflito com `main` nem com os outros PRONTO, só o te
 Contagem: 14 PRONTO · 14 REBASE · 12 FECHAR = 40.
 
 ## Ordem sugerida de merge
-1. Corrigir `retention.test.mjs` na main.
+1. ~~Corrigir `retention.test.mjs` na main~~ — feito (#370).
 2. PRONTO independentes: #359 #354 #347 #334 #331 #325 #317 #323 #324 #315 #326.
 3. Relatório semanal: #333 → rebase #345 → rebase #356.
 4. Cadeia inbox: #339 → #341 → #335 → #342 → #343 → #346 → #349 → #350 → #351 → #353 → #355 → #357 → #358 (rebase de cada um sobre a main depois do anterior; todos mexem em `inbox-executor.mjs`, `factory.config.json`, `quota-alert.mjs`, `dispatch.mjs`).
