@@ -1,0 +1,4 @@
+{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":410,"cached_input_tokens":0,"output_tokens":349}}}}
+{"type":"event_msg","payload":{"type":"agent_message","message":"attempt 18"}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":80000000,"cached_input_tokens":74000000,"output_tokens":1500000}}}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":155000000,"cached_input_tokens":150000000,"output_tokens":900000}}}}
