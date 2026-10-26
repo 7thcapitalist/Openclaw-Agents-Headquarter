@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { processInbox } from "../lib/hq/inbox-executor.mjs";
+import { processInbox, ledgerStatus, formatStatus } from "../lib/hq/inbox-executor.mjs";
 
 const REQ = "repo: 7thcapitalist/x\nbase: main\nobjetivo: Fazer   a coisa\npronto quando: testes\n";
 
@@ -140,4 +140,17 @@ test("with tarefas, review_comments of the run sums every dispatch; failed lines
   assert.equal(lines.at(-1).status, "failed");
   assert.equal(lines.at(-1).review_comments, 6);
   assert.equal(lines[0].review_comments, 2);
+});
+
+test("task that fails once then passes records attempts=2 and --status shows it", async () => {
+  const env = setup();
+  writeFileSync(join(env.inboxDir, "a.md"), REQ + "tarefas:\n- um\n");
+  const boom = async () => { throw new Error("x"); };
+  await processInbox({ ...env, dispatch: boom });
+  await processInbox({ ...env, dispatch: async () => ({}) });
+  const lines = readFileSync(env.ledgerPath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  assert.equal(lines.find((l) => l.task === "um" && !l.failure_reason).attempts, 2);
+  const out = formatStatus(ledgerStatus(env.ledgerPath));
+  assert.match(out, /attempts/);
+  assert.match(out, /\tdone\t2\t/);
 });
