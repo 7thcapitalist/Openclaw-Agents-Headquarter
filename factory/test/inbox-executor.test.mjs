@@ -3,16 +3,53 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { processInbox } from "../lib/hq/inbox-executor.mjs";
+import { processInbox, ledgerStatus, formatStatus } from "../lib/hq/inbox-executor.mjs";
 
 const REQ = "repo: 7thcapitalist/x\nbase: main\nobjetivo: Fazer   a coisa\npronto quando: testes\n";
 
 function setup() {
   const root = mkdtempSync(join(tmpdir(), "inbox-"));
-  const inboxDir = join(root, "inbox"), doneDir = join(root, "done");
+  const inboxDir = join(root, "inbox");
   mkdirSync(inboxDir);
-  return { inboxDir, doneDir, ledgerPath: join(root, "runs.jsonl") };
+  return { inboxDir, doneDir: join(root, "done"), ledgerPath: join(root, "runs.jsonl") };
 }
+
+const ledger = (p) => readFileSync(p, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+
+test("task that fails once then passes records attempts=2 and --status shows it", async () => {
+  const env = setup();
+  writeFileSync(join(env.inboxDir, "a.md"), REQ + "tarefas:\n- um\n");
+  await processInbox({ ...env, dispatch: async () => { throw new Error("x"); } });
+  await processInbox({ ...env, dispatch: async () => ({}) });
+  const lines = ledger(env.ledgerPath);
+  assert.equal(lines.find((l) => l.task === "um" && l.failure_reason).attempts, 1);
+  assert.equal(lines.find((l) => l.task === "um" && !l.failure_reason).attempts, 2);
+  const out = formatStatus(ledgerStatus(env.ledgerPath));
+  assert.match(out, /attempts/);
+  assert.match(out, /\tdone\t2\t/);
+});
+
+test("a resumed request runs only pending tasks; each task counts its own attempts", async () => {
+  const env = setup();
+  writeFileSync(join(env.inboxDir, "a.md"), REQ + "tarefas:\n- um\n- dois\n");
+  const calls = [];
+  await processInbox({ ...env, dispatch: async (_r, { task }) => { calls.push(task); if (task === "dois") throw new Error("boom"); return {}; } });
+  await processInbox({ ...env, dispatch: async (_r, { task }) => { calls.push(task); return {}; } });
+  assert.deepEqual(calls, ["um", "dois", "dois"]);
+  const lines = ledger(env.ledgerPath);
+  assert.equal(lines.find((l) => l.task === "um").attempts, 1);
+  assert.equal(lines.filter((l) => l.task === "dois").at(-1).attempts, 2);
+});
+
+test("request without tarefas records attempts on its closing line", async () => {
+  const env = setup();
+  writeFileSync(join(env.inboxDir, "a.md"), REQ);
+  await processInbox({ ...env, dispatch: async () => { throw new Error("x"); } });
+  await processInbox({ ...env, dispatch: async () => ({ pr: "https://x/pull/1" }) });
+  const last = ledger(env.ledgerPath).at(-1);
+  assert.equal(last.attempts, 2);
+  assert.equal(last.pr, "https://x/pull/1");
+});
 
 test("running twice over the same request yields one branch and one ledger line", async () => {
   const env = setup();
@@ -27,7 +64,7 @@ test("running twice over the same request yields one branch and one ledger line"
   const second = await processInbox({ ...env, dispatch });
   assert.equal(second[0].status, "skipped-duplicate");
   assert.equal(branches.length, 1);
-  assert.equal(readFileSync(env.ledgerPath, "utf8").trim().split("\n").length, 1);
+  assert.equal(ledger(env.ledgerPath).length, 1);
   assert.equal(existsSync(join(env.inboxDir, "b.md")), false);
 });
 
@@ -51,20 +88,10 @@ test("a different objective is still processed", async () => {
   assert.notEqual(r[0].branch, r[1].branch);
 });
 
-test("interrupted request resumes running only the pending tasks", async () => {
+test("a failed request without tarefas is retried, not skipped as duplicate", async () => {
   const env = setup();
-  const multi = REQ + "tarefas:\n- um\n- dois\n- tres\n";
-  writeFileSync(join(env.inboxDir, "m.md"), multi);
-  const ran = [];
-  const first = await processInbox({ ...env, dispatch: async (_r, { task }) => { if (task === "dois") throw new Error("boom"); ran.push(task); } });
-  assert.equal(first[0].status, "interrupted");
-  assert.deepEqual(ran, ["um"]);
-  assert.ok(existsSync(join(env.inboxDir, "m.md")));
-  const second = await processInbox({ ...env, dispatch: async (_r, { task }) => { ran.push(task); } });
-  assert.equal(second[0].status, "processed");
-  assert.deepEqual(ran, ["um", "dois", "tres"]);
-  assert.ok(existsSync(join(env.doneDir, "m.md")));
-  const lines = readFileSync(env.ledgerPath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
-  assert.deepEqual(lines.filter((l) => l.task).map((l) => l.task), ["um", "dois", "tres"]);
-  assert.equal(lines.filter((l) => !l.task).length, 1);
+  writeFileSync(join(env.inboxDir, "a.md"), REQ);
+  await processInbox({ ...env, dispatch: async () => { throw new Error("x"); } });
+  const r = await processInbox({ ...env, dispatch: async () => ({}) });
+  assert.equal(r[0].status, "processed");
 });
