@@ -38,16 +38,30 @@ function listRollouts(dir, out = []) {
   return out;
 }
 
+// A rollout belongs to a dispatch only if its transcript carries that dispatch's
+// result path: the handoff prompt names `results/<dispatchId>.json`, and dispatch
+// ids are unique for the life of the task. mtime alone cannot tell two
+// overlapping runs of the same agent apart, so it is only a cheap pre-filter.
+// Filesystem mtimes can trail the process clock; the dispatch match is what
+// decides ownership, so the pre-filter only needs to drop clearly older files.
+const MTIME_SLACK_MS = 2000;
+
+function rolloutBelongsTo(file, dispatchId) {
+  return readFileSync(file, "utf8").includes(`results/${dispatchId}.json`);
+}
+
 // Replace a Codex dispatch's fragment usage with the rollout's session totals.
-// Picks the rollouts touched since the dispatch started and sums them; any
-// failure leaves the original meta untouched (never worse than before).
-export function withRolloutUsage(meta, { agentId, startedAtMs, sessionsDir = codexSessionsDir(agentId) } = {}) {
-  if (!meta || meta.provider !== "openai" || !agentId) return meta;
+// Sums only the rollouts that name this dispatch; with no dispatchId, or no
+// match, the original meta is returned untouched (never worse than before,
+// never another run's spend).
+export function withRolloutUsage(meta, { agentId, dispatchId, startedAtMs, sessionsDir = codexSessionsDir(agentId) } = {}) {
+  if (!meta || meta.provider !== "openai" || !agentId || !dispatchId) return meta;
   try {
     const sum = { tokensIn: 0, cachedInputTokens: 0, tokensOut: 0 };
     let found = 0;
     for (const file of listRollouts(sessionsDir)) {
-      if (statSync(file).mtimeMs < startedAtMs) continue;
+      if (statSync(file).mtimeMs < startedAtMs - MTIME_SLACK_MS) continue;
+      if (!rolloutBelongsTo(file, dispatchId)) continue;
       const usage = readRolloutUsage(file);
       if (!usage) continue;
       sum.tokensIn += usage.tokensIn; sum.cachedInputTokens += usage.cachedInputTokens; sum.tokensOut += usage.tokensOut; found += 1;
