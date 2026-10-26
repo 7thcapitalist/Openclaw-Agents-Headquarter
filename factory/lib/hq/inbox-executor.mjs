@@ -1,16 +1,23 @@
-// Idempotent drain of studios/software/inbox/.
+// Drain of studios/software/inbox/: validated up front, idempotent, with a per-task
+// attempts counter in the ledger.
 //
-// A request is identified by its content (repo + base + objetivo), not by its
-// file name, so re-running over the same request — or a copy of it re-dropped
-// into inbox/ after it was already moved to done/ — never opens a second
-// branch or a second ledger line.
+// A request is identified by its content (repo + base + objetivo), not by its file
+// name. A finished request (closing ledger line, or a copy in done/) is never
+// dispatched again, so re-dropping it opens no second branch. Finished micro-tasks
+// and failed dispatches are read back from the ledger, so an interrupted request
+// resumes with only the pending tasks and `attempts` accumulates across runs.
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 
 export function parseRequest(text) {
   const out = {};
+  let inTasks = false;
   for (const line of text.split(/\r?\n/)) {
+    if (/^tarefas:\s*$/i.test(line.trim())) { inTasks = true; out.tarefas = []; continue; }
+    const t = inTasks && /^(?:[-*]|\d+[.)])\s+(.+)$/.exec(line.trim());
+    if (t) { out.tarefas.push(t[1].trim()); continue; }
+    if (line.trim()) inTasks = false;
     const m = /^(repo|base|objetivo|pronto quando):\s*(.*)$/i.exec(line.trim());
     if (m) out[m[1].toLowerCase()] = m[2].trim();
   }
@@ -24,13 +31,18 @@ export function requestKey(req) {
 
 export const branchFor = (key) => `hq/inbox-${key}`;
 
-function ledgerKeys(ledgerPath) {
-  if (!existsSync(ledgerPath)) return new Set();
-  const keys = new Set();
+function ledgerEntries(ledgerPath) {
+  if (!existsSync(ledgerPath)) return [];
+  const entries = [];
   for (const line of readFileSync(ledgerPath, "utf8").split("\n")) {
-    try { const e = JSON.parse(line); if (e.key) keys.add(e.key); } catch { /* skip torn line */ }
+    try { const e = JSON.parse(line); if (e?.key) entries.push(e); } catch { /* skip torn line */ }
   }
-  return keys;
+  return entries;
+}
+
+// Keys of requests already closed: the closing line has no task and no failure.
+function closedKeys(ledgerPath) {
+  return new Set(ledgerEntries(ledgerPath).filter((e) => !e.task && !e.failure_reason).map((e) => e.key));
 }
 
 function doneKeys(doneDir) {
@@ -71,11 +83,20 @@ export function githubCheck(run) {
   };
 }
 
-// dispatch(request, { key, branch }) creates the branch/PR work; it is only
-// called for requests never seen before. Returns [{ file, key, status }].
+// One-line human reason + last 20 log lines, so a failure is readable from the ledger alone.
+export function describeFailure(error) {
+  const msg = String(error?.message || error || "falha desconhecida");
+  const reason = (msg.split(/\r?\n/).find((l) => l.trim()) || "falha desconhecida").trim().slice(0, 300);
+  const log = String(error?.log ?? error?.stderr ?? error?.stack ?? msg).split(/\r?\n/);
+  while (log.length && !log[log.length - 1].trim()) log.pop();
+  return { failure_reason: reason, last_log_tail: log.slice(-20).join("\n") };
+}
+
+// dispatch(request, { key, branch, task }) does the work for one micro-task (task is
+// undefined for a request without tarefas). Returns [{ file, key, branch, status }].
 export async function processInbox({ inboxDir, doneDir, ledgerPath, dispatch, check, now = () => new Date().toISOString() }) {
   mkdirSync(doneDir, { recursive: true });
-  const seen = new Set([...ledgerKeys(ledgerPath), ...doneKeys(doneDir)]);
+  const seen = new Set([...closedKeys(ledgerPath), ...doneKeys(doneDir)]);
   const results = [];
   for (const file of existsSync(inboxDir) ? readdirSync(inboxDir).filter((n) => n.endsWith(".md")).sort() : []) {
     const src = join(inboxDir, file);
@@ -101,11 +122,48 @@ export async function processInbox({ inboxDir, doneDir, ledgerPath, dispatch, ch
       continue;
     }
     const branch = branchFor(key);
-    const outcome = (await dispatch(req, { key, branch })) || {};
-    appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, repo: req.repo, base: req.base || "main", branch, pr: outcome.pr ?? null }) + "\n");
-    seen.add(key);
+    const entries = ledgerEntries(ledgerPath).filter((e) => e.key === key);
+    const finished = new Set(entries.filter((e) => e.task && !e.failure_reason).map((e) => e.task));
+    const failures = new Map(); // task ("" = request without tarefas) -> failed dispatches so far
+    for (const e of entries) if (e.failure_reason) failures.set(e.task ?? "", (failures.get(e.task ?? "") || 0) + 1);
+    const attemptsFor = (task) => (failures.get(task ?? "") || 0) + 1;
+    const units = req.tarefas?.length ? req.tarefas.filter((t) => !finished.has(t)) : [undefined];
+    let pr = null;
+    let current;
+    try {
+      for (const task of units) {
+        current = task;
+        const o = (await dispatch(req, { key, branch, ...(task === undefined ? {} : { task }) })) || {};
+        if (o.pr && !pr) pr = o.pr;
+        if (task !== undefined) appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, task, branch, pr: o.pr ?? null, attempts: attemptsFor(task) }) + "\n");
+      }
+    } catch (error) {
+      // Interrupted: finished tasks are in the ledger, the file stays in inbox/ to be resumed.
+      appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, ...(current === undefined ? {} : { task: current }), branch, status: "failed", attempts: attemptsFor(current), ...describeFailure(error) }) + "\n");
+      results.push({ file, key, branch, status: "interrupted", error: String(error?.message || error) });
+      continue;
+    }
+    const closing = { at: now(), key, file, repo: req.repo, base: req.base || "main", branch, pr };
+    if (!req.tarefas?.length) closing.attempts = attemptsFor(undefined);
+    appendFileSync(ledgerPath, JSON.stringify(closing) + "\n");
     renameSync(src, join(doneDir, file));
     results.push({ file, key, branch, status: "processed" });
   }
   return results;
+}
+
+// Per-key summary of the ledger for --status: attempts (max over the request's lines) and last state.
+export function ledgerStatus(ledgerPath) {
+  const rows = new Map();
+  for (const e of ledgerEntries(ledgerPath)) {
+    const r = rows.get(e.key) || { key: e.key, branch: e.branch ?? "", attempts: 0, state: "" };
+    r.attempts = Math.max(r.attempts, Number.isInteger(e.attempts) ? e.attempts : 0);
+    r.state = e.failure_reason ? "failed" : e.task ? "running" : "done";
+    rows.set(e.key, r);
+  }
+  return [...rows.values()];
+}
+
+export function formatStatus(rows) {
+  return ["key\tstate\tattempts\tbranch", ...rows.map((r) => `${r.key}\t${r.state}\t${r.attempts}\t${r.branch}`)].join("\n");
 }
