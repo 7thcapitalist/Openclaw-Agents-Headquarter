@@ -16,11 +16,11 @@ function fixture() {
   return root;
 }
 
-function put(root, relPath, { ageDays = 0, body = "x" } = {}) {
+function put(root, relPath, { ageDays = 0, body = "x", now = NOW } = {}) {
   const path = join(root, "dashboard", "backend", "data", "factory", relPath);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, body);
-  const seconds = (NOW - ageDays * 86_400_000) / 1000;
+  const seconds = (now - ageDays * 86_400_000) / 1000;
   utimesSync(path, seconds, seconds);
   return path;
 }
@@ -232,11 +232,11 @@ test("--apply refuses without an explicit confirmation, and without a single nam
 });
 
 test("--apply removes exactly the confirmed targets and nothing else", () => {
-  const root = cliFixture();
-  put(root, "proj/tasks/t1/results/r1.json", { ageDays: 90 });
-  put(root, "proj/tasks/t1/results/r2.json", { ageDays: 90 });
-  put(root, "proj/tasks/t1/results/recent.json", { ageDays: 1 });
-  put(root, "proj/tasks/t1/state.json", { ageDays: 900 });
+  const root = cliFixture(); // the CLI reads the wall clock, so age the files against it too
+  put(root, "proj/tasks/t1/results/r1.json", { ageDays: 90, now: Date.now() });
+  put(root, "proj/tasks/t1/results/r2.json", { ageDays: 90, now: Date.now() });
+  put(root, "proj/tasks/t1/results/recent.json", { ageDays: 1, now: Date.now() });
+  put(root, "proj/tasks/t1/state.json", { ageDays: 900, now: Date.now() });
 
   const result = cli(root, ["--class", "ephemeral", "--older-than", "30", "--apply", "--confirm", "2"]);
   assert.equal(result.code, 0);

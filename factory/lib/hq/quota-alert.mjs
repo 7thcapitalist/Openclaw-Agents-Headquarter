@@ -13,9 +13,12 @@ export function loadQuotaAlert(hqRoot) {
   } catch { return null; }
 }
 
-// Tokens of a run = every non-superseded usage event of the task, cached input included.
+// Tokens of a run = every effective event of the task, cached input included.
+// Same rule as summarizeCostLedger: superseded events and reversals drop out,
+// a correction counts in place of the event it replaces.
 export function runQuotaShare(events, taskId, quotaTokens) {
-  const tokens = events.filter((e) => e.taskId === taskId && e.eventType === "usage")
+  const superseded = new Set(events.filter((e) => e.replacesEventId).map((e) => e.replacesEventId));
+  const tokens = events.filter((e) => e.taskId === taskId && e.eventType !== "reversal" && !superseded.has(e.eventId))
     .reduce((sum, e) => sum + e.inputTokens + e.cachedInputTokens + e.outputTokens, 0);
   return { tokens, pct: (tokens / quotaTokens) * 100 };
 }

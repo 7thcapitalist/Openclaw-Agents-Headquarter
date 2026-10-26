@@ -173,3 +173,13 @@ test("summarizeLedger/formatStatus: 1 ok + 1 falha", async () => {
   assert.match(out, /1 ok, 1 falha, 0 pendente/);
   assert.match(out, /pull\/7/);
 });
+
+test("resume after a failure keeps the first real PR's tests_passed, not the resumed PR's", async () => {
+  const env = setup();
+  writeFileSync(join(env.inboxDir, "r.md"), REQ + "tarefas:\n- um\n- dois\n");
+  const first = await processInbox({ ...env, dispatch: async (_r, { task }) => { if (task === "dois") throw new Error("boom"); return { pr: 1, tests_passed: false }; } });
+  assert.equal(first[0].status, "interrupted");
+  await processInbox({ ...env, dispatch: async () => ({ pr: 2, tests_passed: true }) });
+  const last = readFileSync(env.ledgerPath, "utf8").trim().split("\n").map((l) => JSON.parse(l)).pop();
+  assert.equal(last.first_pr_tests_passed, false);
+});

@@ -44,13 +44,21 @@ function ledgerKeys(ledgerPath) {
 
 // Micro-tasks already finished for a request, read back from the ledger so an
 // interrupted request resumes with only the pending ones.
+// `firstPr` is the tests_passed of the first PR a task of this request ever
+// opened (undefined: none yet), so a resume keeps the first real PR's result.
 function doneTasks(ledgerPath, key) {
   const done = new Set();
-  if (!existsSync(ledgerPath)) return done;
+  let firstPr;
+  if (!existsSync(ledgerPath)) return { done, firstPr };
   for (const line of readFileSync(ledgerPath, "utf8").split("\n")) {
-    try { const e = JSON.parse(line); if (e.key === key && e.task && !e.failure_reason) done.add(e.task); } catch { /* skip torn line */ }
+    try {
+      const e = JSON.parse(line);
+      if (e.key !== key || !e.task || e.failure_reason) continue;
+      done.add(e.task);
+      if (e.pr && firstPr === undefined) firstPr = typeof e.tests_passed === "boolean" ? e.tests_passed : null;
+    } catch { /* skip torn line */ }
   }
-  return done;
+  return { done, firstPr };
 }
 
 // One-line human reason + last 20 log lines, so a failure is readable from the ledger alone.
@@ -104,15 +112,17 @@ export async function processInbox({ inboxDir, doneDir, ledgerPath, dispatch, no
     let outcome = {};
     let firstPrTests = null; // tests_passed reported by dispatch for the first PR opened
     if (req.tarefas?.length) {
-      const finished = doneTasks(ledgerPath, key);
+      const { done: finished, firstPr } = doneTasks(ledgerPath, key);
+      let hasPr = firstPr !== undefined;
+      if (hasPr) firstPrTests = firstPr;
       const pending = req.tarefas.filter((t) => !finished.has(t));
       let current = null;
       try {
         for (const task of pending) {
           current = task;
           const o = (await dispatch(req, { key, branch, task })) || {};
-          appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, task, branch, pr: o.pr ?? null }) + "\n");
-          if (o.pr && !outcome.pr) firstPrTests = typeof o.tests_passed === "boolean" ? o.tests_passed : null;
+          appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, task, branch, pr: o.pr ?? null, ...(o.pr && typeof o.tests_passed === "boolean" ? { tests_passed: o.tests_passed } : {}) }) + "\n");
+          if (o.pr && !hasPr) { hasPr = true; firstPrTests = typeof o.tests_passed === "boolean" ? o.tests_passed : null; }
           if (o.pr) outcome = o;
         }
       } catch (error) {

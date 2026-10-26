@@ -54,3 +54,13 @@ test("no alert below or exactly at the percentage, nor from other tasks' usage",
   const other = setup(); seed(other, [["task-1", 100], ["task-2", 9000]]);
   assert.equal(runGate(other).length, 0);
 });
+
+test("runQuotaShare honours correction and reversal: 100 corrected to 10 counts 10", async () => {
+  const { runQuotaShare } = await import("../lib/hq/quota-alert.mjs");
+  const base = { version: 1, source: "s", provider: "p", model: "m", cachedInputTokens: 0, outputTokens: 0, taskId: "task-1" };
+  const usage = { ...base, eventId: "u1", eventType: "usage", inputTokens: 100 };
+  const fix = { ...base, eventId: "c1", eventType: "correction", replacesEventId: "u1", inputTokens: 10 };
+  assert.equal(runQuotaShare([usage, fix], "task-1", 1000).tokens, 10);
+  const rev = { ...base, eventId: "r1", eventType: "reversal", replacesEventId: "u1", inputTokens: 100 };
+  assert.equal(runQuotaShare([usage, rev], "task-1", 1000).tokens, 0);
+});
