@@ -10,6 +10,9 @@ import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 
+// A request may carry at most this many micro-tasks (the team runs 4 in parallel).
+export const MAX_TAREFAS = 4;
+
 export function parseRequest(text) {
   const out = {};
   let inTasks = false;
@@ -65,6 +68,7 @@ export async function requestProblem(req, check) {
   }
   if ("base" in req && !req.base) return 'campo "base" vazio';
   if (req.tarefas && !req.tarefas.length) return 'bloco "tarefas:" sem nenhum item';
+  if (req.tarefas?.length > MAX_TAREFAS) return `${req.tarefas.length} tarefas, máximo é ${MAX_TAREFAS}`;
   return (check && (await check(req))) || null;
 }
 
@@ -129,13 +133,17 @@ export async function processInbox({ inboxDir, doneDir, ledgerPath, dispatch, ch
     const attemptsFor = (task) => (failures.get(task ?? "") || 0) + 1;
     const units = req.tarefas?.length ? req.tarefas.filter((t) => !finished.has(t)) : [undefined];
     let pr = null;
+    // tests_passed of the first PR this request ever opened (undefined: none yet), kept across resumes.
+    let firstPrTests;
+    for (const e of entries) if (e.task && !e.failure_reason && e.pr && firstPrTests === undefined) firstPrTests = typeof e.tests_passed === "boolean" ? e.tests_passed : null;
     let current;
     try {
       for (const task of units) {
         current = task;
         const o = (await dispatch(req, { key, branch, ...(task === undefined ? {} : { task }) })) || {};
         if (o.pr && !pr) pr = o.pr;
-        if (task !== undefined) appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, task, branch, pr: o.pr ?? null, attempts: attemptsFor(task) }) + "\n");
+        if (o.pr && firstPrTests === undefined) firstPrTests = typeof o.tests_passed === "boolean" ? o.tests_passed : null;
+        if (task !== undefined) appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, task, branch, pr: o.pr ?? null, ...(o.pr && typeof o.tests_passed === "boolean" ? { tests_passed: o.tests_passed } : {}), attempts: attemptsFor(task) }) + "\n");
       }
     } catch (error) {
       // Interrupted: finished tasks are in the ledger, the file stays in inbox/ to be resumed.
@@ -143,7 +151,7 @@ export async function processInbox({ inboxDir, doneDir, ledgerPath, dispatch, ch
       results.push({ file, key, branch, status: "interrupted", error: String(error?.message || error) });
       continue;
     }
-    const closing = { at: now(), key, file, repo: req.repo, base: req.base || "main", branch, pr };
+    const closing = { at: now(), key, file, repo: req.repo, base: req.base || "main", branch, pr, first_pr_tests_passed: firstPrTests ?? null };
     if (!req.tarefas?.length) closing.attempts = attemptsFor(undefined);
     appendFileSync(ledgerPath, JSON.stringify(closing) + "\n");
     renameSync(src, join(doneDir, file));
@@ -167,4 +175,34 @@ export function ledgerStatus(ledgerPath) {
 
 export function formatStatus(rows) {
   return ["key\tstate\tattempts\tbranch", ...rows.map((r) => `${r.key}\t${r.state}\t${r.attempts}\t${r.branch}`)].join("\n");
+}
+
+// Per-request state read back from the ledger: ok (final line written), failed
+// (last line is a failure) or pending (last line is partial progress, e.g. a
+// resumed run that has not finished; the old failure reason is cleared).
+// attempts follows the ledger's recorded value, including the current resume.
+export function summarizeLedger(ledgerPath) {
+  const byKey = new Map();
+  for (const e of ledgerEntries(ledgerPath)) {
+    const s = byKey.get(e.key) || { key: e.key, state: "pending", attempts: 0, failure_reason: null, pr: null };
+    const failed = Boolean(e.failure_reason || e.status === "failed");
+    const partial = !failed && Boolean(e.task);
+    // A recorded attempts value is authoritative; legacy lines count one each,
+    // except a partial line while still pending (same run, not a new attempt).
+    if (Number.isInteger(e.attempts)) s.attempts = e.attempts;
+    else if (!partial || s.state === "failed") s.attempts += 1;
+    if (failed) { s.state = "failed"; s.failure_reason = e.failure_reason ?? "unknown"; }
+    else if (partial) { s.state = "pending"; s.failure_reason = null; }
+    else { s.state = "ok"; s.failure_reason = null; }
+    if (e.pr) s.pr = e.pr;
+    byKey.set(e.key, s);
+  }
+  return [...byKey.values()];
+}
+
+export function formatSummary(rows) {
+  if (!rows.length) return "ledger vazio: nenhum pedido registrado";
+  const count = (st) => rows.filter((r) => r.state === st).length;
+  const head = `pedidos: ${count("ok")} ok, ${count("failed")} falha, ${count("pending")} pendente`;
+  return [head, ...rows.map((r) => `${r.key}  ${r.state}  tentativas=${r.attempts}  motivo=${r.failure_reason ?? "-"}  pr=${r.pr ?? "-"}`)].join("\n");
 }
