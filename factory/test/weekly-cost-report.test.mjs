@@ -39,7 +39,7 @@ test("markdown snapshot: cost by run table and weekly total from cost-events", a
     ev({ eventId: "e4", sourceEventId: "s4", runId: "run-old", taskId: "SOF-3", occurredAt: "2026-09-01T11:00:00Z" }),
   ];
   const md = renderMarkdown(buildReport(runs, [], { now, costEvents }));
-  const section = md.slice(md.indexOf("## Custo por run"), md.indexOf("## Quota"));
+  const section = md.slice(md.indexOf("## Custo por run"), md.indexOf("## Tentativas e revisão"));
   assert.equal(section, [
     "## Custo por run (cost-events.ndjson)", "",
     "| Run | Tarefa | Etapa | Modelo | Tokens | Custo | Sem preço |", "|---|---|---|---|---|---|---|",
