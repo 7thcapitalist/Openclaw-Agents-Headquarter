@@ -15,10 +15,11 @@ const PRICING = normalizePricing({
     "openai/gpt-x": { provider: "openai", model: "gpt-x", inputUsdPerMillion: 4, cachedInputUsdPerMillion: 0.4, outputUsdPerMillion: 20 },
   },
 });
+const TAG = JSON.stringify({ type: "response_item", payload: { text: "results/d1.json" } });
 const row = (total) => JSON.stringify({ type: "event_msg", payload: { type: "token_count", info: { total_token_usage: total } } });
 function rollout(lines) {
   const dir = mkdtempSync(join(tmpdir(), "sof59-"));
-  writeFileSync(join(dir, "rollout-a.jsonl"), lines.join("\n"));
+  writeFileSync(join(dir, "rollout-a.jsonl"), [TAG, ...lines].join("\n"));
   return dir;
 }
 const fragment = { provider: "openai", model: "gpt-x", tokensIn: 410, tokensOut: 349 };
@@ -48,18 +49,18 @@ test("rollout with cached > input clamps and never yields negative fresh input",
 
 test("rollout without any total_token_usage leaves the fragment meta untouched", () => {
   const dir = rollout(["not json", JSON.stringify({ type: "message" })]);
-  const out = withRolloutUsage(fragment, { agentId: "a", startedAtMs: 0, sessionsDir: dir });
+  const out = withRolloutUsage(fragment, { agentId: "a", dispatchId: "d1", startedAtMs: 0, sessionsDir: dir });
   assert.deepEqual(out, fragment);
 });
 
 test("missing sessions dir leaves the fragment meta untouched", () => {
-  const out = withRolloutUsage(fragment, { agentId: "a", startedAtMs: 0, sessionsDir: join(tmpdir(), "sof59-does-not-exist") });
+  const out = withRolloutUsage(fragment, { agentId: "a", dispatchId: "d1", startedAtMs: 0, sessionsDir: join(tmpdir(), "sof59-does-not-exist") });
   assert.deepEqual(out, fragment);
 });
 
 test("rollout total replaces the fragment (fresh = input - cached)", () => {
   const dir = rollout([row({ input_tokens: 2_000_000, cached_input_tokens: 1_000_000, output_tokens: 9 })]);
-  const out = withRolloutUsage(fragment, { agentId: "a", startedAtMs: 0, sessionsDir: dir });
+  const out = withRolloutUsage(fragment, { agentId: "a", dispatchId: "d1", startedAtMs: 0, sessionsDir: dir });
   assert.equal(out.tokensIn, 1_000_000);
   assert.equal(out.cachedInputTokens, 1_000_000);
   assert.equal(out.tokensOut, 9);
@@ -68,7 +69,7 @@ test("rollout total replaces the fragment (fresh = input - cached)", () => {
 test("non-openai providers are not rewritten from a rollout", () => {
   const dir = rollout([row({ input_tokens: 9, cached_input_tokens: 0, output_tokens: 9 })]);
   const meta = { ...fragment, provider: "anthropic" };
-  assert.deepEqual(withRolloutUsage(meta, { agentId: "a", startedAtMs: 0, sessionsDir: dir }), meta);
+  assert.deepEqual(withRolloutUsage(meta, { agentId: "a", dispatchId: "d1", startedAtMs: 0, sessionsDir: dir }), meta);
 });
 
 test("OpenClaw cacheRead/cacheWrite spellings count as cached input", () => {

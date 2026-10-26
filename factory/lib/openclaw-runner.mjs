@@ -184,9 +184,12 @@ export async function runOneStage({ hqRoot, statePath, agentIds = {}, maxAttempt
       const ready = await waitForResult({ resultPath: prepared.resultPath, heartbeat: () => touchState(statePath, prepared.dispatchId) });
       if (!ready) return { ...prepared, waiting: true };
     }
-    const agentMeta = withRolloutUsage(parseAgentMeta(executed, { durationMsFallback: Date.now() - startedAt })
+    // The group's map already carries rollout usage taken at the real start;
+    // only a meta parsed here still needs it.
+    const agentMeta = withRolloutUsage(parseAgentMeta(executed, { durationMsFallback: Date.now() - startedAt }),
+      { agentId, dispatchId: prepared.dispatchId, startedAtMs: startedAt })
       || agentMetaByDispatchId?.get(prepared.dispatchId)
-      || null, { agentId, startedAtMs: startedAt });
+      || null;
     if (!existsSync(prepared.resultPath)) {
       const diagnostic = writeMissingResultDiagnostic({
         worktree: prepared.cwd,
@@ -230,9 +233,12 @@ export async function runOneStage({ hqRoot, statePath, agentIds = {}, maxAttempt
       return { version: PROTOCOL_VERSION, status: current.status, taskId: current.task.id,
         currentStage: current.currentStage, blocker: current.blocker || null };
     }
-    const agentMeta = withRolloutUsage(parseAgentMeta(error, { durationMsFallback: Date.now() - startedAt })
+    // The group's map already carries rollout usage taken at the real start;
+    // only a meta parsed here still needs it.
+    const agentMeta = withRolloutUsage(parseAgentMeta(error, { durationMsFallback: Date.now() - startedAt }),
+      { agentId, dispatchId: prepared.dispatchId, startedAtMs: startedAt })
       || agentMetaByDispatchId?.get(prepared.dispatchId)
-      || null, { agentId, startedAtMs: startedAt });
+      || null;
     const failure = existsSync(prepared.resultPath)
       ? summarizeError(error)
       : writeMissingResultDiagnostic({
@@ -590,11 +596,13 @@ export async function runConcurrentGroupIfReady({ hqRoot, statePath, agentIds = 
         markYieldedGroup(statePath, members);
         await waitForResult({ resultPath: m.resultPath, heartbeat: () => touchState(statePath) });
       }
-      const meta = parseAgentMeta(executed, { durationMsFallback: Date.now() - startedAt });
+      const meta = withRolloutUsage(parseAgentMeta(executed, { durationMsFallback: Date.now() - startedAt }),
+        { agentId: m.agentId, dispatchId: m.dispatchId, startedAtMs: startedAt });
       if (meta) agentMetaByDispatchId.set(m.dispatchId, meta);
       return executed;
     } catch (error) {
-      const meta = parseAgentMeta(error, { durationMsFallback: Date.now() - startedAt });
+      const meta = withRolloutUsage(parseAgentMeta(error, { durationMsFallback: Date.now() - startedAt }),
+        { agentId: m.agentId, dispatchId: m.dispatchId, startedAtMs: startedAt });
       if (meta) agentMetaByDispatchId.set(m.dispatchId, meta);
       throw error;
     }
