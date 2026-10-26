@@ -155,6 +155,7 @@ export async function processInbox({ inboxDir, doneDir, ledgerPath, dispatch, ch
     if (!req.tarefas?.length) closing.attempts = attemptsFor(undefined);
     appendFileSync(ledgerPath, JSON.stringify(closing) + "\n");
     renameSync(src, join(doneDir, file));
+    seen.add(key);
     results.push({ file, key, branch, status: "processed" });
   }
   return results;

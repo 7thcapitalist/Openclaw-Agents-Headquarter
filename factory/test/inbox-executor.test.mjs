@@ -202,3 +202,48 @@ test("resume after a failure keeps the first real PR's tests_passed, not the res
   const last = readFileSync(env.ledgerPath, "utf8").trim().split("\n").map((l) => JSON.parse(l)).pop();
   assert.equal(last.first_pr_tests_passed, false);
 });
+
+test("running twice over the same request yields one branch and one ledger line", async () => {
+  const env = setup();
+  const branches = [];
+  const dispatch = async (_r, { branch }) => { branches.push(branch); };
+  writeFileSync(join(env.inboxDir, "a.md"), REQ);
+  const first = await processInbox({ ...env, dispatch });
+  assert.equal(first[0].status, "processed");
+  assert.ok(existsSync(join(env.doneDir, "a.md")));
+  // same request re-dropped, under another name and with different spacing/case
+  writeFileSync(join(env.inboxDir, "b.md"), REQ.replace("Fazer   a", "fazer a"));
+  const second = await processInbox({ ...env, dispatch });
+  assert.equal(second[0].status, "skipped-duplicate");
+  assert.equal(branches.length, 1);
+  assert.equal(ledger(env.ledgerPath).length, 1);
+  assert.equal(existsSync(join(env.inboxDir, "b.md")), false);
+});
+
+test("dedupes via done/ alone when the ledger is gone", async () => {
+  const env = setup();
+  mkdirSync(env.doneDir);
+  writeFileSync(join(env.doneDir, "a.md"), REQ);
+  writeFileSync(join(env.inboxDir, "a.md"), REQ);
+  let calls = 0;
+  const r = await processInbox({ ...env, dispatch: async () => { calls++; } });
+  assert.equal(r[0].status, "skipped-duplicate");
+  assert.equal(calls, 0);
+});
+
+test("a different objective is still processed", async () => {
+  const env = setup();
+  writeFileSync(join(env.inboxDir, "a.md"), REQ);
+  writeFileSync(join(env.inboxDir, "c.md"), REQ.replace("coisa", "outra"));
+  const r = await processInbox({ ...env, dispatch: async () => {} });
+  assert.deepEqual(r.map((x) => x.status), ["processed", "processed"]);
+  assert.notEqual(r[0].branch, r[1].branch);
+});
+
+test("a failed request without tarefas is retried, not skipped as duplicate", async () => {
+  const env = setup();
+  writeFileSync(join(env.inboxDir, "a.md"), REQ);
+  await processInbox({ ...env, dispatch: async () => { throw new Error("x"); } });
+  const r = await processInbox({ ...env, dispatch: async () => ({}) });
+  assert.equal(r[0].status, "processed");
+});
