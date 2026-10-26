@@ -189,7 +189,7 @@ export async function runOneStage({ hqRoot, statePath, agentIds = {}, maxAttempt
     const agentMeta = withRolloutUsage(parseAgentMeta(executed, { durationMsFallback: Date.now() - startedAt }),
       { agentId, dispatchId: prepared.dispatchId, startedAtMs: startedAt })
       || agentMetaByDispatchId?.get(prepared.dispatchId)
-      || null;
+      || null, { agentId, startedAtMs: startedAt });
     if (!existsSync(prepared.resultPath)) {
       const diagnostic = writeMissingResultDiagnostic({
         worktree: prepared.cwd,
@@ -238,7 +238,7 @@ export async function runOneStage({ hqRoot, statePath, agentIds = {}, maxAttempt
     const agentMeta = withRolloutUsage(parseAgentMeta(error, { durationMsFallback: Date.now() - startedAt }),
       { agentId, dispatchId: prepared.dispatchId, startedAtMs: startedAt })
       || agentMetaByDispatchId?.get(prepared.dispatchId)
-      || null;
+      || null, { agentId, startedAtMs: startedAt });
     const failure = existsSync(prepared.resultPath)
       ? summarizeError(error)
       : writeMissingResultDiagnostic({
