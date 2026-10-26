@@ -141,3 +141,30 @@ test("with tarefas, review_comments of the run sums every dispatch; failed lines
   assert.equal(lines.at(-1).review_comments, 6);
   assert.equal(lines[0].review_comments, 2);
 });
+
+test("request with empty repo, missing field or nonexistent base is rejected up front, naming the field", async () => {
+  const env = setup();
+  let calls = 0;
+  const dispatch = async () => { calls++; };
+  const check = async (r) => (r.base === "nao-existe" ? `base "${r.base}" inexistente em ${r.repo}` : null);
+  const files = {
+    "repo-vazio.md": "repo:\nobjetivo: A\n",
+    "sem-objetivo.md": "repo: 7thcapitalist/x\n",
+    "base-vazia.md": "repo: 7thcapitalist/x\nbase:\nobjetivo: C\n",
+    "base-ruim.md": "repo: 7thcapitalist/x\nbase: nao-existe\nobjetivo: D\n",
+  };
+  for (const [f, body] of Object.entries(files)) writeFileSync(join(env.inboxDir, f), body);
+  const r = await processInbox({ ...env, dispatch, check });
+  assert.deepEqual(r.map((x) => x.status), ["rejeitado", "rejeitado", "rejeitado", "rejeitado"]);
+  assert.equal(calls, 0);
+  const motivo = (f) => r.find((x) => x.file === f).motivo;
+  assert.match(motivo("base-ruim.md"), /base "nao-existe" inexistente/);
+  assert.match(motivo("repo-vazio.md"), /campo "repo" vazio/);
+  assert.match(motivo("sem-objetivo.md"), /campo "objetivo" ausente/);
+  assert.match(motivo("base-vazia.md"), /campo "base" vazio/);
+  for (const f of Object.keys(files)) {
+    assert.equal(existsSync(join(env.inboxDir, f)), false);
+    assert.match(readFileSync(join(env.doneDir, f), "utf8"), /status: rejeitado\nmotivo: pedido rejeitado: /);
+  }
+  assert.equal(readFileSync(env.ledgerPath, "utf8").trim().split("\n").length, 4);
+});
