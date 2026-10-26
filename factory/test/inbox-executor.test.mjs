@@ -193,6 +193,24 @@ test("summarizeLedger/formatSummary: 1 ok + 1 falha", async () => {
   assert.match(out, /pull\/7/);
 });
 
+test("summarizeLedger: pending after a failure followed by a partial resume line", async () => {
+  const { summarizeLedger, formatSummary } = await import("../lib/hq/inbox-executor.mjs");
+  const env = setup();
+  const lines = [
+    { key: "k", task: "a", failure_reason: "boom", attempts: 1, branch: "hq/k" },
+    { key: "k", task: "a", pr: "p", attempts: 2, branch: "hq/k" },
+    { key: "ok", attempts: 1, pr: "q" },
+    { key: "bad", failure_reason: "x", attempts: 1 },
+  ];
+  writeFileSync(env.ledgerPath, lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+  const rows = summarizeLedger(env.ledgerPath);
+  const k = rows.find((r) => r.key === "k");
+  assert.deepEqual([k.state, k.attempts, k.failure_reason, k.pr], ["pending", 2, null, "p"]);
+  assert.equal(rows.find((r) => r.key === "ok").state, "ok");
+  assert.equal(rows.find((r) => r.key === "bad").state, "failed");
+  assert.match(formatSummary(rows), /1 ok, 1 falha, 1 pendente/);
+});
+
 test("resume after a failure keeps the first real PR's tests_passed, not the resumed PR's", async () => {
   const env = setup();
   writeFileSync(join(env.inboxDir, "r.md"), REQ + "tarefas:\n- um\n- dois\n");

@@ -178,17 +178,22 @@ export function formatStatus(rows) {
 }
 
 // Per-request state read back from the ledger: ok (final line written), failed
-// (last line is a failure) or pending (only partial task lines). attempts counts
-// failed runs plus the one that succeeded.
+// (last line is a failure) or pending (last line is partial progress, e.g. a
+// resumed run that has not finished; the old failure reason is cleared).
+// attempts follows the ledger's recorded value, including the current resume.
 export function summarizeLedger(ledgerPath) {
   const byKey = new Map();
   for (const e of ledgerEntries(ledgerPath)) {
     const s = byKey.get(e.key) || { key: e.key, state: "pending", attempts: 0, failure_reason: null, pr: null };
-    if (e.failure_reason || e.status === "failed") {
-      s.state = "failed"; s.attempts += 1; s.failure_reason = e.failure_reason ?? "unknown";
-    } else if (!e.task) {
-      s.state = "ok"; s.attempts += 1; s.failure_reason = null;
-    }
+    const failed = Boolean(e.failure_reason || e.status === "failed");
+    const partial = !failed && Boolean(e.task);
+    // A recorded attempts value is authoritative; legacy lines count one each,
+    // except a partial line while still pending (same run, not a new attempt).
+    if (Number.isInteger(e.attempts)) s.attempts = e.attempts;
+    else if (!partial || s.state === "failed") s.attempts += 1;
+    if (failed) { s.state = "failed"; s.failure_reason = e.failure_reason ?? "unknown"; }
+    else if (partial) { s.state = "pending"; s.failure_reason = null; }
+    else { s.state = "ok"; s.failure_reason = null; }
     if (e.pr) s.pr = e.pr;
     byKey.set(e.key, s);
   }
