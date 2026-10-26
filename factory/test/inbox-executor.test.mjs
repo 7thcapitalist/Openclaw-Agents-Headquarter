@@ -50,3 +50,92 @@ test("a different objective is still processed", async () => {
   assert.deepEqual(r.map((x) => x.status), ["processed", "processed"]);
   assert.notEqual(r[0].branch, r[1].branch);
 });
+
+test("interrupted request resumes running only the pending tasks", async () => {
+  const env = setup();
+  const multi = REQ + "tarefas:\n- um\n- dois\n- tres\n";
+  writeFileSync(join(env.inboxDir, "m.md"), multi);
+  const ran = [];
+  const first = await processInbox({ ...env, dispatch: async (_r, { task }) => { if (task === "dois") throw new Error("boom"); ran.push(task); } });
+  assert.equal(first[0].status, "interrupted");
+  assert.deepEqual(ran, ["um"]);
+  assert.ok(existsSync(join(env.inboxDir, "m.md")));
+  const second = await processInbox({ ...env, dispatch: async (_r, { task }) => { ran.push(task); } });
+  assert.equal(second[0].status, "processed");
+  assert.deepEqual(ran, ["um", "dois", "tres"]);
+  assert.ok(existsSync(join(env.doneDir, "m.md")));
+  const lines = readFileSync(env.ledgerPath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  assert.deepEqual(lines.filter((l) => l.task && l.status !== "failed").map((l) => l.task), ["um", "dois", "tres"]);
+  assert.equal(lines.filter((l) => !l.task).length, 1);
+});
+
+test("failed task writes failure_reason (1 line) and last_log_tail (20 lines) to the ledger and is retried", async () => {
+  const env = setup();
+  writeFileSync(join(env.inboxDir, "f.md"), REQ + "tarefas:\n- um\n- dois\n");
+  const log = Array.from({ length: 30 }, (_, i) => `linha ${i + 1}`).join("\n");
+  const boom = Object.assign(new Error("npm test saiu com codigo 1\ndetalhe extra"), { log });
+  const r = await processInbox({ ...env, dispatch: async (_r, { task }) => { if (task === "dois") throw boom; } });
+  assert.equal(r[0].status, "interrupted");
+  const fail = readFileSync(env.ledgerPath, "utf8").trim().split("\n").map((l) => JSON.parse(l)).find((l) => l.status === "failed");
+  assert.equal(fail.task, "dois");
+  assert.equal(fail.failure_reason, "npm test saiu com codigo 1");
+  const tail = fail.last_log_tail.split("\n");
+  assert.equal(tail.length, 20);
+  assert.equal(tail[0], "linha 11");
+  assert.equal(tail[19], "linha 30");
+  // failure entry must not count as done: retry runs "dois" again
+  const ran = [];
+  const again = await processInbox({ ...env, dispatch: async (_r, { task }) => { ran.push(task); } });
+  assert.deepEqual(ran, ["dois"]);
+  assert.equal(again[0].status, "processed");
+});
+
+test("failed request without tarefas is recorded as failed and stays in inbox for retry", async () => {
+  const env = setup();
+  writeFileSync(join(env.inboxDir, "g.md"), REQ);
+  const r = await processInbox({ ...env, dispatch: async () => { throw new Error("sem rede"); } });
+  assert.equal(r[0].status, "failed");
+  assert.ok(existsSync(join(env.inboxDir, "g.md")));
+  const e = JSON.parse(readFileSync(env.ledgerPath, "utf8").trim());
+  assert.equal(e.failure_reason, "sem rede");
+  const retry = await processInbox({ ...env, dispatch: async () => {} });
+  assert.equal(retry[0].status, "processed");
+});
+
+const readLedger = (p) => readFileSync(p, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+
+test("task failing 1x is retried; failing 2x becomes blocked with failure_reason + exact question and is not retried", async () => {
+  const env = setup();
+  writeFileSync(join(env.inboxDir, "h.md"), REQ + "tarefas:\n- um\n- dois\n");
+  const calls = [];
+  const dispatch = async (_r, { task }) => { calls.push(task); if (task === "dois") throw new Error("npm test saiu com codigo 1"); };
+  // 1st failure: interrupted, no blocked entry, retried next run
+  const r1 = await processInbox({ ...env, dispatch });
+  assert.equal(r1[0].status, "interrupted");
+  assert.ok(!readLedger(env.ledgerPath).some((e) => e.status === "blocked"));
+  // 2nd failure: blocked
+  const r2 = await processInbox({ ...env, dispatch });
+  assert.deepEqual(calls, ["um", "dois", "dois"]);
+  assert.equal(r2[0].status, "blocked");
+  const blocked = readLedger(env.ledgerPath).find((e) => e.status === "blocked");
+  assert.equal(blocked.task, "dois");
+  assert.equal(blocked.failure_reason, "npm test saiu com codigo 1");
+  assert.match(blocked.block_message, /^Bloqueada: dois\nO que tentei:\n1\. .*\n2\. .*\nOnde travou: .*\nPergunta: .*\?$/);
+  assert.equal(r2[0].block_message, blocked.block_message);
+  // 3rd run: not retried
+  const r3 = await processInbox({ ...env, dispatch });
+  assert.equal(r3[0].status, "blocked");
+  assert.deepEqual(calls, ["um", "dois", "dois"]);
+  assert.ok(existsSync(join(env.inboxDir, "h.md")));
+});
+
+test("request without tarefas failing 2x becomes blocked and is not retried", async () => {
+  const env = setup();
+  writeFileSync(join(env.inboxDir, "i.md"), REQ);
+  let n = 0;
+  const dispatch = async () => { n++; throw new Error("sem rede"); };
+  assert.equal((await processInbox({ ...env, dispatch }))[0].status, "failed");
+  assert.equal((await processInbox({ ...env, dispatch }))[0].status, "blocked");
+  assert.equal((await processInbox({ ...env, dispatch }))[0].status, "blocked");
+  assert.equal(n, 2);
+});
