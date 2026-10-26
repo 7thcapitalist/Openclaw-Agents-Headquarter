@@ -235,7 +235,8 @@ test("--apply removes exactly the confirmed targets and nothing else", () => {
   const root = cliFixture();
   put(root, "proj/tasks/t1/results/r1.json", { ageDays: 90 });
   put(root, "proj/tasks/t1/results/r2.json", { ageDays: 90 });
-  put(root, "proj/tasks/t1/results/recent.json", { ageDays: 1 });
+  // The CLI reads the wall clock, not NOW, so "recent" must be recent in real time.
+  utimesSync(put(root, "proj/tasks/t1/results/recent.json"), new Date(), new Date());
   put(root, "proj/tasks/t1/state.json", { ageDays: 900 });
 
   const result = cli(root, ["--class", "ephemeral", "--older-than", "30", "--apply", "--confirm", "2"]);
