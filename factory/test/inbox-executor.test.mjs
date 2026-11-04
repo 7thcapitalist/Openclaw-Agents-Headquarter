@@ -139,6 +139,88 @@ test("request without tarefas records attempts on its closing line", async () =>
   assert.equal(last.pr, "https://x/pull/1");
 });
 
+test("request with 4 tasks is processed, with 5 is rejected into done/ with a clear reason", async () => {
+  const env = setup();
+  const calls = [];
+  const dispatch = async (_r, { task }) => { calls.push(task); };
+  const req = (n, obj) => `repo: 7thcapitalist/x\nobjetivo: ${obj}\ntarefas:\n` + Array.from({ length: n }, (_, i) => `- t${i + 1}`).join("\n") + "\n";
+  writeFileSync(join(env.inboxDir, "quatro.md"), req(4, "Quatro"));
+  writeFileSync(join(env.inboxDir, "cinco.md"), req(5, "Cinco"));
+  const r = await processInbox({ ...env, dispatch });
+  assert.deepEqual(r.map((x) => x.status), ["rejeitado", "processed"]);
+  assert.match(r[0].motivo, /5 tarefas, máximo é 4/);
+  assert.deepEqual(calls, ["t1", "t2", "t3", "t4"]);
+  assert.equal(existsSync(join(env.inboxDir, "cinco.md")), false);
+  const done = readFileSync(join(env.doneDir, "cinco.md"), "utf8");
+  assert.match(done, /status: rejeitado/);
+  assert.match(done, /motivo: pedido rejeitado: 5 tarefas, máximo é 4/);
+});
+
+test("ledger records first_pr_tests_passed for green and red first PR", async () => {
+  for (const [passed, expected] of [[true, true], [false, false], [undefined, null]]) {
+    const env = setup();
+    writeFileSync(join(env.inboxDir, "t.md"), REQ);
+    await processInbox({ ...env, dispatch: async () => ({ pr: 7, tests_passed: passed }) });
+    const e = JSON.parse(readFileSync(env.ledgerPath, "utf8").trim());
+    assert.equal(e.first_pr_tests_passed, expected);
+  }
+});
+
+test("with tarefas, first_pr_tests_passed comes from the first PR, not later ones", async () => {
+  const env = setup();
+  writeFileSync(join(env.inboxDir, "t.md"), REQ + "tarefas:\n- um\n- dois\n");
+  const results = [{ pr: 1, tests_passed: false }, { pr: 2, tests_passed: true }];
+  await processInbox({ ...env, dispatch: async () => results.shift() });
+  const last = readFileSync(env.ledgerPath, "utf8").trim().split("\n").map((l) => JSON.parse(l)).pop();
+  assert.equal(last.first_pr_tests_passed, false);
+});
+
+test("summarizeLedger/formatSummary: 1 ok + 1 falha", async () => {
+  const { summarizeLedger, formatSummary } = await import("../lib/hq/inbox-executor.mjs");
+  const env = setup();
+  writeFileSync(join(env.inboxDir, "a.md"), REQ);
+  writeFileSync(join(env.inboxDir, "b.md"), "repo: 7thcapitalist/y\nobjetivo: Outra\npronto quando: x\n");
+  await processInbox({ ...env, dispatch: async (r) => { if (r.repo.endsWith("/y")) throw new Error("boom"); return { pr: "https://github.com/o/r/pull/7" }; } });
+  const rows = summarizeLedger(env.ledgerPath);
+  const ok = rows.find((r) => r.state === "ok"), bad = rows.find((r) => r.state === "failed");
+  assert.equal(rows.length, 2);
+  assert.equal(ok.pr, "https://github.com/o/r/pull/7");
+  assert.equal(ok.attempts, 1);
+  assert.match(bad.failure_reason, /boom/);
+  assert.equal(bad.attempts, 1);
+  const out = formatSummary(rows);
+  assert.match(out, /1 ok, 1 falha, 0 pendente/);
+  assert.match(out, /pull\/7/);
+});
+
+test("summarizeLedger: pending after a failure followed by a partial resume line", async () => {
+  const { summarizeLedger, formatSummary } = await import("../lib/hq/inbox-executor.mjs");
+  const env = setup();
+  const lines = [
+    { key: "k", task: "a", failure_reason: "boom", attempts: 1, branch: "hq/k" },
+    { key: "k", task: "a", pr: "p", attempts: 2, branch: "hq/k" },
+    { key: "ok", attempts: 1, pr: "q" },
+    { key: "bad", failure_reason: "x", attempts: 1 },
+  ];
+  writeFileSync(env.ledgerPath, lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+  const rows = summarizeLedger(env.ledgerPath);
+  const k = rows.find((r) => r.key === "k");
+  assert.deepEqual([k.state, k.attempts, k.failure_reason, k.pr], ["pending", 2, null, "p"]);
+  assert.equal(rows.find((r) => r.key === "ok").state, "ok");
+  assert.equal(rows.find((r) => r.key === "bad").state, "failed");
+  assert.match(formatSummary(rows), /1 ok, 1 falha, 1 pendente/);
+});
+
+test("resume after a failure keeps the first real PR's tests_passed, not the resumed PR's", async () => {
+  const env = setup();
+  writeFileSync(join(env.inboxDir, "r.md"), REQ + "tarefas:\n- um\n- dois\n");
+  const first = await processInbox({ ...env, dispatch: async (_r, { task }) => { if (task === "dois") throw new Error("boom"); return { pr: 1, tests_passed: false }; } });
+  assert.equal(first[0].status, "interrupted");
+  await processInbox({ ...env, dispatch: async () => ({ pr: 2, tests_passed: true }) });
+  const last = readFileSync(env.ledgerPath, "utf8").trim().split("\n").map((l) => JSON.parse(l)).pop();
+  assert.equal(last.first_pr_tests_passed, false);
+});
+
 test("running twice over the same request yields one branch and one ledger line", async () => {
   const env = setup();
   const branches = [];
