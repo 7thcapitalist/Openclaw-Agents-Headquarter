@@ -7,9 +7,43 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 import {
-  STAGES, STAGE_LABEL, deslug, stageLabel, stageStatusLabel,
+  EVENT_VERB, STAGES, STAGE_LABEL, deslug, eventLine, stageLabel, stageStatusLabel,
   taskOutcomeLine, taskStatusLabel, taskTitle, titleIsFallback,
 } from "../../control-plane/public/stage-vocabulary.mjs";
+
+test("routine routing events are plain sentences that need no founder action", () => {
+  const cases = [
+    [{ type: "commit-frozen", stage: "reviewer" }, "The change was locked in for review. Nothing needed from you."],
+    [{ type: "stage-fail", stage: "reviewer" }, "Independent review found a problem. Nothing needed from you."],
+    [{ type: "stage-fail", stage: "release" }, "Preparing delivery found a problem. Nothing needed from you."],
+    [{ type: "failure-routed", fromStage: "reviewer", stage: "builder" }, "Sent back to the builder to fix. Nothing needed from you."],
+  ];
+  for (const [event, expected] of cases) {
+    assert.equal(eventLine(event), expected);
+    assert.ok(eventLine(event).endsWith("Nothing needed from you."));
+    assert.notEqual(eventLine(event), event.type);
+  }
+});
+
+test("stage-fail never contradicts the failure-routed event that follows it", () => {
+  // routeStageFailure decides the real destination AFTER stage-fail fires: a
+  // real review FAIL goes to the builder, but an infra-classified failure
+  // (crash, no result file, timeout) retries the SAME stage in place. stage-fail
+  // must not guess a destination it cannot know yet.
+  const stageFailLine = eventLine({ type: "stage-fail", stage: "reviewer" });
+  assert.doesNotMatch(stageFailLine, /builder|another attempt/);
+
+  const infraRoutedLine = eventLine({ type: "failure-routed", fromStage: "reviewer", stage: "reviewer", infra: true });
+  assert.equal(infraRoutedLine, "Sent back to independent review for another attempt. Nothing needed from you.");
+
+  const realFailRoutedLine = eventLine({ type: "failure-routed", fromStage: "reviewer", stage: "builder" });
+  assert.equal(realFailRoutedLine, "Sent back to the builder to fix. Nothing needed from you.");
+});
+
+test("every mapped event and unknown fallback reads as words, never its raw key", () => {
+  for (const type of Object.keys(EVENT_VERB)) assert.notEqual(eventLine({ type }), type);
+  assert.equal(eventLine({ type: "some-new-event" }), "Some new event");
+});
 
 test("every pipeline stage has a plain-language label", () => {
   assert.deepEqual(STAGES, ["product", "architect", "builder", "reviewer", "qa", "security", "release"]);
@@ -35,6 +69,13 @@ test("the local dashboard uses the shared source rather than its own copy", () =
   const app = readFileSync("dashboard/backend/public/app.js", "utf8");
   assert.match(app, /from "\/lib\/stage-vocabulary\.mjs"/, "app.js must import the shared vocabulary");
   assert.doesNotMatch(app, /product:\s*"Shaping the outcome"/, "the inline copy must be gone");
+  assert.equal((app.match(/eventLine\(e\)/g) || []).length, 3, "all three dashboard event surfaces use the shared function");
+  assert.doesNotMatch(app, /String\(e\.type[^\n]*replaceAll/, "dashboard must not derive founder event copy from raw keys");
+
+  const home = readFileSync("control-plane/public/home.mjs", "utf8");
+  assert.match(home, /verb: eventLine\(event\)/);
+  assert.doesNotMatch(home, /const EVENT_VERB/);
+  assert.doesNotMatch(home, /String\(event\?\.type[^\n]*replaceAll/);
 
   // And the dashboard must actually serve the one physical file.
   const server = readFileSync("dashboard/backend/server.mjs", "utf8");

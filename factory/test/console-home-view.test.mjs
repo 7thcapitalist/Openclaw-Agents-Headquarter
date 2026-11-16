@@ -289,5 +289,20 @@ test("the console renders the activity the snapshot has always carried", async (
 test("an unknown event type degrades to readable words, not a raw key", async () => {
   const { homeActivity } = await import("../../control-plane/public/home.mjs");
   const feed = homeActivity({ company: { activityFeed: [{ at: "x", type: "some-new-event", taskId: "t" }] } });
-  assert.equal(feed[0].verb, "some new event");
+  assert.equal(feed[0].verb, "Some new event");
+});
+
+test("routine failure routing uses the same no-action sentences as the dashboard", async () => {
+  const { homeActivity } = await import("../../control-plane/public/home.mjs");
+  const events = [
+    { at: "x", type: "commit-frozen", stage: "reviewer", taskId: "t" },
+    { at: "x", type: "stage-fail", stage: "reviewer", taskId: "t" },
+    { at: "x", type: "failure-routed", fromStage: "reviewer", stage: "builder", taskId: "t" },
+  ];
+  const feed = homeActivity({ company: { activityFeed: events } });
+  assert.deepEqual(feed.map((item) => item.verb), [
+    "The change was locked in for review. Nothing needed from you.",
+    "Independent review found a problem. Nothing needed from you.",
+    "Sent back to the builder to fix. Nothing needed from you.",
+  ]);
 });
