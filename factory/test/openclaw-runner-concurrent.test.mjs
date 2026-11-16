@@ -213,3 +213,46 @@ test("review artifacts surviving a crash are consumed without re-dispatch", asyn
   assert.equal(result.status, "active");
   assert.equal(readState(statePath).currentStage, "release");
 });
+
+test("yielded review group keeps per-dispatch rollout usage across the resume", async () => {
+  const { mkdtempSync: mk, mkdirSync: mkd, writeFileSync: wf } = await import("fs");
+  const { codexSessionsDir } = await import("../lib/hq/codex-rollout-usage.mjs");
+  const home = mk(join(tmpdir(), "runner-rollout-home-"));
+  const prevHome = process.env.HOME;
+  process.env.HOME = home;
+  try {
+    const { statePath } = makeFixture();
+    const normal = makeExecute({ delayMs: 0 });
+    for (let i = 0; i < 3; i++) await runOneStage({ hqRoot, statePath, execute: normal });
+    const codexEnvelope = (stdout) => stdout;
+    const rollouts = {};
+    let delegated;
+    const execute = async (input) => {
+      const out = input.dispatch.stage === "security" ? { stdout: "{\"meta\":{}}" } : await normal(input);
+      if (input.dispatch.stage === "security") delegated = input;
+      const env = JSON.parse(out.stdout);
+      env.meta.agentMeta = { provider: "openai", model: "gpt-5", usage: { input: 410, output: 349 } };
+      const { dispatchId, stage } = input.dispatch;
+      const dir = codexSessionsDir(input.agentId, home);
+      mkd(dir, { recursive: true });
+      const n = { reviewer: 1000, qa: 2000, security: 3000 }[stage];
+      wf(join(dir, `rollout-${stage}.jsonl`),
+        `{"text":"results/${dispatchId}.json"}\n` +
+        JSON.stringify({ payload: { info: { total_token_usage: { input_tokens: n, cached_input_tokens: 0, output_tokens: n / 10 } } } }) + "\n");
+      rollouts[stage] = n;
+      if (stage === "security") return { stdout: JSON.stringify({ status: "ok", result: { yielded: true }, meta: { agentMeta: env.meta.agentMeta } }) };
+      return { stdout: codexEnvelope(JSON.stringify(env)) };
+    };
+    const opts = { hqRoot, statePath, execute, waitForResult: async () => false };
+    assert.equal((await runConcurrentGroupIfReady(opts)).waiting, true);
+    await normal(delegated);
+    assert.equal((await runConcurrentGroupIfReady(opts)).status, "active");
+    const dispatches = readState(statePath).dispatches.filter((d) => rollouts[d.stage]);
+    assert.equal(dispatches.length, 3);
+    for (const d of dispatches) {
+      assert.equal(d.usage?.tokensIn ?? d.agentMeta?.tokensIn, rollouts[d.stage], `${d.stage} usage bound to its own rollout`);
+    }
+  } finally {
+    if (prevHome === undefined) delete process.env.HOME; else process.env.HOME = prevHome;
+  }
+});
