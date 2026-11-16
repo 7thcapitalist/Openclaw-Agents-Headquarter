@@ -4,10 +4,11 @@
 import { existsSync, mkdirSync, renameSync, writeFileSync } from "fs";
 import { dirname, join, resolve } from "path";
 import { appendAuditEvent, createAuditEvent, readAuditEvents } from "../audit/envelope.mjs";
-import { createCostEvent, appendCostEvent } from "../hq/cost-ledger.mjs";
+import { createCostEvent, appendCostEvent, readCostEvents } from "../hq/cost-ledger.mjs";
+import { loadQuotaAlert, runQuotaShare } from "../hq/quota-alert.mjs";
 import { loadPricing, priceUsage } from "../hq/cost.mjs";
 import { createRunLiveness } from "../liveness/run-liveness.mjs";
-import { readState } from "../task-workflow.mjs";
+import { GATE_STAGES, readState } from "../task-workflow.mjs";
 
 export function telemetryPaths({ hqRoot, statePath }) {
   const taskDir = dirname(resolve(statePath));
@@ -103,6 +104,29 @@ export function observeDispatchState({ hqRoot, statePath, phase, dispatchId = nu
         dispatchId: dispatch.id,
       }, { now, id: () => `cost:${dispatch.id}` }));
     }
+    else if (GATE_STAGES.has(dispatch.stage) && (phase === "completed" || phase === "failed")) {
+      // A paid gate call that returned no usable usage still cost a session.
+      // One event per call keeps runs countable (SOF-79); tokens stay 0 and
+      // both confidences say "unavailable", so it is never summed as free.
+      appendCostEvent(paths.costs, createCostEvent({
+        eventId: `cost:${dispatch.id}`,
+        source: "openclaw-factory",
+        sourceEventId: dispatch.id,
+        occurredAt,
+        provider: usage?.provider || "unknown",
+        model: usage?.model || dispatch.route || "unknown",
+        usageConfidence: "unavailable",
+        costConfidence: "unavailable",
+        agentId: dispatch.agentId || dispatch.actor,
+        projectId: state.task.project || state.task.projectId || null,
+        objectiveId: state.task.objectiveId || null,
+        taskId: state.task.id,
+        stage: dispatch.stage,
+        runId: dispatch.id,
+        dispatchId: dispatch.id,
+      }, { now, id: () => `cost:${dispatch.id}` }));
+    }
+    warnIfOverQuota({ hqRoot, paths, state, dispatch, occurredAt, now });
     return { recorded: true, paths, liveness };
   } catch (caught) {
     return { recorded: false, reason: caught?.message || String(caught) };
@@ -149,4 +173,23 @@ function atomicJson(path, value) {
   const temporary = `${path}.${process.pid}.tmp`;
   writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
   renameSync(temporary, path);
+}
+
+// One warning per run, written to the run's audit ledger the first time its
+// token share crosses the configured limit (SOF-82).
+function warnIfOverQuota({ hqRoot, paths, state, dispatch, occurredAt, now }) {
+  const limit = loadQuotaAlert(hqRoot);
+  if (!limit) return;
+  const { tokens, pct } = runQuotaShare(readCostEvents(paths.costs), state.task.id, limit.quotaTokens);
+  if (pct <= limit.runWarnPct) return;
+  const eventId = `quota-warning:${state.task.id}`;
+  if (readAuditEvents(paths.audit).some((e) => e.eventId === eventId)) return;
+  appendAuditEvent(paths.audit, createAuditEvent({
+    eventId, occurredAt,
+    actor: { type: "system", id: "quota-alert" },
+    action: "cost.quota-warning",
+    subject: { type: "task", id: state.task.id },
+    correlation: { taskId: state.task.id, dispatchId: dispatch.id, stage: dispatch.stage },
+    data: { tokens, quotaTokens: limit.quotaTokens, pct: Math.round(pct * 10) / 10, limitPct: limit.runWarnPct },
+  }, { now }));
 }

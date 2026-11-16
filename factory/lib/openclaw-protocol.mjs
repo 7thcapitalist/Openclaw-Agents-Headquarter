@@ -1,7 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync } from "fs";
 import { basename, dirname, join } from "path";
 import { randomUUID } from "crypto";
-import { DEFAULT_MAX_INFRA_ATTEMPTS, completeStage, recordRecoveryResult, recordSeatPause, recordVerifiedCommit, routeStageFailure, startRecovery, verifyEvidence } from "./task-workflow.mjs";
+import { DEFAULT_MAX_INFRA_ATTEMPTS, completeStage, recordRecoveryResult, recordSeatPause, recordVerifiedCommit, reuseJudgedVerdict, routeStageFailure, startRecovery, verifyEvidence } from "./task-workflow.mjs";
+import { stageMustProveCriteria } from "./evidence-criteria.mjs";
 import { detectSeatExhaustion } from "./seat-exhaustion.mjs";
 import { execFileSync } from "node:child_process";
 import { mutateTransactionalState, readTransactionalState } from "./store/transactional-json.mjs";
@@ -153,6 +154,22 @@ function checkDispatchPermission({ hqRoot, statePath }) {
 }
 
 export function prepareDispatch({ hqRoot, statePath, now = new Date().toISOString() }) {
+  if (reuseJudgedVerdict(readTransactionalState(statePath), { now })) {
+    let reused = false;
+    const afterReuse = mutateTransactionalState(statePath, {
+      commandId: `reuse-verdict:${randomUUID()}`,
+      replayable: false,
+      now,
+      mutate: (state) => {
+        const next = reuseJudgedVerdict(state, { now });
+        if (!next) return undefined;
+        reused = true;
+        return next;
+      },
+    });
+    if (reused) return terminalResponse(afterReuse);
+  }
+
   // Running a stage is checked here, before the transaction that creates the
   // dispatch.
   //
@@ -465,9 +482,25 @@ export function ingestResult({ statePath, result, agentMeta = null, maxAttemptsP
       // Carry the fan-out's "this agent never ran" marker onto the durable
       // record, so the per-stage budget can tell a routing artifact from a
       // verdict long after the result file is gone.
-      if (result.infraFailure === true) finished.infraFailure = true;
+      const infrastructureFailure = result.infraFailure === true;
+      if (infrastructureFailure) finished.infraFailure = true;
+      const judgedCommit = stageMustProveCriteria(result.stage) && !infrastructureFailure
+        ? state.verifiedCommit?.sha || null
+        : null;
+      if (judgedCommit) finished.judgedCommit = judgedCommit;
       if (agentMeta) finished.usage = sanitizeUsage(agentMeta);
       completed.dispatches = [...(state.dispatches || []), finished];
+      if (judgedCommit && new Set(["pass", "fail"]).has(result.outcome)) {
+        completed.judgedVerdicts = structuredClone(completed.judgedVerdicts || {});
+        completed.judgedVerdicts[result.stage] = {
+          ...(completed.judgedVerdicts[result.stage] || {}),
+          [judgedCommit]: {
+            dispatchId: dispatch.id || dispatch.dispatchId,
+            outcome: result.outcome,
+            stageRecord: structuredClone(completed.stages[result.stage]),
+          },
+        };
+      }
       delete completed.currentDispatch;
       if (result.outcome === "fail") {
         // For a review stage the workflow's own loop runs first: a FAIL verdict
@@ -731,4 +764,3 @@ function toInteger(value) {
   if (!Number.isFinite(parsed) || parsed < 0) return null;
   return Math.trunc(parsed);
 }
-

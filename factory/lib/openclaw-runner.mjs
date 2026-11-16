@@ -8,13 +8,14 @@ import { PROTOCOL_VERSION, blockDispatch, computeDispatchPaths, failDispatch, in
 import { describeAgentCompletion, parseAgentMeta } from "./hq/agent-meta.mjs";
 import { withRolloutUsage } from "./hq/codex-rollout-usage.mjs";
 import { rotatedRouteFor } from "./agent-routes.mjs";
-import { DEFAULT_MAX_INFRA_ATTEMPTS, STAGES, readState } from "./task-workflow.mjs";
+import { DEFAULT_MAX_INFRA_ATTEMPTS, STAGES, readState, reuseJudgedVerdict } from "./task-workflow.mjs";
 import { mutateTransactionalState, peekRevision } from "./store/transactional-json.mjs";
 import { recordReleaseDeployment } from "./deploy/record-release.mjs";
 import { writeHandoff } from "./handoff.mjs";
 import { publishMergeReadyTask } from "./hq/github-publish.mjs";
 import { buildCompletionReport } from "./hq/completion-report.mjs";
 import { sanitizeExcerpt } from "./common/redact.mjs";
+import { detectSeatExhaustion, seatExhaustionExcerpt } from "./seat-exhaustion.mjs";
 import { observeDispatchState } from "./telemetry/dispatch.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -184,9 +185,12 @@ export async function runOneStage({ hqRoot, statePath, agentIds = {}, maxAttempt
       const ready = await waitForResult({ resultPath: prepared.resultPath, heartbeat: () => touchState(statePath, prepared.dispatchId) });
       if (!ready) return { ...prepared, waiting: true };
     }
-    const agentMeta = withRolloutUsage(parseAgentMeta(executed, { durationMsFallback: Date.now() - startedAt })
+    // The group's map already carries rollout usage taken at the real start;
+    // only a meta parsed here still needs it.
+    const agentMeta = withRolloutUsage(parseAgentMeta(executed, { durationMsFallback: Date.now() - startedAt }),
+      { agentId, dispatchId: prepared.dispatchId, startedAtMs: startedAt })
       || agentMetaByDispatchId?.get(prepared.dispatchId)
-      || null, { agentId, startedAtMs: startedAt });
+      || null;
     if (!existsSync(prepared.resultPath)) {
       const diagnostic = writeMissingResultDiagnostic({
         worktree: prepared.cwd,
@@ -230,9 +234,12 @@ export async function runOneStage({ hqRoot, statePath, agentIds = {}, maxAttempt
       return { version: PROTOCOL_VERSION, status: current.status, taskId: current.task.id,
         currentStage: current.currentStage, blocker: current.blocker || null };
     }
-    const agentMeta = withRolloutUsage(parseAgentMeta(error, { durationMsFallback: Date.now() - startedAt })
+    // The group's map already carries rollout usage taken at the real start;
+    // only a meta parsed here still needs it.
+    const agentMeta = withRolloutUsage(parseAgentMeta(error, { durationMsFallback: Date.now() - startedAt }),
+      { agentId, dispatchId: prepared.dispatchId, startedAtMs: startedAt })
       || agentMetaByDispatchId?.get(prepared.dispatchId)
-      || null, { agentId, startedAtMs: startedAt });
+      || null;
     const failure = existsSync(prepared.resultPath)
       ? summarizeError(error)
       : writeMissingResultDiagnostic({
@@ -534,13 +541,40 @@ export function recordRunnerCrash({ statePath, error, now = new Date().toISOStri
 // at a time. Returns the engine response, or null when no fan-out applies (the
 // caller then does a normal sequential `runOneStage`).
 export async function runConcurrentGroupIfReady({ hqRoot, statePath, agentIds = {}, maxAttemptsPerStage = 3, maxInfraAttemptsPerStage = DEFAULT_MAX_INFRA_ATTEMPTS, execute = executeOpenClaw, publish = publishMergeReadyTask, groups = DEFAULT_CONCURRENT_GROUPS, waitForResult = waitForYieldedResult }) {
-  const state = readState(statePath);
+  let state = readState(statePath);
+  if (reuseJudgedVerdict(state, { maxAttemptsPerStage, maxInfraAttemptsPerStage })) {
+    mutateTransactionalState(statePath, {
+      commandId: `reuse-group-verdicts:${randomUUID()}`,
+      replayable: false,
+      mutate: (current) => {
+        let next = current;
+        let reused = false;
+        while (true) {
+          const candidate = reuseJudgedVerdict(next, { maxAttemptsPerStage, maxInfraAttemptsPerStage });
+          if (!candidate) break;
+          next = candidate;
+          reused = true;
+        }
+        return reused ? next : undefined;
+      },
+    });
+    state = readState(statePath);
+  }
   if (state.status !== "active" || state.currentDispatch || state.recovery?.active) return null;
+  let resumedMeta = null;
   if (state.yieldedGroup) {
     if (state.yieldedGroup.some((m) => !existsSync(m.resultPath))) {
       return { version: PROTOCOL_VERSION, status: "dispatch", taskId: state.task.id, waiting: true };
     }
     execute = async () => {}; // consume the already-produced group, never re-dispatch
+    resumedMeta = new Map();
+    // The first call's in-memory map died with it; rebuild each member's usage
+    // from the meta and real start it persisted, bound to its own dispatch.
+    for (const m of state.yieldedGroup) {
+      if (!m.meta) continue;
+      resumedMeta.set(m.dispatchId, withRolloutUsage(m.meta,
+        { agentId: m.agentId, dispatchId: m.dispatchId, startedAtMs: m.startedAt ?? 0 }) || m.meta);
+    }
   }
   const pending = (s) => {
     const st = state.stages?.[s]?.status;
@@ -559,7 +593,8 @@ export async function runConcurrentGroupIfReady({ hqRoot, statePath, agentIds = 
     const promptPath = writeHandoff({ hqRoot, statePath, state, resultPath, dispatchId, stage });
     return { stage, actor, dispatchId, resultPath, promptPath, agentId };
   });
-  const agentMetaByDispatchId = new Map();
+  const agentMetaByDispatchId = resumedMeta || new Map();
+  const yieldInfo = new Map(); // dispatchId -> { startedAt, meta } persisted if the group yields
 
   // The expensive part, concurrent. If a member's agent throws OR leaves no
   // result file, synthesize a `fail` result carrying the real reason so the
@@ -568,6 +603,7 @@ export async function runConcurrentGroupIfReady({ hqRoot, statePath, agentIds = 
   // result file".
   const settled = await Promise.allSettled(members.map(async (m) => {
     const startedAt = Date.now();
+    m.startedAt = startedAt;
     try {
       const executed = existsSync(m.resultPath) ? {} : await execute({
         agentId: m.agentId,
@@ -590,11 +626,15 @@ export async function runConcurrentGroupIfReady({ hqRoot, statePath, agentIds = 
         markYieldedGroup(statePath, members);
         await waitForResult({ resultPath: m.resultPath, heartbeat: () => touchState(statePath) });
       }
-      const meta = parseAgentMeta(executed, { durationMsFallback: Date.now() - startedAt });
+      const base = parseAgentMeta(executed, { durationMsFallback: Date.now() - startedAt });
+      yieldInfo.set(m.dispatchId, { startedAt, meta: base });
+      const meta = withRolloutUsage(base,
+        { agentId: m.agentId, dispatchId: m.dispatchId, startedAtMs: startedAt });
       if (meta) agentMetaByDispatchId.set(m.dispatchId, meta);
       return executed;
     } catch (error) {
-      const meta = parseAgentMeta(error, { durationMsFallback: Date.now() - startedAt });
+      const meta = withRolloutUsage(parseAgentMeta(error, { durationMsFallback: Date.now() - startedAt }),
+        { agentId: m.agentId, dispatchId: m.dispatchId, startedAtMs: startedAt });
       if (meta) agentMetaByDispatchId.set(m.dispatchId, meta);
       throw error;
     }
@@ -615,6 +655,7 @@ export async function runConcurrentGroupIfReady({ hqRoot, statePath, agentIds = 
   }
 
   if (settled.some((r, i) => r.status === "fulfilled" && isYieldedExecution(r.value) && !existsSync(members[i].resultPath))) {
+    persistYieldedMeta(statePath, members, yieldInfo);
     return { version: PROTOCOL_VERSION, status: "dispatch", taskId: state.task.id, waiting: true };
   }
   mutateTransactionalState(statePath, {
@@ -724,11 +765,23 @@ function writeMissingResultDiagnostic({ worktree, dispatchId, stage, actor, sess
   // string is what the failure classifier and the founder both read.
   const finished = describeAgentCompletion({ stdout });
   const route = [finished.provider, finished.model].filter(Boolean).join("/");
-  const summary = finished.completed
+  // A seat that ran out of credit can exit with a generic "Command failed"
+  // while the provider's own sentence sits only in stdout (Codex prints it as
+  // a JSON "message"). failDispatch decides pause-vs-recovery from this
+  // summary alone, so lift that sentence into it. Without this, an exhausted
+  // Codex seat on 2026-09-18 read as a broken task and recovery ran three
+  // times against a seat that would not come back for five hours.
+  const providerExcerpt = detectSeatExhaustion(cleanReason)
+    ? null
+    : seatExhaustionExcerpt(`${stdout ?? ""}\n${stderr ?? ""}`);
+  const provider = providerExcerpt ? sanitizeExcerpt(providerExcerpt, { maxLength: 300 }).text : "";
+  const providerNote = provider ? ` Provider: ${provider}` : "";
+  const summary = (finished.completed
     ? `${stage} agent completed its turn without writing a result file${route ? ` (${route})` : ""}; ` +
       `the route ran but produced no gate artifact, so retrying it unchanged will repeat. ` +
       `Session ${sessionKey}; redacted executor output captured at ${rel}.${cleanReason ? ` Reason: ${cleanReason}` : ""}`
-    : `${stage} dispatch wrote no result file (session ${sessionKey}); redacted executor output captured at ${rel}.${cleanReason ? ` Reason: ${cleanReason}` : ""}`;
+    : `${stage} dispatch wrote no result file (session ${sessionKey}); redacted executor output captured at ${rel}.${cleanReason ? ` Reason: ${cleanReason}` : ""}`)
+    + providerNote;
   try {
     mkdirSync(join(worktree, "evidence"), { recursive: true });
     const lines = [
@@ -742,6 +795,7 @@ function writeMissingResultDiagnostic({ worktree, dispatchId, stage, actor, sess
       finished.completed ? `- agentCompletedTurn: yes (stopReason ${finished.stopReason || "unknown"})` : null,
       finished.completed && route ? `- route: ${route}` : null,
       cleanReason ? `- reason: ${cleanReason}` : null,
+      provider ? `- provider: ${provider}` : null,
       "",
       "## Executor stdout (redacted, truncated)",
       "",
@@ -801,7 +855,27 @@ function markYieldedGroup(statePath, members) {
     replayable: false,
     mutate: (current) => {
       const next = structuredClone(current);
-      next.yieldedGroup = members.map(({ dispatchId, stage, resultPath }) => ({ dispatchId, stage, resultPath }));
+      next.yieldedGroup = members.map(({ dispatchId, stage, resultPath, agentId, startedAt }) => ({ dispatchId, stage, resultPath, agentId, startedAt }));
+      return next;
+    },
+  });
+}
+
+// Keep what the resumed call needs to attribute rollout usage per dispatch:
+// the real start and the envelope meta (rollouts are matched by dispatchId).
+function persistYieldedMeta(statePath, members, yieldInfo) {
+  mutateTransactionalState(statePath, {
+    commandId: `yielded-group-meta:${randomUUID()}`,
+    replayable: false,
+    mutate: (current) => {
+      const next = structuredClone(current);
+      for (const entry of next.yieldedGroup || []) {
+        const m = members.find((x) => x.dispatchId === entry.dispatchId);
+        const info = yieldInfo.get(entry.dispatchId);
+        entry.agentId = m?.agentId ?? entry.agentId;
+        entry.startedAt = info?.startedAt ?? m?.startedAt ?? entry.startedAt;
+        if (info?.meta) entry.meta = info.meta;
+      }
       return next;
     },
   });

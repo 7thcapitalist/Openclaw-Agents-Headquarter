@@ -12,7 +12,7 @@
 
 import { answerableDecisions, freshness, intentsPanel, panelsFor, statsFrom } from "/render.mjs";
 import { renderHome } from "/home.mjs";
-import { renderAgents, renderBoard, renderDeliveries, renderNext, renderProjects } from "/views.mjs";
+import { renderAgents, renderBoard, renderDeliveries, renderLearning, renderNext, renderProjects } from "/views.mjs";
 import { renderMoney } from "/money.mjs";
 import { renderCommandCenter } from "/command-center.mjs";
 import { renderTaskDetail } from "/task-detail.mjs";
@@ -325,6 +325,7 @@ const TABS = [
   ["next", "Next"],
   ["deliveries", "Deliveries"],
   ["money", "Money"],
+  ["learning", "Learning"],
   ["projects", "Projects"],
   ["agents", "Agents"],
 ];
@@ -400,6 +401,11 @@ function drawHome(snapshot) {
       renderMoney(els.view, snapshot);
     } else if (activeTab === "deliveries") {
       renderDeliveries(els.view, snapshot, { onTask: openTask });
+    } else if (activeTab === "learning") {
+      renderLearning(els.view, snapshot, {
+        intentStateFor,
+        onMode: (mode, button, key) => submitIntent("learning.mode", { mode }, button, key),
+      });
     } else if (activeTab === "next") {
       // Two choices, never an automatic start. `objective.start` and
       // `overnight.add` are both wired, so both buttons can actually complete —

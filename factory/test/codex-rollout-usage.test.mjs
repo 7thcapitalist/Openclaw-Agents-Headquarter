@@ -18,6 +18,7 @@ function fixture() {
   const dir = mkdtempSync(join(tmpdir(), "rollout-"));
   mkdirSync(join(dir, "2026", "09"), { recursive: true });
   writeFileSync(join(dir, "2026", "09", "rollout-a.jsonl"), [
+    JSON.stringify({ type: "response_item", payload: { text: "write to .factory/results/dispatch-1.json" } }),
     tokenCount({ input_tokens: 19622, cached_input_tokens: 9344, output_tokens: 191 }),
     "not json",
     // Cumulative: the LAST row is the session total.
@@ -36,7 +37,7 @@ test("a Codex dispatch whose envelope holds a 410/349 fragment books the session
   const dir = fixture();
   const fragment = parseAgentMeta({ stdout: JSON.stringify({ ok: true, provider: "openai", model: "gpt-5.6-sol", usage: { input: 410, output: 349 } }) });
   assert.equal(fragment.tokensIn, 410);
-  const meta = withRolloutUsage(fragment, { agentId: "backend-builder", startedAtMs: 0, sessionsDir: dir });
+  const meta = withRolloutUsage(fragment, { agentId: "backend-builder", dispatchId: "dispatch-1", startedAtMs: 0, sessionsDir: dir });
   assert.equal(meta.cachedInputTokens, 1_900_000);
   const event = createCostEvent({ source: "t", sourceEventId: "1", provider: meta.provider, model: meta.model,
     inputTokens: meta.tokensIn, cachedInputTokens: meta.cachedInputTokens, outputTokens: meta.tokensOut });
@@ -48,12 +49,33 @@ test("a Codex dispatch whose envelope holds a 410/349 fragment books the session
 
 test("non-Codex or unreadable rollouts leave the meta untouched", () => {
   const meta = { provider: "anthropic", model: "claude-sonnet-5", tokensIn: 1, tokensOut: 1 };
-  assert.equal(withRolloutUsage(meta, { agentId: "x", startedAtMs: 0, sessionsDir: fixture() }), meta);
+  assert.equal(withRolloutUsage(meta, { agentId: "x", dispatchId: "dispatch-1", startedAtMs: 0, sessionsDir: fixture() }), meta);
   const codex = { provider: "openai", model: "gpt-5.6-sol", tokensIn: 5, tokensOut: 5 };
-  assert.equal(withRolloutUsage(codex, { agentId: "x", startedAtMs: 0, sessionsDir: join(tmpdir(), "nope-missing") }), codex);
+  assert.equal(withRolloutUsage(codex, { agentId: "x", dispatchId: "dispatch-1", startedAtMs: 0, sessionsDir: join(tmpdir(), "nope-missing") }), codex);
 });
 
 test("OpenClaw's cacheRead/cacheWrite spellings are counted as cached input", () => {
   const meta = parseAgentMeta({ stdout: JSON.stringify({ ok: true, provider: "openai", model: "gpt-5.6-sol", usage: { input: 5, output: 7, cacheRead: 1000, cacheWrite: 20 } }) });
   assert.equal(meta.cachedInputTokens, 1020);
+});
+
+// Two overlapping runs of the same agentId write rollouts into the same dir with
+// mtimes after both starts. Each dispatch must book only its own rollout.
+test("overlapping dispatches of the same agent each book only their own rollout", () => {
+  const dir = mkdtempSync(join(tmpdir(), "rollout-overlap-"));
+  const mk = (name, id, total) => writeFileSync(join(dir, name), [
+    JSON.stringify({ type: "response_item", payload: { text: `write to /wt/results/${id}.json` } }),
+    tokenCount(total),
+  ].join("\n"));
+  mk("rollout-a.jsonl", "dispatch-a", { input_tokens: 1000, cached_input_tokens: 400, output_tokens: 10 });
+  mk("rollout-b.jsonl", "dispatch-b", { input_tokens: 5000, cached_input_tokens: 0, output_tokens: 50 });
+  const frag = { provider: "openai", model: "gpt-5.6-sol", tokensIn: 1, tokensOut: 1 };
+  const a = withRolloutUsage(frag, { agentId: "x", dispatchId: "dispatch-a", startedAtMs: 0, sessionsDir: dir });
+  const b = withRolloutUsage(frag, { agentId: "x", dispatchId: "dispatch-b", startedAtMs: 0, sessionsDir: dir });
+  assert.deepEqual([a.tokensIn, a.cachedInputTokens, a.tokensOut], [600, 400, 10]);
+  assert.deepEqual([b.tokensIn, b.cachedInputTokens, b.tokensOut], [5000, 0, 50]);
+  // A dispatch whose rollout is missing keeps its fragment rather than inheriting a neighbour's.
+  assert.equal(withRolloutUsage(frag, { agentId: "x", dispatchId: "dispatch-c", startedAtMs: 0, sessionsDir: dir }), frag);
+  // Without a dispatch id nothing can be attributed.
+  assert.equal(withRolloutUsage(frag, { agentId: "x", startedAtMs: 0, sessionsDir: dir }), frag);
 });
