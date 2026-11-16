@@ -183,3 +183,17 @@ test("a failed request without tarefas is retried, not skipped as duplicate", as
   const r = await processInbox({ ...env, dispatch: async () => ({}) });
   assert.equal(r[0].status, "processed");
 });
+
+test("attempts keeps counting across three runs: failed tries are 1, 2 and the success is 3", async () => {
+  const env = setup();
+  writeFileSync(join(env.inboxDir, "a.md"), REQ + "tarefas:\n- um\n- dois\n");
+  let boom = 2;
+  const dispatch = async (_r, { task }) => { if (task === "dois" && boom-- > 0) throw new Error("falhou"); return {}; };
+  await processInbox({ ...env, dispatch });
+  await processInbox({ ...env, dispatch });
+  const r = await processInbox({ ...env, dispatch });
+  assert.equal(r[0].status, "processed");
+  const lines = ledger(env.ledgerPath);
+  assert.deepEqual(lines.filter((l) => l.task === "dois" && l.failure_reason).map((l) => l.attempts), [1, 2]);
+  assert.equal(lines.filter((l) => l.task === "dois" && !l.failure_reason).at(-1).attempts, 3);
+});
