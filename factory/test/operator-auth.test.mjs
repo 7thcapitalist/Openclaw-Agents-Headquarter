@@ -411,9 +411,11 @@ test("busy: refused while a founder job is live by canonical state, allowed once
 test("the existing duplicate check runs with no bypass", () => {
   const fx = makeRoot();
   // A job with no state yet (still in intake) on another project would also be
-  // busy; seed one that is NOT live so only the duplicate check can fire.
+  // busy; seed one that is in flight but NOT canonically live (its objective is
+  // blocked: not terminal, so the job still reads "running") so only the
+  // duplicate check can fire.
   saveFounderJob(fx.root, { id: "founder-dup", kind: "task", projectId: "alpha", objective: "Same thing", status: "running", objectiveId: "obj-0000gone", createdAt: new Date().toISOString() });
-  writeObjective(fx.root, "obj-0000gone", "complete");
+  writeObjective(fx.root, "obj-0000gone", "blocked");
   const decision = decideOperatorSubmission({
     root: fx.root, operator: { id: "dot", actor: "operator:dot" }, body: { projectId: "alpha", objective: "  same   THING " },
     idempotencyKey: "dot-dup-0001", launch: () => assert.fail("must not launch"),
