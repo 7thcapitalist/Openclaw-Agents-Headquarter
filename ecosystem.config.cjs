@@ -170,6 +170,8 @@ module.exports = {
         ...common,
         ...pick("HQ_CONTROL_PLANE_URL", "HQ_WRITE_TOKEN"),
         HQ_INTENT_INTERVAL_MS: file.HQ_INTENT_INTERVAL_MS || "30000",
+        // An intent can detach an objective run; one at a time, like hq-dashboard.
+        FACTORY_MAX_CONCURRENT: "1",
       },
     },
     {
@@ -184,6 +186,21 @@ module.exports = {
       instances: 1,
       autorestart: true,
       max_memory_restart: "256M",
+      env: { ...common },
+    },
+    {
+      // Files bounded learning objectives only while the founder queue is idle.
+      // Explicit node interpreter plus no argv[1] guard in the script are
+      // required for this to execute under pm2's fork wrapper.
+      name: "hq-idle-trigger",
+      script: join(ROOT, "scripts", "hq-idle-trigger.mjs"),
+      args: ["loop"],
+      cwd: ROOT,
+      interpreter: "node",
+      exec_mode: "fork",
+      instances: 1,
+      autorestart: true,
+      max_memory_restart: "512M",
       env: { ...common },
     },
     {

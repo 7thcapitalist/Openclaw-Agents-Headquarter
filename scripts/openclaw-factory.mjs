@@ -102,6 +102,15 @@ async function startFromObjective(request, dependencies) {
   // asked first. Previously this flag was logged and then ignored, so a
   // `decision-request / risk:high` dispatched anyway.
   const created = initialize({ ...request, action: "init", contractPath: intake.contractPath, stateRoot }, dependencies.initializeTask || initializeTask);
+  // The task id exists from here on, but this function only returns when the
+  // run ends — hours later. A caller that needs to follow the live task (the
+  // dashboard's founder job, its busy check) learns it now. A failing callback
+  // is the caller's problem, never a reason to abandon the run.
+  try {
+    dependencies.onTaskCreated?.({ taskId: intake.contract.id, statePath: created.statePath });
+  } catch (error) {
+    console.warn(`[openclaw-factory] onTaskCreated failed for ${intake.contract.id}: ${error.message || error}`);
+  }
   if (decisionClassification?.blocksDispatch) {
     return {
       version: 1,

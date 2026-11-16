@@ -45,6 +45,9 @@ function closedKeys(ledgerPath) {
   return new Set(ledgerEntries(ledgerPath).filter((e) => !e.task && !e.failure_reason).map((e) => e.key));
 }
 
+// Review comments reported by dispatch, as a non-negative integer (0 when absent/invalid).
+export const reviewCount = (v) => (Number.isInteger(v) && v > 0 ? v : 0);
+
 function doneKeys(doneDir) {
   const keys = new Set();
   if (!existsSync(doneDir)) return keys;
@@ -148,21 +151,23 @@ export async function processInbox({ inboxDir, doneDir, ledgerPath, dispatch, ch
     const attemptsFor = (task) => (failures.get(task ?? "") || 0) + 1;
     const units = req.tarefas?.length ? req.tarefas.filter((t) => !finished.has(t)) : [undefined];
     let pr = null;
+    let reviewComments = 0; // summed over every dispatch of this run
     let current;
     try {
       for (const task of units) {
         current = task;
         const o = (await withTimeout((signal) => dispatch(req, { key, branch, ...(task === undefined ? {} : { task }), signal }), limitMs)) || {};
         if (o.pr && !pr) pr = o.pr;
-        if (task !== undefined) appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, task, branch, pr: o.pr ?? null, attempts: attemptsFor(task) }) + "\n");
+        reviewComments += reviewCount(o.review_comments);
+        if (task !== undefined) appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, task, branch, pr: o.pr ?? null, review_comments: reviewCount(o.review_comments), attempts: attemptsFor(task) }) + "\n");
       }
     } catch (error) {
       // Interrupted: finished tasks are in the ledger, the file stays in inbox/ to be resumed.
-      appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, ...(current === undefined ? {} : { task: current }), branch, status: "failed", attempts: attemptsFor(current), ...describeFailure(error) }) + "\n");
+      appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, ...(current === undefined ? {} : { task: current }), branch, status: "failed", review_comments: reviewComments, attempts: attemptsFor(current), ...describeFailure(error) }) + "\n");
       results.push({ file, key, branch, status: "interrupted", error: String(error?.message || error) });
       continue;
     }
-    const closing = { at: now(), key, file, repo: req.repo, base: req.base || "main", branch, pr };
+    const closing = { at: now(), key, file, repo: req.repo, base: req.base || "main", branch, pr, review_comments: reviewComments };
     if (!req.tarefas?.length) closing.attempts = attemptsFor(undefined);
     appendFileSync(ledgerPath, JSON.stringify(closing) + "\n");
     renameSync(src, join(doneDir, file));

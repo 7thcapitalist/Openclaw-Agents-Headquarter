@@ -8,13 +8,14 @@ import { PROTOCOL_VERSION, blockDispatch, computeDispatchPaths, failDispatch, in
 import { describeAgentCompletion, parseAgentMeta } from "./hq/agent-meta.mjs";
 import { withRolloutUsage } from "./hq/codex-rollout-usage.mjs";
 import { rotatedRouteFor } from "./agent-routes.mjs";
-import { DEFAULT_MAX_INFRA_ATTEMPTS, STAGES, readState } from "./task-workflow.mjs";
+import { DEFAULT_MAX_INFRA_ATTEMPTS, STAGES, readState, reuseJudgedVerdict } from "./task-workflow.mjs";
 import { mutateTransactionalState, peekRevision } from "./store/transactional-json.mjs";
 import { recordReleaseDeployment } from "./deploy/record-release.mjs";
 import { writeHandoff } from "./handoff.mjs";
 import { publishMergeReadyTask } from "./hq/github-publish.mjs";
 import { buildCompletionReport } from "./hq/completion-report.mjs";
 import { sanitizeExcerpt } from "./common/redact.mjs";
+import { detectSeatExhaustion, seatExhaustionExcerpt } from "./seat-exhaustion.mjs";
 import { observeDispatchState } from "./telemetry/dispatch.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -540,7 +541,25 @@ export function recordRunnerCrash({ statePath, error, now = new Date().toISOStri
 // at a time. Returns the engine response, or null when no fan-out applies (the
 // caller then does a normal sequential `runOneStage`).
 export async function runConcurrentGroupIfReady({ hqRoot, statePath, agentIds = {}, maxAttemptsPerStage = 3, maxInfraAttemptsPerStage = DEFAULT_MAX_INFRA_ATTEMPTS, execute = executeOpenClaw, publish = publishMergeReadyTask, groups = DEFAULT_CONCURRENT_GROUPS, waitForResult = waitForYieldedResult }) {
-  const state = readState(statePath);
+  let state = readState(statePath);
+  if (reuseJudgedVerdict(state, { maxAttemptsPerStage, maxInfraAttemptsPerStage })) {
+    mutateTransactionalState(statePath, {
+      commandId: `reuse-group-verdicts:${randomUUID()}`,
+      replayable: false,
+      mutate: (current) => {
+        let next = current;
+        let reused = false;
+        while (true) {
+          const candidate = reuseJudgedVerdict(next, { maxAttemptsPerStage, maxInfraAttemptsPerStage });
+          if (!candidate) break;
+          next = candidate;
+          reused = true;
+        }
+        return reused ? next : undefined;
+      },
+    });
+    state = readState(statePath);
+  }
   if (state.status !== "active" || state.currentDispatch || state.recovery?.active) return null;
   let resumedMeta = null;
   if (state.yieldedGroup) {
@@ -746,11 +765,23 @@ function writeMissingResultDiagnostic({ worktree, dispatchId, stage, actor, sess
   // string is what the failure classifier and the founder both read.
   const finished = describeAgentCompletion({ stdout });
   const route = [finished.provider, finished.model].filter(Boolean).join("/");
-  const summary = finished.completed
+  // A seat that ran out of credit can exit with a generic "Command failed"
+  // while the provider's own sentence sits only in stdout (Codex prints it as
+  // a JSON "message"). failDispatch decides pause-vs-recovery from this
+  // summary alone, so lift that sentence into it. Without this, an exhausted
+  // Codex seat on 2026-09-18 read as a broken task and recovery ran three
+  // times against a seat that would not come back for five hours.
+  const providerExcerpt = detectSeatExhaustion(cleanReason)
+    ? null
+    : seatExhaustionExcerpt(`${stdout ?? ""}\n${stderr ?? ""}`);
+  const provider = providerExcerpt ? sanitizeExcerpt(providerExcerpt, { maxLength: 300 }).text : "";
+  const providerNote = provider ? ` Provider: ${provider}` : "";
+  const summary = (finished.completed
     ? `${stage} agent completed its turn without writing a result file${route ? ` (${route})` : ""}; ` +
       `the route ran but produced no gate artifact, so retrying it unchanged will repeat. ` +
       `Session ${sessionKey}; redacted executor output captured at ${rel}.${cleanReason ? ` Reason: ${cleanReason}` : ""}`
-    : `${stage} dispatch wrote no result file (session ${sessionKey}); redacted executor output captured at ${rel}.${cleanReason ? ` Reason: ${cleanReason}` : ""}`;
+    : `${stage} dispatch wrote no result file (session ${sessionKey}); redacted executor output captured at ${rel}.${cleanReason ? ` Reason: ${cleanReason}` : ""}`)
+    + providerNote;
   try {
     mkdirSync(join(worktree, "evidence"), { recursive: true });
     const lines = [
@@ -764,6 +795,7 @@ function writeMissingResultDiagnostic({ worktree, dispatchId, stage, actor, sess
       finished.completed ? `- agentCompletedTurn: yes (stopReason ${finished.stopReason || "unknown"})` : null,
       finished.completed && route ? `- route: ${route}` : null,
       cleanReason ? `- reason: ${cleanReason}` : null,
+      provider ? `- provider: ${provider}` : null,
       "",
       "## Executor stdout (redacted, truncated)",
       "",
