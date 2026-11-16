@@ -113,6 +113,42 @@ test("runObjective: A+B concurrent, C waits for A, integration merges all, gates
   assert.ok(Number.isFinite(metrics.integration.durationMs));
 });
 
+test("runObjective: founder work lets an in-flight learning node finish, then yields before another node or integration", async () => {
+  const root = mkdtempSync(join(tmpdir(), "objective-yield-"));
+  const { repo } = makeRepo(root);
+  const { objectivePath } = writeObjective(root, repo, NODES.slice(0, 2));
+  const initial = JSON.parse(readFileSync(objectivePath, "utf8"));
+  writeFileSync(objectivePath, `${JSON.stringify({ ...initial, origin: "learning-agent" }, null, 2)}\n`);
+  const stateRoot = join(root, "factory-state");
+  const dispatched = [];
+  let founderWaiting = false;
+  const base = makeExecute();
+  const execute = async (args) => {
+    dispatched.push({ taskId: args.dispatch.taskId, stage: args.dispatch.stage });
+    if (args.dispatch.taskId.endsWith("-a") && args.dispatch.stage === "builder") founderWaiting = true;
+    return base(args);
+  };
+
+  const yielded = await runObjective({
+    hqRoot: HQ, objectivePath, maxConcurrent: 1, stateRoot, execute,
+    publish: () => ({ published: false }), shouldYield: () => founderWaiting,
+  });
+  assert.equal(yielded.status, "yielded");
+  const parked = readObjState(objectivePath);
+  assert.equal(parked.nodes[`${parked.objectiveId}-a`].status, "gate-satisfied", "the in-flight node finishes");
+  assert.equal(parked.nodes[`${parked.objectiveId}-b`].status, "pending", "no new node starts");
+  assert.equal(parked.integration.status, "pending", "yield never falls through to integration");
+  assert.equal(dispatched.some((entry) => entry.taskId.endsWith("-b")), false);
+
+  founderWaiting = false;
+  const resumed = await runObjective({
+    hqRoot: HQ, objectivePath, maxConcurrent: 1, stateRoot, execute,
+    publish: () => ({ published: false }), shouldYield: () => founderWaiting,
+  });
+  assert.equal(resumed.status, "complete");
+  assert.ok(readObjState(objectivePath).events.some((event) => event.type === "objective-resumed"));
+});
+
 test("runObjective: a failed node blocks its dependents but not its siblings", async () => {
   const root = mkdtempSync(join(tmpdir(), "objective-fail-"));
   const { repo } = makeRepo(root);

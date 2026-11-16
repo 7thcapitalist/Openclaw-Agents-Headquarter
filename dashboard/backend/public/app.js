@@ -22,6 +22,7 @@ import { scorecardsPanel } from "/lib/scorecardsView.mjs";
 import { budgetPanel } from "/lib/budgetView.mjs";
 import { permissionsPanel } from "/lib/permissionsView.mjs";
 import { buildLiveFloorRows, buildRunningNow } from "/lib/runningNow.mjs";
+import { learningPanel } from "/lib/learningView.mjs";
 
 (function () {
   const app = document.getElementById("app");
@@ -218,6 +219,7 @@ import { buildLiveFloorRows, buildRunningNow } from "/lib/runningNow.mjs";
     const segs = raw.split("/").filter(Boolean);
     if (!segs.length || segs[0] === "today" || segs[0] === "home") return { name: "today" };
     if (segs[0] === "machine") return { name: "machine" };
+    if (segs[0] === "learning") return { name: "learning" };
     if (["agents", "projects", "tasks"].includes(segs[0])) return { name: segs[0] };
     if (segs[0] === "chat") return { name: "chat", id: segs[1] || null };
     // SOPs, Logs, Reports and Runs were retired. A bookmark to one of them
@@ -236,6 +238,7 @@ import { buildLiveFloorRows, buildRunningNow } from "/lib/runningNow.mjs";
       ["#/agents", "agents", "Agents"],
       ["#/projects", "projects", "Projects"],
       ["#/tasks", "tasks", "Board"],
+      ["#/learning", "learning", "Learning"],
       ["#/chat", "chat", "Chat"],
     ];
     nav.innerHTML = items.map(([href, id, label]) => `<a href="${href}" data-nav="${id}">${esc(label)}</a>`).join("")
@@ -1918,6 +1921,34 @@ import { buildLiveFloorRows, buildRunningNow } from "/lib/runningNow.mjs";
     document.getElementById("run-lab-agent").onclick = () => runAgent(route.project, route.id, false);
   }
 
+  async function renderLearning() {
+    let persisted;
+    try {
+      persisted = await apiJson("/api/hq/idle-trigger");
+    } catch (error) {
+      persisted = { available: false, error: String(error?.message || error) };
+    }
+    const paint = () => {
+      app.innerHTML = learningPanel(persisted, { esc, fmtTime });
+      const select = document.getElementById("learning-mode");
+      if (!select) return;
+      select.addEventListener("change", async () => {
+        const requested = select.value;
+        select.disabled = true;
+        try {
+          persisted = await apiJson("/api/hq/idle-trigger/mode", {
+            method: "POST", body: JSON.stringify({ mode: requested }),
+          });
+          showToast(`Learning mode set to ${persisted.mode}.`);
+        } catch (error) {
+          showToast(String(error?.message || error), true);
+        }
+        paint();
+      });
+    };
+    paint();
+  }
+
   async function runAgent(project, id, wait) {
     try {
       const q = wait ? "?wait=1" : "";
@@ -1937,6 +1968,7 @@ import { buildLiveFloorRows, buildRunningNow } from "/lib/runningNow.mjs";
     try {
       if (r.name === "today") await renderToday();
       else if (r.name === "machine") await renderMachine();
+      else if (r.name === "learning") await renderLearning();
       else if (r.name === "agents") await renderAgents();
       else if (r.name === "projects") await renderProjects();
       else if (r.name === "project") await renderProject(r);
