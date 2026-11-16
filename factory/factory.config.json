@@ -30,6 +30,10 @@
     },
     "policyDoc": "docs/software-factory/GIT_WORKFLOW.md"
   },
+  "inboxExecutor": {
+    "_doc": "SOF-100: a task running longer than taskTimeoutSec is aborted and the ledger records failure_reason=timeout. Remove or set 0 to disable.",
+    "taskTimeoutSec": 1800
+  },
   "quotaAlert": {
     "_doc": "SOF-82: when one run (task) has used more than runWarnPct of quotaTokens, the gate writes a cost.quota-warning audit event. Remove the block to disable.",
     "quotaTokens": 5000000,

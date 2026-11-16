@@ -83,6 +83,25 @@ export function githubCheck(run) {
   };
 }
 
+// Per-task time limit, configurable in factory.config.json (inboxExecutor.taskTimeoutSec). 0/absent = no limit.
+export function taskTimeoutMs(config) {
+  const sec = Number(config?.inboxExecutor?.taskTimeoutSec);
+  return Number.isFinite(sec) && sec > 0 ? sec * 1000 : 0;
+}
+
+class TaskTimeoutError extends Error {
+  constructor(ms) { super("timeout"); this.code = "timeout"; this.log = `tarefa abortada: excedeu o limite de ${ms} ms`; }
+}
+
+// Runs one dispatch; past the limit it aborts (signal) and rejects with code "timeout".
+async function withTimeout(run, ms) {
+  if (!ms) return run(undefined);
+  const ctl = new AbortController();
+  let timer;
+  const limit = new Promise((_, reject) => { timer = setTimeout(() => { ctl.abort(); reject(new TaskTimeoutError(ms)); }, ms); });
+  try { return await Promise.race([run(ctl.signal), limit]); } finally { clearTimeout(timer); }
+}
+
 // One-line human reason + last 20 log lines, so a failure is readable from the ledger alone.
 export function describeFailure(error) {
   const msg = String(error?.message || error || "falha desconhecida");
@@ -94,7 +113,7 @@ export function describeFailure(error) {
 
 // dispatch(request, { key, branch, task }) does the work for one micro-task (task is
 // undefined for a request without tarefas). Returns [{ file, key, branch, status }].
-export async function processInbox({ inboxDir, doneDir, ledgerPath, dispatch, check, now = () => new Date().toISOString() }) {
+export async function processInbox({ inboxDir, doneDir, ledgerPath, dispatch, check, taskTimeoutMs: limitMs = 0, now = () => new Date().toISOString() }) {
   mkdirSync(doneDir, { recursive: true });
   const seen = new Set([...closedKeys(ledgerPath), ...doneKeys(doneDir)]);
   const results = [];
@@ -133,7 +152,7 @@ export async function processInbox({ inboxDir, doneDir, ledgerPath, dispatch, ch
     try {
       for (const task of units) {
         current = task;
-        const o = (await dispatch(req, { key, branch, ...(task === undefined ? {} : { task }) })) || {};
+        const o = (await withTimeout((signal) => dispatch(req, { key, branch, ...(task === undefined ? {} : { task }), signal }), limitMs)) || {};
         if (o.pr && !pr) pr = o.pr;
         if (task !== undefined) appendFileSync(ledgerPath, JSON.stringify({ at: now(), key, file, task, branch, pr: o.pr ?? null, attempts: attemptsFor(task) }) + "\n");
       }
