@@ -26,7 +26,11 @@ export const DEFAULT_THROTTLE_WAIT_MS = 5 * 60 * 1000;
 export const DEFAULT_MAX_CONSECUTIVE_SEAT_PAUSES = 6;
 
 const EXHAUSTED = new RegExp([
-  "hit your (?:session|usage|daily|weekly|monthly) limit",
+  // "You've hit your session limit" (Claude), "You've reached your Codex
+  // subscription usage limit" (Codex). Up to three words may sit between
+  // "your" and the limit kind; the "hit|reached your" anchor keeps product
+  // prose ("usage limit banner renders twice") from matching.
+  "(?:hit|reached) your (?:[\\w-]+ ){0,3}(?:session|usage|daily|weekly|monthly) limit",
   "(?:session|usage|daily|weekly|monthly) limit (?:reached|exceeded|hit)",
   "(?:out of|ran out of|no remaining|insufficient) (?:credits?|quota|balance)",
   "credit balance (?:is )?too low",
@@ -67,13 +71,55 @@ export function parseResetTime(text, { now = Date.now() } = {}) {
   if (header) return now + Number(header[1]) * 1000;
   const clock = str.match(/resets?\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*(?:\(([^)]+)\))?/i);
   if (clock && (clock[2] || clock[3])) {
-    let hour = Number(clock[1]) % (clock[3] ? 12 : 24);
-    if (clock[3]?.toLowerCase() === "pm") hour += 12;
-    const minute = Number(clock[2] || 0);
-    if (hour > 23 || minute > 59) return null;
-    return nextWallClock({ hour, minute, timeZone: clock[4]?.trim(), now });
+    return wallClockReset(clock[1], clock[2], clock[3], clock[4], now);
   }
+  // Codex: "Next reset in 5 hours, Sep 18 at 7:56 PM EDT." The absolute clock
+  // is exact; the relative hours are rounded, so prefer the clock.
+  const dated = str.match(/\bresets?\b[^\n"]{0,60}?\bat\s+(\d{1,2}):(\d{2})\s*(am|pm)?\s*(?:\(([^)]+)\)|\b([A-Z]{2,4})\b)?/i);
+  if (dated) return wallClockReset(dated[1], dated[2], dated[3], dated[4] || zoneFromAbbreviation(dated[5]), now);
+  const inHours = str.match(/\bresets?\s+in\s+(\d+)\s*(hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)\b/i);
+  if (inHours) return now + Number(inHours[1]) * unitMs(inHours[2]);
   return null;
+}
+
+function wallClockReset(hourText, minuteText, meridiem, timeZone, now) {
+  let hour = Number(hourText) % (meridiem ? 12 : 24);
+  if (meridiem?.toLowerCase() === "pm") hour += 12;
+  const minute = Number(minuteText || 0);
+  if (hour > 23 || minute > 59) return null;
+  return nextWallClock({ hour, minute, timeZone: timeZone?.trim(), now });
+}
+
+// Providers print US zone abbreviations; Intl needs IANA names. An unknown
+// abbreviation falls through to the host's zone, as an unknown IANA name does.
+const ZONE_ABBREVIATIONS = {
+  EDT: "America/New_York", EST: "America/New_York",
+  CDT: "America/Chicago", CST: "America/Chicago",
+  MDT: "America/Denver", MST: "America/Denver",
+  PDT: "America/Los_Angeles", PST: "America/Los_Angeles",
+  UTC: "UTC", GMT: "UTC",
+};
+
+function zoneFromAbbreviation(abbreviation) {
+  return abbreviation ? ZONE_ABBREVIATIONS[abbreviation.toUpperCase()] : undefined;
+}
+
+/**
+ * The provider's own sentence about the exhausted seat, from raw executor
+ * output, or null. A harness can exit without writing a result file while the
+ * reason sits only in stdout (Codex prints it as a JSON "message"), so the
+ * runner lifts this sentence into the failure summary the detector reads.
+ */
+export function seatExhaustionExcerpt(text) {
+  const str = String(text || "");
+  const match = EXHAUSTED.exec(str);
+  if (!match) return null;
+  const boundary = /[\n"]/;
+  let start = match.index;
+  while (start > 0 && !boundary.test(str[start - 1])) start -= 1;
+  let end = match.index + match[0].length;
+  while (end < str.length && !boundary.test(str[end]) && end - start < 300) end += 1;
+  return str.slice(start, end).trim() || null;
 }
 
 function unitMs(unit) {
